@@ -1,0 +1,68 @@
+import { createContext, useContext, useState, type ReactNode } from "react";
+import { authService } from "@/services/authService";
+import type { Role, User } from "@/types/user";
+
+interface AuthState {
+  user: User | null;
+  isAuthenticated: boolean;
+  isRestoring: boolean;
+  login: (email: string, password: string) => Promise<void>;
+  loginAsRole: (role: Role) => Promise<void>;
+  logout: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthState | null>(null);
+const USER_KEY = "zou_irbm_user";
+const TOKEN_KEY = "zou_irbm_token";
+
+function readStoredUser(): User | null {
+  try {
+    const raw = localStorage.getItem(USER_KEY);
+    const token = localStorage.getItem(TOKEN_KEY);
+    if (!raw || !token) return null;
+    return JSON.parse(raw) as User;
+  } catch {
+    return null;
+  }
+}
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  // Rehydrate synchronously from localStorage so a page refresh doesn't
+  // bounce the user back to /login while a session token is still valid.
+  const [user, setUser] = useState<User | null>(readStoredUser);
+
+  function persist(user: User, token: string) {
+    localStorage.setItem(TOKEN_KEY, token);
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
+    setUser(user);
+  }
+
+  async function login(email: string, password: string) {
+    const { user, token } = await authService.login(email, password);
+    persist(user, token);
+  }
+
+  async function loginAsRole(role: Role) {
+    const { user, token } = await authService.loginAsRole(role);
+    persist(user, token);
+  }
+
+  async function logout() {
+    await authService.logout();
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+    setUser(null);
+  }
+
+  return (
+    <AuthContext.Provider value={{ user, isAuthenticated: !!user, isRestoring: false, login, loginAsRole, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
+  return ctx;
+}
