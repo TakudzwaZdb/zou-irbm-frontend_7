@@ -18,3 +18,12 @@ export function useEvaluateUnitHead() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["unitHeadAppraisals"] }),
   });
 }
+
+export function useReturnUnitHeadAppraisal() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, comment, returnedBy }: { id: string; comment: string; returnedBy: string }) =>
+      unitHeadAppraisalService.returnForCorrection(id, comment, returnedBy),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["unitHeadAppraisals"] }),
+  });
+}

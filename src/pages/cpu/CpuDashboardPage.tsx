@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { FileText, Users, UserCog, TrendingUp, Sparkles } from "lucide-react";
+import { FileText, Users, UserCog, TrendingUp, Sparkles, FolderKanban } from "lucide-react";
 import { useAvailableQuarters, useQuarterlySummaries } from "@/hooks/useAnalytics";
 import { useGenerateAppraisalReport, useReports } from "@/hooks/useReports";
 import { useKpis } from "@/hooks/useKpis";
+import { useOperationalPlans } from "@/hooks/useOperationalPlans";
 import { Breadcrumbs } from "@/components/shared/Breadcrumbs";
 import { StatCard } from "@/components/shared/StatCard";
 import { DataTable, type Column } from "@/components/shared/DataTable";
@@ -31,6 +32,7 @@ export default function CpuDashboardPage() {
   const { data: summaries = [], isLoading } = useQuarterlySummaries(quarter);
   const { data: kpis = [] } = useKpis(kpiCategory === "all" ? undefined : { status: undefined });
   const { data: reports = [] } = useReports();
+  const { data: operationalPlans = [] } = useOperationalPlans();
   const generateReport = useGenerateAppraisalReport();
 
   const filteredKpis = useMemo(
@@ -178,6 +180,19 @@ export default function CpuDashboardPage() {
               ))}
             </div>
           )}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <p className="mb-3 flex items-center gap-1.5 text-sm font-medium text-slate-900 dark:text-slate-100">
+          <FolderKanban size={15} className="text-slate-400" /> Operational plans pipeline
+        </p>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+          <StatCard label="Total plans" value={operationalPlans.length} />
+          <StatCard label="Awaiting Programme Head" value={operationalPlans.filter((p) => p.status === "pending_programme_head").length} accent="border-amber-500" />
+          <StatCard label="Awaiting VC" value={operationalPlans.filter((p) => p.status === "pending_vc").length} accent="border-amber-500" />
+          <StatCard label="Awaiting CPU validation" value={operationalPlans.filter((p) => p.status === "pending_cpu").length} accent="border-indigo-500" />
+          <StatCard label="Validated" value={operationalPlans.filter((p) => p.status === "validated").length} accent="border-emerald-500" />
         </div>
       </div>
     </div>

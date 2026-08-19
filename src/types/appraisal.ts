@@ -1,6 +1,13 @@
 export type AppraisalStatus = "draft" | "submitted" | "appraised" | "evaluated" | "forwarded_to_cpu" | "returned";
+export type ApprovalStage = "programme_head" | "vc" | "cpu";
 
-export interface StaffAppraisal {
+export interface Attachment {
+  attachmentName?: string;
+  attachmentFile?: File;
+  attachmentUploadedAt?: string;
+}
+
+export interface StaffAppraisal extends Attachment {
   id: string;
   staffId: string;
   staffName: string;
@@ -14,11 +21,15 @@ export interface StaffAppraisal {
   score: number | null;
   status: AppraisalStatus;
   appraisedBy?: string;
+  appraisedAt?: string;
   appraisalComment?: string;
+  feedback?: string;
+  feedbackBy?: string;
+  feedbackAt?: string;
   submittedAt: string;
 }
 
-export interface UnitHeadAppraisal {
+export interface UnitHeadAppraisal extends Attachment {
   id: string;
   unitHeadId: string;
   unitHeadName: string;
@@ -30,14 +41,20 @@ export interface UnitHeadAppraisal {
   score: number | null;
   status: AppraisalStatus;
   evaluatedBy?: string;
+  evaluatedAt?: string;
   evaluationComment?: string;
   forwardedToCpuAt?: string;
   submittedAt: string;
 }
 
-export type OperationalPlanStatus = "pending_vc" | "approved";
+// Every Unit, Department, Faculty, and Regional Campus follows the same
+// protocol: submit to Programme Head -> Programme Head approves and sends
+// to VC -> VC approves and sends to CPU -> CPU evaluates, monitors and
+// gives final approval/validation against budget and feasibility. Any
+// stage can reject, which ends the chain with a timestamped reason.
+export type OperationalPlanStatus = "pending_programme_head" | "pending_vc" | "pending_cpu" | "validated" | "rejected";
 
-export interface OperationalPlan {
+export interface OperationalPlan extends Attachment {
   id: string;
   unitHeadId: string;
   unitHeadName: string;
@@ -47,8 +64,18 @@ export interface OperationalPlan {
   title: string;
   period: string;
   status: OperationalPlanStatus;
-  vcApprovedBy?: string;
-  vcApprovedAt?: string;
+  programmeHeadReviewedBy?: string;
+  programmeHeadReviewedAt?: string;
+  vcReviewedBy?: string;
+  vcReviewedAt?: string;
+  cpuValidatedBy?: string;
+  cpuValidatedAt?: string;
+  budgetComment?: string;
+  feasibilityComment?: string;
+  rejectedStage?: ApprovalStage;
+  rejectedBy?: string;
+  rejectedAt?: string;
+  rejectionReason?: string;
   archived: boolean;
   archivedAt?: string;
   submittedAt: string;

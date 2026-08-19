@@ -3,7 +3,7 @@ import { cn } from "@/utils/cn";
 
 export function StatCard({ label, value, sub, accent, icon }: { label: string; value: string | number; sub?: string; accent?: string; icon?: ReactNode }) {
   return (
-    <div className={cn("rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900", accent && `border-l-4 ${accent}`)}>
+    <div className={cn("rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900", accent && `border-l-4 ${accent}`)}>
       <div className="flex items-start justify-between">
         <div>
           <p className="text-2xl font-medium text-slate-900 dark:text-slate-100">{value}</p>

@@ -43,6 +43,7 @@ const AdministrationEvaluationPage = lazy(() => import("./pages/appraisal/Admini
 const ProgrammeHeadEvaluationPage = lazy(() => import("./pages/appraisal/ProgrammeHeadEvaluationPage"));
 const OperationalPlansPage = lazy(() => import("./pages/appraisal/OperationalPlansPage"));
 const CpuDashboardPage = lazy(() => import("./pages/cpu/CpuDashboardPage"));
+const AiAssistantPage = lazy(() => import("./pages/assistant/AiAssistantPage"));
 
 export default function App() {
   return (
@@ -57,6 +58,7 @@ export default function App() {
 
               <Route path="/dashboard" element={<RoleGuard roles={["vc", "cpu"]}><ExecutiveDashboard /></RoleGuard>} />
               <Route path="/cpu/dashboard" element={<RoleGuard roles={["cpu", "ict"]}><CpuDashboardPage /></RoleGuard>} />
+              <Route path="/assistant" element={<AiAssistantPage />} />
 
               <Route path="/appraisal/staff-report" element={<RoleGuard roles={["staff"]}><StaffWeeklyReportPage /></RoleGuard>} />
               <Route path="/appraisal/unit-head-review" element={<RoleGuard roles={["unit_head"]}><UnitHeadAppraisalPage /></RoleGuard>} />

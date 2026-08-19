@@ -1,5 +1,7 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { authService } from "@/services/authService";
+import { auditService } from "@/services/auditService";
+import { ROLE_LABEL } from "@/config/roleLabels";
 import type { Role, User } from "@/types/user";
 
 interface AuthState {
@@ -35,6 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(TOKEN_KEY, token);
     localStorage.setItem(USER_KEY, JSON.stringify(user));
     setUser(user);
+    auditService.append({ user: user.name, role: ROLE_LABEL[user.role], action: "logged in", module: "Authentication", record: "Session start", previousValue: null, newValue: null });
   }
 
   async function login(email: string, password: string) {

@@ -22,7 +22,17 @@ export function useAppraiseStaff() {
 export function useReturnStaffAppraisal() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, comment }: { id: string; comment: string }) => staffAppraisalService.returnForCorrection(id, comment),
+    mutationFn: ({ id, comment, returnedBy }: { id: string; comment: string; returnedBy: string }) =>
+      staffAppraisalService.returnForCorrection(id, comment, returnedBy),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["staffAppraisals"] }),
+  });
+}
+
+export function useSendStaffFeedback() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, feedback, sentBy }: { id: string; feedback: string; sentBy: string }) =>
+      staffAppraisalService.sendFeedback(id, feedback, sentBy),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["staffAppraisals"] }),
   });
 }

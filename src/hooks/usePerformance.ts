@@ -17,7 +17,7 @@ export function useDecideSubmission() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, decision, comment }: { id: string; decision: "approved" | "rejected" | "returned"; comment?: string }) =>
-      performanceService.decide(id, decision, comment),
+      performanceService.decide(id, decision, comment ?? ""),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["submissions"] }),
   });
 }

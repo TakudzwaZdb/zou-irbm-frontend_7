@@ -8,7 +8,7 @@ export function FormField({
     <div>
       <Label>{label}</Label>
       {children}
-      {hint && !error && <p className="mt-1 text-[11px] text-slate-400">{hint}</p>}
+      {hint && !error && <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">{hint}</p>}
       {error && <p className="mt-1 text-[11px] text-rose-600">{error}</p>}
     </div>
   );

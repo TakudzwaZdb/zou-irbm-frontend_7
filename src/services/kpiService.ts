@@ -2,9 +2,16 @@ import { latency } from "./mockUtils";
 import { kpis as seedKpis } from "@/data/kpis";
 import { settingsService } from "./settingsService";
 import { ragFor } from "@/utils/ragStatus";
+import { loadStore, saveStore } from "@/utils/persistedStore";
+import { auditService } from "./auditService";
 import type { Kpi, WorkflowStatus } from "@/types/kpi";
 
-let store: Kpi[] = [...seedKpis];
+const KEY = "zou_irbm_store_kpis";
+let store: Kpi[] = loadStore(KEY, seedKpis);
+
+function persist() {
+  saveStore(KEY, store);
+}
 
 export interface KpiFilters { programmeId?: string; subProgrammeId?: string; unitId?: string; status?: string; workflow?: string }
 
@@ -42,21 +49,31 @@ export const kpiService = {
       lastUpdated: new Date().toISOString().slice(0, 10),
     };
     store = [...store, newKpi];
+    persist();
+    auditService.append({ user: payload.owner, role: "KPI Owner", action: "created", module: "KPI Management", record: newKpi.name, previousValue: null, newValue: "draft" });
     return latency(withLiveStatus(newKpi));
   },
 
   update: (id: string, changes: Partial<Kpi>): Promise<Kpi> => {
     store = store.map((k) => (k.id === id ? { ...k, ...changes, lastUpdated: new Date().toISOString().slice(0, 10) } : k));
+    persist();
     return latency(withLiveStatus(store.find((k) => k.id === id)!));
   },
 
-  setWorkflow: (id: string, workflow: WorkflowStatus): Promise<Kpi> => kpiService.update(id, { workflow }),
+  setWorkflow: (id: string, workflow: WorkflowStatus, actor = "Corporate Planning Unit"): Promise<Kpi> => {
+    const kpi = store.find((k) => k.id === id);
+    const result = kpiService.update(id, { workflow });
+    if (kpi) auditService.append({ user: actor, role: "CPU", action: workflow === "approved" ? "approved" : workflow === "rejected" ? "rejected" : "edited", module: "KPI Validation", record: kpi.name, previousValue: kpi.workflow, newValue: workflow });
+    return result;
+  },
 
   override: (id: string, overrideValue: number, reason: string, user: string): Promise<Kpi> => {
     const kpi = store.find((k) => k.id === id)!;
-    return kpiService.update(id, {
+    const result = kpiService.update(id, {
       actual: overrideValue,
       override: { systemValue: kpi.actual, overrideValue, reason, user, timestamp: new Date().toISOString() },
     });
+    auditService.append({ user, role: "CPU", action: "overridden", module: "Manual Override", record: kpi.name, previousValue: String(kpi.actual), newValue: String(overrideValue), reason });
+    return result;
   },
 };
