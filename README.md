@@ -229,7 +229,31 @@ project most likely to break silently without a test catching it.
 
 ## Reliability & UX improvements
 
-**Latest pass — the sidebar and page content now scroll independently:**
+**Latest pass — Profile & registration:**
+
+- **A self-service Profile page** (`src/pages/profile/ProfilePage.tsx`, route
+  `/profile`), reachable by every role from the "My profile" item in the
+  header's account menu — no `RoleGuard` restriction, unlike almost every
+  other route in the app. Lets anyone view and edit their own full name,
+  email, role, and **station** — a Regional Campus, Department, Directorate,
+  or Faculty, selected from the real `orgUnits` list rather than free text.
+- **A real "Register user" flow on Users & Roles**, replacing what used to
+  be a decorative button with no handler. Admins (CPU/ICT) fill the same
+  four fields — full name, email, role (all ten), station — in a dialog,
+  and the account is created immediately and shows up in the table.
+- **Both forms share one Zod schema** (`src/forms/profileSchema.ts`), so
+  "editing your own profile" and "an admin registering someone else" are the
+  same validated shape, not two different implementations that could drift.
+- **Editing your own profile updates the live session immediately** — no
+  logout/login needed to see your new name or role reflected in the header
+  and sidebar. `AuthContext` gained `updateCurrentUser()` specifically for
+  this, keeping the in-memory session and `localStorage` in sync with
+  whatever was just saved to the user record.
+- `userService` is now mutable and persisted (`create`/`update`, both
+  writing to the Audit Trail), matching every other service in the app
+  instead of being the one remaining read-only stub.
+
+**Earlier pass — the sidebar and page content now scroll independently:**
 
 - **Fixed the actual bug, not just the symptom.** On desktop, the sidebar
   used `lg:static` so it could participate in the page's flex layout

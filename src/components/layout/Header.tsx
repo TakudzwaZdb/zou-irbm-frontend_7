@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Menu, Search, Bell, ChevronDown, LogOut, Sun, Moon, Target, Building2, FileText, X } from "lucide-react";
+import { Menu, Search, Bell, ChevronDown, LogOut, Sun, Moon, Target, Building2, FileText, X, UserCircle2 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { useAlerts } from "@/hooks/useAlerts";
@@ -143,6 +143,9 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => navigate("/profile")} className="flex items-center gap-2">
+              <UserCircle2 size={13} /> My profile
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={handleLogout} className="flex items-center gap-2 text-rose-600">
               <LogOut size={13} /> Sign out
             </DropdownMenuItem>

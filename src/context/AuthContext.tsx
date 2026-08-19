@@ -11,6 +11,7 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   loginAsRole: (role: Role) => Promise<void>;
   logout: () => Promise<void>;
+  updateCurrentUser: (patch: Partial<User>) => void;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -57,8 +58,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }
 
+  // Called after a successful Profile save so the header, sidebar footer,
+  // and every place that reads `user` reflect the change immediately —
+  // without this, editing your name or role would only show up after
+  // logging out and back in.
+  function updateCurrentUser(patch: Partial<User>) {
+    setUser((prev) => {
+      if (!prev) return prev;
+      const updated = { ...prev, ...patch };
+      localStorage.setItem(USER_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated: !!user, isRestoring: false, login, loginAsRole, logout }}>
+    <AuthContext.Provider value={{ user, isAuthenticated: !!user, isRestoring: false, login, loginAsRole, logout, updateCurrentUser }}>
       {children}
     </AuthContext.Provider>
   );

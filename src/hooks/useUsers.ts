@@ -1,4 +1,23 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { userService } from "@/services/userService";
+import type { User } from "@/types/user";
 
 export const useUsers = () => useQuery({ queryKey: ["users"], queryFn: userService.list });
+
+export function useCreateUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ payload, createdBy }: { payload: Omit<User, "id" | "status" | "lastLogin">; createdBy: string }) =>
+      userService.create(payload, createdBy),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  });
+}
+
+export function useUpdateUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, changes, updatedBy }: { id: string; changes: Partial<User>; updatedBy: string }) =>
+      userService.update(id, changes, updatedBy),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  });
+}
