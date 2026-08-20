@@ -2,8 +2,13 @@ import { useState } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import type { Resolver } from "react-hook-form";
+<<<<<<< HEAD
 import { CheckCircle2, Plus, XCircle } from "lucide-react";
 import { useUsers, useCreateUser, useApproveUser, useRejectUser } from "@/hooks/useUsers";
+=======
+import { Plus } from "lucide-react";
+import { useUsers, useCreateUser } from "@/hooks/useUsers";
+>>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
 import { useAuth } from "@/context/AuthContext";
 import { profileSchema, type ProfileFormValues } from "@/forms/profileSchema";
 import { orgUnits } from "@/data/organisation";
@@ -13,7 +18,10 @@ import { EmptyState } from "@/components/shared/EmptyState";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
+<<<<<<< HEAD
 import { Textarea } from "@/components/ui/Textarea";
+=======
+>>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
 import { FormField } from "@/components/ui/FormField";
 import { Dialog, DialogContent } from "@/components/ui/Dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/Select";
@@ -24,6 +32,7 @@ import type { User, Role } from "@/types/user";
 
 const ALL_ROLES: Role[] = ["staff", "unit_head", "administration", "vc", "council", "programme_head", "subprogramme_head", "subprogramme_rep", "cpu", "ict"];
 
+<<<<<<< HEAD
 const STATUS_VARIANT: Record<User["status"], "success" | "warning" | "default" | "danger"> = {
   active: "success", pending: "warning", suspended: "default", rejected: "danger",
 };
@@ -31,6 +40,8 @@ const STATUS_LABEL: Record<User["status"], string> = {
   active: "Active", pending: "Pending approval", suspended: "Suspended", rejected: "Rejected",
 };
 
+=======
+>>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
 function RegisterUserDialog({ onClose }: { onClose: () => void }) {
   const { user: currentUser } = useAuth();
   const { toast } = useToast();
@@ -42,14 +53,21 @@ function RegisterUserDialog({ onClose }: { onClose: () => void }) {
 
   async function onSubmit(values: ProfileFormValues) {
     const station = orgUnits.find((u) => u.id === values.stationId);
+<<<<<<< HEAD
     // Created directly by an admin, so it's active immediately — an admin
     // creating the account already is the approval. Self-registration via
     // /register is what lands in the pending queue below instead.
+=======
+>>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
     await createUser.mutateAsync({
       payload: { name: values.name, email: values.email, role: values.role, stationId: values.stationId, unit: station?.name ?? "" },
       createdBy: currentUser?.name ?? "Administrator",
     });
+<<<<<<< HEAD
     toast({ title: "User registered", description: `${values.name} can sign in immediately.`, kind: "success" });
+=======
+    toast({ title: "User registered", description: `${values.name} can now sign in.`, kind: "success" });
+>>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
     onClose();
   }
 
@@ -88,6 +106,7 @@ function RegisterUserDialog({ onClose }: { onClose: () => void }) {
     </Dialog>
   );
 }
+<<<<<<< HEAD
 
 function RejectControl({ onReject }: { onReject: (reason: string) => void }) {
   const [open, setOpen] = useState(false);
@@ -139,12 +158,17 @@ function PendingRow({ pendingUser }: { pendingUser: User }) {
     </div>
   );
 }
+=======
+>>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
 
 export default function UsersPage() {
   const { data: users = [], isLoading } = useUsers();
   const [registerOpen, setRegisterOpen] = useState(false);
+<<<<<<< HEAD
 
   const pending = users.filter((u) => u.status === "pending");
+=======
+>>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
 
   const columns: Column<User>[] = [
     { key: "name", header: "User", sortValue: (u) => u.name, render: (u) => (
@@ -155,7 +179,11 @@ export default function UsersPage() {
     ) },
     { key: "role", header: "Role", sortValue: (u) => u.role, render: (u) => <Badge>{ROLE_LABEL[u.role]}</Badge> },
     { key: "unit", header: "Station", render: (u) => u.unit || <span className="text-slate-400">Not set</span> },
+<<<<<<< HEAD
     { key: "status", header: "Status", render: (u) => <Badge variant={STATUS_VARIANT[u.status]}>{STATUS_LABEL[u.status]}</Badge> },
+=======
+    { key: "status", header: "Status", render: (u) => <Badge variant={u.status === "active" ? "success" : "default"}>{u.status === "active" ? "Active" : "Suspended"}</Badge> },
+>>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
     { key: "lastLogin", header: "Last login", sortValue: (u) => u.lastLogin, render: (u) => <span className="text-xs text-slate-400">{u.lastLogin}</span> },
   ];
 
@@ -170,6 +198,7 @@ export default function UsersPage() {
         <Button onClick={() => setRegisterOpen(true)}><Plus size={14} /> Register user</Button>
       </div>
 
+<<<<<<< HEAD
       <div>
         <p className="mb-3 text-sm font-medium text-slate-900 dark:text-slate-100">Pending approval ({pending.length})</p>
         {pending.length === 0 ? (
@@ -183,6 +212,9 @@ export default function UsersPage() {
         <p className="mb-3 text-sm font-medium text-slate-900 dark:text-slate-100">All users</p>
         <DataTable columns={columns} rows={users} pageSize={10} loading={isLoading} />
       </div>
+=======
+      <DataTable columns={columns} rows={users} pageSize={10} loading={isLoading} />
+>>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
 
       {registerOpen && <RegisterUserDialog onClose={() => setRegisterOpen(false)} />}
     </div>

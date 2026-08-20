@@ -40,7 +40,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(USER_KEY, JSON.stringify(user));
     setUser(user);
     auditService.append({ user: user.name, role: ROLE_LABEL[user.role], action: "logged in", module: "Authentication", record: "Session start", previousValue: null, newValue: null });
+<<<<<<< HEAD
     return user;
+=======
+>>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
   }
 
   async function login(email: string, password: string) {
@@ -82,7 +85,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
+<<<<<<< HEAD
     <AuthContext.Provider value={{ user, isAuthenticated: !!user, isRestoring: false, login, loginAsRole, register, logout, updateCurrentUser }}>
+=======
+    <AuthContext.Provider value={{ user, isAuthenticated: !!user, isRestoring: false, login, loginAsRole, logout, updateCurrentUser }}>
+>>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
       {children}
     </AuthContext.Provider>
   );
