@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Upload } from "lucide-react";
+import { AlertTriangle, Upload } from "lucide-react";
 import { performanceSubmissionSchema, type PerformanceSubmissionFormValues } from "@/forms/performanceSubmissionSchema";
 import type { Resolver } from "react-hook-form";
 import { useKpis } from "@/hooks/useKpis";
 import { useSubmitPerformance, useSubmissions } from "@/hooks/usePerformance";
 import { useAuth } from "@/context/AuthContext";
+import { reportingMonths, currentReportingMonth, isPeriodPastDue } from "@/utils/reportingPeriods";
 import { Breadcrumbs } from "@/components/shared/Breadcrumbs";
 import { WorkflowBadge } from "@/components/shared/WorkflowBadge";
 import { Button } from "@/components/ui/Button";
@@ -24,15 +25,18 @@ export default function SubmitPerformancePage() {
   const { data: submissions = [] } = useSubmissions();
   const submit = useSubmitPerformance();
   const [fileName, setFileName] = useState<string | undefined>();
+  const months = reportingMonths(12);
 
   const editableKpis = kpis.filter((k) => k.workflow === "draft" || k.workflow === "returned");
 
   const { register, handleSubmit, control, watch, reset, formState: { errors, isSubmitting } } = useForm<PerformanceSubmissionFormValues>({
     resolver: zodResolver(performanceSubmissionSchema) as Resolver<PerformanceSubmissionFormValues>,
-    defaultValues: { period: "August 2026" },
+    defaultValues: { period: currentReportingMonth() },
   });
   const kpiId = watch("kpiId");
+  const period = watch("period");
   const selectedKpi = kpis.find((k) => k.id === kpiId);
+  const pastDue = period ? isPeriodPastDue(period) : false;
 
   async function onSubmit(values: PerformanceSubmissionFormValues) {
     if (!selectedKpi) return;
@@ -42,7 +46,7 @@ export default function SubmitPerformancePage() {
       evidenceFileName: fileName, submittedBy: user?.name ?? "Unknown", reviewComment: undefined,
     });
     toast({ title: "Submitted for review", description: "The Corporate Planning Unit will review this shortly.", kind: "success" });
-    reset({ period: "August 2026", kpiId: "", actual: undefined, explanation: "" });
+    reset({ period: currentReportingMonth(), kpiId: "", actual: undefined, explanation: "" });
     setFileName(undefined);
   }
 
@@ -52,7 +56,7 @@ export default function SubmitPerformancePage() {
         <div>
           <Breadcrumbs items={["Performance", "Submit performance"]} />
           <h1 className="text-lg font-medium text-slate-900 dark:text-slate-100">Monthly performance submission</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">August 2026 reporting period · due 5th of the following month</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">Monthly reporting cadence · due the 5th of the following month</p>
         </div>
 
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
@@ -65,9 +69,20 @@ export default function SubmitPerformancePage() {
             )} />
           </FormField>
 
-          <FormField label="Reporting period" error={errors.period?.message}>
-            <Input {...register("period")} error={!!errors.period} />
+          <FormField label="Reporting period" error={errors.period?.message} hint="Any of the last 12 calendar months">
+            <Controller name="period" control={control} render={({ field }) => (
+              <Select value={field.value} onValueChange={field.onChange}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{months.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
+              </Select>
+            )} />
           </FormField>
+
+          {pastDue && (
+            <p className="flex items-center gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+              <AlertTriangle size={12} /> This period is past its due date — submitting now will be recorded as late.
+            </p>
+          )}
 
           {selectedKpi && (
             <div className="grid grid-cols-2 gap-3">
@@ -100,16 +115,16 @@ export default function SubmitPerformancePage() {
       </div>
 
       <div>
-        <p className="mb-3 text-sm font-medium text-slate-900">Your recent submissions</p>
+        <p className="mb-3 text-sm font-medium text-slate-900 dark:text-slate-100">Your recent submissions</p>
         <div className="space-y-2">
           {submissions.filter((s) => s.submittedBy === user?.name).slice(0, 6).map((s) => (
-            <div key={s.id} className="rounded-xl border border-slate-200 bg-white p-3.5">
+            <div key={s.id} className="rounded-xl border border-slate-200 bg-white p-3.5 dark:border-slate-800 dark:bg-slate-900">
               <div className="flex items-start justify-between gap-2">
-                <p className="text-xs font-medium text-slate-800">{s.kpiName}</p>
+                <p className="text-xs font-medium text-slate-800 dark:text-slate-200">{s.kpiName}</p>
                 <WorkflowBadge status={s.status} />
               </div>
-              <p className="mt-1 text-[11px] text-slate-400">{s.period} · {s.achievementPct}% achieved</p>
-              {s.reviewComment && <p className="mt-1.5 rounded-md bg-rose-50 p-1.5 text-[11px] text-rose-600">{s.reviewComment}</p>}
+              <p className="mt-1 text-[11px] text-slate-400">{s.period} · {s.achievementPct}% achieved{s.late && " · late"}</p>
+              {s.reviewComment && <p className="mt-1.5 rounded-md bg-rose-50 p-1.5 text-[11px] text-rose-600 dark:bg-rose-950 dark:text-rose-300">{s.reviewComment}</p>}
             </div>
           ))}
           {submissions.filter((s) => s.submittedBy === user?.name).length === 0 && (

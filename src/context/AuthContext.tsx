@@ -10,7 +10,6 @@ interface AuthState {
   isRestoring: boolean;
   login: (email: string, password: string) => Promise<User>;
   loginAsRole: (role: Role) => Promise<User>;
-  register: (payload: { name: string; email: string; role: Role; stationId: string; unit: string }, password: string) => Promise<User>;
   logout: () => Promise<void>;
   updateCurrentUser: (patch: Partial<User>) => void;
 }
@@ -53,14 +52,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return persist(user, token);
   }
 
-  // Registration creates a pending account and does NOT sign anyone in —
-  // the whole point of the approval gate is that a pending account has no
-  // session until CPU/ICT approves it. The caller (RegisterPage) is
-  // responsible for redirecting to /login with a "check back later" message.
-  async function register(payload: { name: string; email: string; role: Role; stationId: string; unit: string }, password: string) {
-    return authService.register(payload, password);
-  }
-
   async function logout() {
     await authService.logout();
     localStorage.removeItem(TOKEN_KEY);
@@ -68,10 +59,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }
 
-  // Called after a successful Profile save so the header, sidebar footer,
-  // and every place that reads `user` reflect the change immediately —
-  // without this, editing your name or role would only show up after
-  // logging out and back in.
+  // Called after a successful Profile save so the header and sidebar
+  // footer reflect the change immediately — without this, editing your
+  // name or role would only show up after logging out and back in.
   function updateCurrentUser(patch: Partial<User>) {
     setUser((prev) => {
       if (!prev) return prev;
@@ -82,7 +72,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated: !!user, isRestoring: false, login, loginAsRole, register, logout, updateCurrentUser }}>
+    <AuthContext.Provider value={{ user, isAuthenticated: !!user, isRestoring: false, login, loginAsRole, logout, updateCurrentUser }}>
       {children}
     </AuthContext.Provider>
   );

@@ -108,19 +108,15 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           {NAV.map((section) => {
             const visibleItems = section.items.filter((item) => !role || item.roles.includes(role));
             if (visibleItems.length === 0) return null;
-            const isWorkflow = section.workflow;
             return (
-              <div
-                key={section.group}
-                className={isWorkflow && !collapsed ? "rounded-xl border border-indigo-800/60 bg-indigo-900/40 p-2.5" : undefined}
-              >
+              <div key={section.group}>
                 {!collapsed && (
-                  <p className={`mb-2 px-2 text-xs font-bold uppercase tracking-wider ${isWorkflow ? "text-indigo-200" : "text-indigo-400"}`}>
+                  <p className="mb-2 px-2 text-xs font-bold uppercase tracking-wider text-indigo-400">
                     {section.group}
                   </p>
                 )}
                 <div className="space-y-1">
-                  {visibleItems.map((item, i) => (
+                  {visibleItems.map((item) => (
                     <NavLink
                       key={item.to}
                       to={item.to}
@@ -134,11 +130,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                         } ${collapsed ? "justify-center" : ""}`
                       }
                     >
-                      {isWorkflow && !collapsed ? (
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-[11px] font-extrabold text-white">{i + 1}</span>
-                      ) : (
-                        <item.icon size={17} className="shrink-0" />
-                      )}
+                      <item.icon size={17} className="shrink-0" />
                       {!collapsed && <span className="truncate">{item.label}</span>}
                     </NavLink>
                   ))}

@@ -15,16 +15,11 @@ export const userService = {
   list: (): Promise<User[]> => latency(store),
   getById: (id: string): Promise<User | undefined> => latency(store.find((u) => u.id === id)),
 
-  // Registration — used both by a self-service Profile page (registering
-  // your own account details) and by admins creating accounts for others
-  // from Users & Roles. `status` defaults to "active" (an admin creating
-  // the account already is the approval); self-registration explicitly
-  // passes "pending" instead.
-  create: (payload: Omit<User, "id" | "status" | "lastLogin">, createdBy: string, status: User["status"] = "active"): Promise<User> => {
-    const created: User = { ...payload, id: `u-${Date.now()}`, status, lastLogin: "Never" };
+  create: (payload: Omit<User, "id" | "status" | "lastLogin">, createdBy: string): Promise<User> => {
+    const created: User = { ...payload, id: `u-${Date.now()}`, status: "active", lastLogin: "Never" };
     store = [created, ...store];
     persist();
-    auditService.append({ user: createdBy, role: "Administrator", action: "created", module: "User Management", record: `${created.name} (${created.email})`, previousValue: null, newValue: status === "pending" ? "pending approval" : created.role });
+    auditService.append({ user: createdBy, role: "Administrator", action: "created", module: "User Management", record: `${created.name} (${created.email})`, previousValue: null, newValue: created.role });
     return latency(created);
   },
 
@@ -33,22 +28,6 @@ export const userService = {
     store = store.map((u) => (u.id === id ? { ...u, ...changes } : u));
     persist();
     if (before) auditService.append({ user: updatedBy, role: "Account holder", action: "edited", module: "User Profile", record: `${before.name} (${before.email})`, previousValue: before.role, newValue: changes.role ?? before.role });
-    return latency(store.find((u) => u.id === id)!);
-  },
-
-  approve: (id: string, approvedBy: string): Promise<User> => {
-    const before = store.find((u) => u.id === id);
-    store = store.map((u) => (u.id === id ? { ...u, status: "active" as const, statusReason: undefined } : u));
-    persist();
-    if (before) auditService.append({ user: approvedBy, role: "Administrator", action: "approved", module: "User Management", record: `${before.name} (${before.email})`, previousValue: "pending", newValue: "active" });
-    return latency(store.find((u) => u.id === id)!);
-  },
-
-  reject: (id: string, rejectedBy: string, reason: string): Promise<User> => {
-    const before = store.find((u) => u.id === id);
-    store = store.map((u) => (u.id === id ? { ...u, status: "rejected" as const, statusReason: reason } : u));
-    persist();
-    if (before) auditService.append({ user: rejectedBy, role: "Administrator", action: "rejected", module: "User Management", record: `${before.name} (${before.email})`, previousValue: "pending", newValue: "rejected", reason });
     return latency(store.find((u) => u.id === id)!);
   },
 };

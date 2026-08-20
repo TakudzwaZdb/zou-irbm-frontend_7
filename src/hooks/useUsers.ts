@@ -21,19 +21,3 @@ export function useUpdateUser() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
   });
 }
-
-export function useApproveUser() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, approvedBy }: { id: string; approvedBy: string }) => userService.approve(id, approvedBy),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
-  });
-}
-
-export function useRejectUser() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, rejectedBy, reason }: { id: string; rejectedBy: string; reason: string }) => userService.reject(id, rejectedBy, reason),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
-  });
-}

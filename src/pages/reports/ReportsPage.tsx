@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { FileText, Download, Eye, FileCheck } from "lucide-react";
-import { useReports, useExportReport } from "@/hooks/useReports";
+import { FileText, Download, Eye, FileCheck, Sparkles } from "lucide-react";
+import { useReports, useExportReport, useGenerateReport } from "@/hooks/useReports";
+import type { GeneratableReportType } from "@/services/reportService";
 import { Breadcrumbs } from "@/components/shared/Breadcrumbs";
 import { DataTable, type Column } from "@/components/shared/DataTable";
 import { Button } from "@/components/ui/Button";
@@ -10,16 +11,26 @@ import { useToast } from "@/components/ui/Toast";
 import type { ReportItem } from "@/types/report";
 
 const REPORT_TYPES = [
-  "Monthly Performance Report", "Quarterly Performance Report", "Bi-annual Performance Report", "Annual Performance Report",
-  "KPI Achievement Report", "Programme Performance Report", "Sub-programme Performance Report",
-  "Submission Compliance Report", "Underperformance Report", "Audit Report",
+  "Monthly Performance Report", "Quarterly Performance Report", "Bi-annual Performance Report",
+  "Annual Performance Report", "KPI Achievement Report", "Programme Performance Report",
+  "Sub-programme Performance Report", "Submission Compliance Report", "Underperformance Report", "Audit Report",
 ];
+
+const GENERATABLE: GeneratableReportType[] = ["KPI Achievement Report", "Programme Performance Report", "Submission Compliance Report"];
 
 export default function ReportsPage() {
   const { data: reports = [], isLoading } = useReports();
   const exportReport = useExportReport();
+  const generateReport = useGenerateReport();
   const { toast } = useToast();
   const [preview, setPreview] = useState<ReportItem | null>(null);
+
+  const currentPeriod = new Date().toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+
+  async function handleGenerate(type: GeneratableReportType) {
+    const report = await generateReport.mutateAsync({ type, period: currentPeriod });
+    toast({ title: "Report generated", description: `${report.title} is ready to preview or download.`, kind: "success" });
+  }
 
   async function handleExport(report: ReportItem) {
     const result = await exportReport.mutateAsync({ id: report.id, format: report.format });
@@ -63,9 +74,21 @@ export default function ReportsPage() {
         <Breadcrumbs items={["Reporting", "Reports"]} />
         <h1 className="text-lg font-medium text-slate-900 dark:text-slate-100">Reports</h1>
         <p className="text-sm leading-relaxed text-slate-500 dark:text-slate-400">
-          Appraisal reports generated from the CPU Dashboard have real content and download directly. Other report
-          types below stand in for what a future backend would render server-side.
+          Generated directly from monthly-fed data, not compiled as a parallel manual process.
         </p>
+      </div>
+
+      <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 dark:border-indigo-900 dark:bg-indigo-950">
+        <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-indigo-700 dark:text-indigo-300">
+          <Sparkles size={13} /> Generate a report for {currentPeriod}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {GENERATABLE.map((type) => (
+            <Button key={type} size="sm" onClick={() => handleGenerate(type)} disabled={generateReport.isPending}>
+              {generateReport.isPending ? "Generating…" : type}
+            </Button>
+          ))}
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-1.5">

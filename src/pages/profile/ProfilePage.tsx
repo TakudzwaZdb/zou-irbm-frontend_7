@@ -16,7 +16,7 @@ import { useToast } from "@/components/ui/Toast";
 import { initials } from "@/utils/format";
 import type { Role } from "@/types/user";
 
-const ALL_ROLES: Role[] = ["staff", "unit_head", "administration", "vc", "council", "programme_head", "subprogramme_head", "subprogramme_rep", "cpu", "ict"];
+const ALL_ROLES: Role[] = ["vc", "council", "programme_head", "subprogramme_head", "subprogramme_rep", "cpu", "ict"];
 
 export default function ProfilePage() {
   const { user, updateCurrentUser } = useAuth();
@@ -30,7 +30,7 @@ export default function ProfilePage() {
     defaultValues: {
       name: user?.name ?? "",
       email: user?.email ?? "",
-      role: user?.role ?? "staff",
+      role: user?.role ?? "subprogramme_rep",
       stationId: user?.stationId ?? "",
     },
   });

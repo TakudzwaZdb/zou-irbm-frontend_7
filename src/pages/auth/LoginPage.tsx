@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { loginSchema, type LoginFormValues } from "@/forms/loginSchema";
@@ -13,7 +13,7 @@ import { DEFAULT_ROUTE } from "@/config/nav";
 import type { Role } from "@/types/user";
 import { useToast } from "@/components/ui/Toast";
 
-const DEMO_ROLES: Role[] = ["staff", "unit_head", "administration", "vc", "programme_head", "subprogramme_head", "subprogramme_rep", "cpu", "ict"];
+const DEMO_ROLES: Role[] = ["vc", "council", "programme_head", "subprogramme_head", "subprogramme_rep", "cpu", "ict"];
 
 export default function LoginPage() {
   const { login, loginAsRole } = useAuth();
@@ -51,7 +51,7 @@ export default function LoginPage() {
         <FormField label="Work email" error={errors.email?.message}>
           <Input type="email" placeholder="you@zou.ac.zw" {...register("email")} error={!!errors.email} />
         </FormField>
-        <FormField label="Password" error={errors.password?.message} hint="Demo accounts use zou-demo-2026 · your own registered password otherwise">
+        <FormField label="Password" error={errors.password?.message} hint="Demo password: zou-demo-2026">
           <Input type="password" placeholder="••••••••" {...register("password")} error={!!errors.password} />
         </FormField>
 
@@ -60,11 +60,6 @@ export default function LoginPage() {
         <Button type="submit" disabled={isSubmitting} className="w-full justify-center">
           {isSubmitting ? "Signing in…" : "Sign in"}
         </Button>
-
-        <p className="text-center text-xs text-slate-500 dark:text-slate-400">
-          Not in the system yet?{" "}
-          <Link to="/register" className="font-medium text-indigo-600 hover:underline dark:text-indigo-400">Create your profile</Link>
-        </p>
 
         <div className="relative py-1 text-center">
           <span className="bg-white px-2 text-[10px] uppercase tracking-wide text-slate-400 dark:bg-slate-900 dark:text-slate-500">Or preview as a role</span>

@@ -1,9 +1,6 @@
 import type { User } from "@/types/user";
 
 export const users: User[] = [
-  { id: "u0a", name: "T. Marufu", email: "t.marufu@zou.ac.zw", role: "staff", unit: "Infrastructure", status: "active", lastLogin: "2026-08-14 08:20" },
-  { id: "u0b", name: "Mr. J. Zvomuya", email: "j.zvomuya@zou.ac.zw", role: "unit_head", unit: "Infrastructure", status: "active", lastLogin: "2026-08-15 07:55" },
-  { id: "u0c", name: "Administration Office", email: "administration@zou.ac.zw", role: "administration", unit: "Administration", status: "active", lastLogin: "2026-08-15 08:10" },
   { id: "u1", name: "Council Secretariat", email: "council@zou.ac.zw", role: "council", unit: "University Council", status: "active", lastLogin: "2026-08-14 09:12" },
   { id: "u2", name: "Prof. E. Mavhu", email: "vc@zou.ac.zw", role: "vc", unit: "Vice-Chancellor's Office", status: "active", lastLogin: "2026-08-15 07:40" },
   { id: "u3", name: "Prof. T. Mangwiro", email: "t.mangwiro@zou.ac.zw", role: "programme_head", unit: "Governance & Administration", status: "active", lastLogin: "2026-08-14 16:05" },

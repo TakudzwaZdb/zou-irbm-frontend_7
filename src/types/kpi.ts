@@ -23,6 +23,16 @@ export interface Kpi {
   programmeId: string;
   subProgrammeId: string;
   unitId: string;
+  // Q13: the data model is strictly tree-shaped (one parent Programme per
+  // KPI) with a small number of cross-cutting exceptions. Rather than
+  // redesigning the whole model around a many-to-many relationship, a
+  // cross-cutting KPI gets this optional secondary tag pointing at the
+  // other Programme it's also relevant to.
+  linkedProgrammeId?: string;
+  // Q16: when a Programme Head or Sub-programme Head breaks a
+  // higher-level target down into a target for the level below them, the
+  // new KPI records which KPI it was cascaded from.
+  parentKpiId?: string;
   name: string;
   type: IndicatorType;
   unit: Unit;

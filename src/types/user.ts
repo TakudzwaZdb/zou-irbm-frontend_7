@@ -1,7 +1,10 @@
+// Three-tier access model per the questionnaire (Q21): Council & VC
+// (read-only executive), Sub-programme Representatives (data entry), CPU &
+// ICT (full admin, including framework structure edits). Programme Head and
+// Sub-programme Head are added because Q16's cascading target-setting
+// workflow requires them as distinct actors, not because of anything
+// outside this questionnaire.
 export type Role =
-  | "staff"
-  | "unit_head"
-  | "administration"
   | "vc"
   | "council"
   | "programme_head"
@@ -20,11 +23,6 @@ export interface User {
   // Directorate, Regional Campus, or Department. Optional because existing
   // seed accounts predate this field; anyone can set it from their Profile.
   stationId?: string;
-  // Self-registered accounts start "pending" and can't log in until CPU/ICT
-  // approves them. Accounts an admin creates directly from Users & Roles
-  // start "active" immediately — an admin creating the account already is
-  // the approval.
-  status: "pending" | "active" | "suspended" | "rejected";
-  statusReason?: string;
+  status: "active" | "suspended";
   lastLogin: string;
 }

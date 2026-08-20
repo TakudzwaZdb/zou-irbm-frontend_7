@@ -1,5 +1,6 @@
-import { AlertTriangle, Info, AlertCircle, Check, Mail, MailX } from "lucide-react";
+import { AlertTriangle, Info, AlertCircle, Check, Mail, MailX, ArrowUpCircle } from "lucide-react";
 import { useAlerts, useAcknowledgeAlert } from "@/hooks/useAlerts";
+import { currentEscalationStep, hasAutoEscalated } from "@/utils/escalation";
 import { Breadcrumbs } from "@/components/shared/Breadcrumbs";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { Button } from "@/components/ui/Button";
@@ -24,7 +25,7 @@ export default function AlertsPage() {
       <div>
         <Breadcrumbs items={["Reporting", "Alerts & escalation"]} />
         <h1 className="text-lg font-medium text-slate-900 dark:text-slate-100">Alerts &amp; escalation</h1>
-        <p className="text-sm text-slate-500 dark:text-slate-400">Escalation follows the org hierarchy: Unit Head → Sub-programme Head → Programme Head → Vice-Chancellor</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400">Escalation follows the org hierarchy — Unit Head → Sub-programme Head → Programme Head → Vice-Chancellor — and climbs automatically the longer an alert sits unacknowledged</p>
       </div>
 
       <div>
@@ -34,16 +35,20 @@ export default function AlertsPage() {
             {unread.map((a) => {
               const s = STYLE[a.level];
               const Icon = ICONS[a.level];
+              const liveStep = currentEscalationStep(a);
+              const escalated = hasAutoEscalated(a);
               return (
                 <div key={a.id} className={`flex items-start justify-between gap-3 rounded-xl border-l-4 ${s.border} border border-slate-200 ${s.bg} p-4`}>
                   <div className="flex gap-3">
                     <Icon size={16} className={`mt-0.5 shrink-0 ${s.text}`} />
                     <div>
                       <p className="text-sm font-medium text-slate-900 dark:text-slate-100">{a.kpiName}</p>
-                      <p className="mt-0.5 text-xs text-slate-600">{a.message}</p>
+                      <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-300">{a.message}</p>
                       <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
                         <span>{a.subProgramme}</span><span>·</span>
-                        <span>Escalated to {a.escalationStep}</span><span>·</span>
+                        <span>Escalated to {liveStep}</span>
+                        {escalated && <Badge variant="danger"><ArrowUpCircle size={10} /> Auto-escalated</Badge>}
+                        <span>·</span>
                         <span>{a.createdAt}</span>
                         {a.emailSent ? (
                           <Badge variant="info"><Mail size={10} /> Email sent</Badge>

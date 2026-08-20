@@ -1,13 +1,15 @@
 import { useEffect } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { GitBranch } from "lucide-react";
 import { kpiSchema, type KpiFormValues } from "@/forms/kpiSchema";
 import type { Resolver } from "react-hook-form";
 import { useKpi, useCreateKpi, useUpdateKpi } from "@/hooks/useKpis";
 import { useProgrammes } from "@/hooks/useProgrammes";
 import { useSubProgrammes } from "@/hooks/useSubProgrammes";
 import { useUnits } from "@/hooks/useUnits";
+import { useAuth } from "@/context/AuthContext";
 import { Breadcrumbs } from "@/components/shared/Breadcrumbs";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -20,15 +22,20 @@ export default function KpiFormPage() {
   const isEdit = !!id && id !== "new";
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user } = useAuth();
+
+  const [searchParams] = useSearchParams();
+  const cascadeFromId = searchParams.get("cascadeFrom");
 
   const { data: existing } = useKpi(isEdit ? id : undefined);
+  const { data: parentKpi } = useKpi(cascadeFromId ?? undefined);
   const { data: programmes = [] } = useProgrammes();
   const createKpi = useCreateKpi();
   const updateKpi = useUpdateKpi();
 
   const { register, handleSubmit, control, watch, reset, formState: { errors, isSubmitting } } = useForm<KpiFormValues>({
     resolver: zodResolver(kpiSchema) as Resolver<KpiFormValues>,
-    defaultValues: { type: "output", unit: "%", reportingFrequency: "monthly", programmeId: "", subProgrammeId: "", unitId: "" },
+    defaultValues: { type: "output", unit: "%", reportingFrequency: "monthly", programmeId: "", subProgrammeId: "", unitId: "", linkedProgrammeId: "" },
   });
 
   const programmeId = watch("programmeId");
@@ -42,12 +49,33 @@ export default function KpiFormPage() {
       reset({
         name: existing.name, type: existing.type, unit: existing.unit,
         programmeId: existing.programmeId, subProgrammeId: existing.subProgrammeId, unitId: existing.unitId,
+        linkedProgrammeId: existing.linkedProgrammeId ?? "",
         baseline: existing.baseline, target: existing.target, reportingFrequency: existing.reportingFrequency,
         dataSource: existing.dataSource, owner: existing.owner,
         q1Target: byQuarter.Q1, q2Target: byQuarter.Q2, q3Target: byQuarter.Q3, q4Target: byQuarter.Q4,
       });
     }
   }, [existing, reset]);
+
+  // Q16: "Work cascades down" — a Programme Head breaking a Programme-level
+  // target into a Sub-programme's target, or a Sub-programme Head breaking
+  // theirs into a Unit's target. The Programme is always locked to the
+  // parent's; the Sub-programme is additionally locked when a Sub-programme
+  // Head is the one cascading (they're picking a new Unit, not a new
+  // Sub-programme). Everything else pre-fills from the parent as a starting
+  // point the person doing the cascade can adjust.
+  useEffect(() => {
+    if (parentKpi && !isEdit) {
+      reset({
+        name: parentKpi.name, type: parentKpi.type, unit: parentKpi.unit,
+        programmeId: parentKpi.programmeId,
+        subProgrammeId: user?.role === "subprogramme_head" ? parentKpi.subProgrammeId : "",
+        unitId: "", linkedProgrammeId: "",
+        baseline: parentKpi.baseline, target: Math.max(1, Math.round(parentKpi.target / 3)),
+        reportingFrequency: parentKpi.reportingFrequency, dataSource: parentKpi.dataSource, owner: "",
+      });
+    }
+  }, [parentKpi, isEdit, user, reset]);
 
   function buildMilestones(values: KpiFormValues) {
     const fallback = Math.round(values.target / 4);
@@ -66,13 +94,17 @@ export default function KpiFormPage() {
   async function onSubmit(values: KpiFormValues) {
     try {
       const milestones = buildMilestones(values);
+      const linkedProgrammeId = values.linkedProgrammeId || undefined;
       if (isEdit && id) {
-        await updateKpi.mutateAsync({ id, changes: { ...values, milestones } });
+        await updateKpi.mutateAsync({ id, changes: { ...values, linkedProgrammeId, milestones } });
         toast({ title: "KPI updated", kind: "success" });
         navigate(`/kpis/${id}`);
       } else {
-        const created = await createKpi.mutateAsync({ ...values, actual: values.baseline, milestones });
-        toast({ title: "KPI created", description: "Saved as a draft.", kind: "success" });
+        const created = await createKpi.mutateAsync({
+          ...values, linkedProgrammeId, actual: values.baseline, milestones,
+          parentKpiId: cascadeFromId ?? undefined,
+        });
+        toast({ title: cascadeFromId ? "Target cascaded" : "KPI created", description: "Saved as a draft.", kind: "success" });
         navigate(`/kpis/${created.id}`);
       }
     } catch {
@@ -80,12 +112,24 @@ export default function KpiFormPage() {
     }
   }
 
+  const linkableProgrammes = programmes.filter((p) => p.id !== programmeId);
+
   return (
     <div className="max-w-2xl space-y-5">
       <div>
         <Breadcrumbs items={["Performance", "KPI management", isEdit ? "Edit KPI" : "New KPI"]} />
-        <h1 className="text-lg font-medium text-slate-900 dark:text-slate-100">{isEdit ? "Edit KPI" : "Create KPI"}</h1>
+        <h1 className="text-lg font-medium text-slate-900 dark:text-slate-100">{isEdit ? "Edit KPI" : cascadeFromId ? "Cascade target" : "Create KPI"}</h1>
       </div>
+
+      {parentKpi && !isEdit && (
+        <div className="flex items-start gap-2 rounded-xl border border-indigo-200 bg-indigo-50 p-3.5 dark:border-indigo-900 dark:bg-indigo-950">
+          <GitBranch size={15} className="mt-0.5 shrink-0 text-indigo-600 dark:text-indigo-400" />
+          <p className="text-xs leading-relaxed text-indigo-700 dark:text-indigo-300">
+            Cascading from <span className="font-medium">{parentKpi.name}</span> (target {parentKpi.target}{parentKpi.unit === "%" ? "%" : ""}).
+            The Programme is locked to match; pick which {user?.role === "subprogramme_head" ? "Unit" : "Sub-programme"} this breakdown is for.
+          </p>
+        </div>
+      )}
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
         <FormField label="KPI name" error={errors.name?.message}>
@@ -114,7 +158,7 @@ export default function KpiFormPage() {
         <div className="grid grid-cols-3 gap-3">
           <FormField label="Programme" error={errors.programmeId?.message}>
             <Controller name="programmeId" control={control} render={({ field }) => (
-              <Select value={field.value} onValueChange={(v) => { field.onChange(v); }}>
+              <Select value={field.value} onValueChange={(v) => { field.onChange(v); }} disabled={!!cascadeFromId}>
                 <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
                 <SelectContent>{programmes.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
               </Select>
@@ -122,7 +166,7 @@ export default function KpiFormPage() {
           </FormField>
           <FormField label="Sub-programme" error={errors.subProgrammeId?.message}>
             <Controller name="subProgrammeId" control={control} render={({ field }) => (
-              <Select value={field.value} onValueChange={field.onChange} disabled={!programmeId}>
+              <Select value={field.value} onValueChange={field.onChange} disabled={!programmeId || (!!cascadeFromId && user?.role === "subprogramme_head")}>
                 <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
                 <SelectContent>{subs.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
               </Select>
@@ -137,6 +181,18 @@ export default function KpiFormPage() {
             )} />
           </FormField>
         </div>
+
+        <FormField label="Also linked to (optional)" error={errors.linkedProgrammeId?.message} hint="Only for the small number of KPIs that are genuinely cross-cutting between two Programmes">
+          <Controller name="linkedProgrammeId" control={control} render={({ field }) => (
+            <Select value={field.value ?? ""} onValueChange={field.onChange}>
+              <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">None</SelectItem>
+                {linkableProgrammes.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          )} />
+        </FormField>
 
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Baseline" error={errors.baseline?.message} hint="Prior year actual performance">
@@ -178,7 +234,7 @@ export default function KpiFormPage() {
 
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="outline" onClick={() => navigate(-1)}>Cancel</Button>
-          <Button type="submit" disabled={isSubmitting}>{isSubmitting ? "Saving…" : isEdit ? "Save changes" : "Create KPI"}</Button>
+          <Button type="submit" disabled={isSubmitting}>{isSubmitting ? "Saving…" : isEdit ? "Save changes" : cascadeFromId ? "Create cascaded target" : "Create KPI"}</Button>
         </div>
       </form>
     </div>

@@ -1,15 +1,17 @@
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { Pencil } from "lucide-react";
-import { useKpi } from "@/hooks/useKpis";
-import { useProgramme } from "@/hooks/useProgrammes";
+import { GitBranch, Pencil } from "lucide-react";
+import { useKpi, useKpis } from "@/hooks/useKpis";
+import { useProgramme, useProgrammes } from "@/hooks/useProgrammes";
 import { useSubProgramme } from "@/hooks/useSubProgrammes";
 import { useAuditLog } from "@/hooks/useAudit";
+import { useAuth } from "@/context/AuthContext";
 import { Breadcrumbs } from "@/components/shared/Breadcrumbs";
 import { PageLoading } from "@/components/shared/PageLoading";
 import { RagBadge } from "@/components/shared/RagBadge";
 import { WorkflowBadge } from "@/components/shared/WorkflowBadge";
 import { ErrorState } from "@/components/shared/ErrorState";
 import { Button } from "@/components/ui/Button";
+import { Badge } from "@/components/ui/Badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/Tabs";
 import { TrendChart } from "@/components/charts/TrendChart";
 import { formatValue, formatDate } from "@/utils/format";
@@ -17,19 +19,26 @@ import { formatValue, formatDate } from "@/utils/format";
 export default function KpiDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const { data: kpi, isLoading, isError, refetch } = useKpi(id);
   const { data: programme } = useProgramme(kpi?.programmeId);
   const { data: sub } = useSubProgramme(kpi?.subProgrammeId);
+  const { data: programmes = [] } = useProgrammes();
   const { data: audit = [] } = useAuditLog();
+  const { data: allKpis = [] } = useKpis();
+  const { data: parentKpi } = useKpi(kpi?.parentKpiId);
 
   if (isLoading) return <PageLoading />;
   if (isError || !kpi) return <ErrorState message="KPI not found." onRetry={refetch} />;
 
   const history = audit.filter((a) => a.record.toLowerCase().includes(kpi.name.toLowerCase()));
+  const linkedProgramme = programmes.find((p) => p.id === kpi.linkedProgrammeId);
+  const cascadedChildren = allKpis.filter((k) => k.parentKpiId === kpi.id);
+  const canCascade = user?.role === "programme_head" || user?.role === "subprogramme_head";
 
   return (
     <div className="space-y-5">
-      <div className="flex items-start justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <Breadcrumbs items={["Performance", "KPI management", kpi.name]} />
           <h1 className="text-lg font-medium text-slate-900 dark:text-slate-100">{kpi.name}</h1>
@@ -38,9 +47,45 @@ export default function KpiDetailPage() {
         <div className="flex items-center gap-2">
           <RagBadge status={kpi.status} />
           <WorkflowBadge status={kpi.workflow} />
+          {canCascade && (
+            <Button variant="outline" size="sm" onClick={() => navigate(`/kpis/new?cascadeFrom=${kpi.id}`)}>
+              <GitBranch size={12} /> Cascade target
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={() => navigate(`/kpis/${kpi.id}/edit`)}><Pencil size={12} /> Edit</Button>
         </div>
       </div>
+
+      {linkedProgramme && (
+        <div className="rounded-xl border border-slate-200 bg-white p-3.5 text-xs dark:border-slate-800 dark:bg-slate-900">
+          <span className="font-medium text-slate-700 dark:text-slate-300">Also relevant to: </span>
+          <Badge variant="info">{linkedProgramme.name}</Badge>
+          <span className="ml-1.5 text-slate-400">— a cross-cutting KPI, per the tree-shaped model's secondary tag</span>
+        </div>
+      )}
+
+      {(parentKpi || cascadedChildren.length > 0) && (
+        <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 dark:border-indigo-900 dark:bg-indigo-950">
+          <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-indigo-700 dark:text-indigo-300">
+            <GitBranch size={13} /> Target cascade
+          </p>
+          {parentKpi && (
+            <p className="text-xs text-indigo-600 dark:text-indigo-400">
+              Cascaded from <Link to={`/kpis/${parentKpi.id}`} className="font-medium underline">{parentKpi.name}</Link> (target {parentKpi.target}{parentKpi.unit === "%" ? "%" : ""})
+            </p>
+          )}
+          {cascadedChildren.length > 0 && (
+            <div className="mt-1.5 space-y-1">
+              <p className="text-xs text-indigo-600 dark:text-indigo-400">Cascaded into {cascadedChildren.length} breakdown{cascadedChildren.length > 1 ? "s" : ""}:</p>
+              {cascadedChildren.map((c) => (
+                <Link key={c.id} to={`/kpis/${c.id}`} className="block text-xs font-medium text-indigo-700 underline dark:text-indigo-300">
+                  {c.name} — target {c.target}{c.unit === "%" ? "%" : ""}
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <Tabs defaultValue="overview">
         <TabsList>
@@ -58,20 +103,20 @@ export default function KpiDetailPage() {
             <Metric label="Type" value={kpi.type === "output" ? "Output" : "Outcome"} />
           </div>
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-            <p className="mb-3 text-sm font-medium text-slate-900">Performance trend</p>
+            <p className="mb-3 text-sm font-medium text-slate-900 dark:text-slate-100">Performance trend</p>
             <TrendChart data={kpi.trend} color={kpi.status === "off-track" ? "#e11d48" : kpi.status === "at-risk" ? "#d97706" : "#059669"} />
           </div>
-          <div className="grid grid-cols-2 gap-3 rounded-xl border border-slate-200 bg-white p-5 text-sm sm:grid-cols-3">
-            <div><p className="text-xs text-slate-400">Reporting frequency</p><p className="capitalize text-slate-700">{kpi.reportingFrequency}</p></div>
-            <div><p className="text-xs text-slate-400">Data source</p><p className="text-slate-700">{kpi.dataSource}</p></div>
-            <div><p className="text-xs text-slate-400">Last updated</p><p className="text-slate-700">{formatDate(kpi.lastUpdated)}</p></div>
+          <div className="grid grid-cols-2 gap-3 rounded-xl border border-slate-200 bg-white p-5 text-sm dark:border-slate-800 dark:bg-slate-900 sm:grid-cols-3">
+            <div><p className="text-xs text-slate-400">Reporting frequency</p><p className="capitalize text-slate-700 dark:text-slate-300">{kpi.reportingFrequency}</p></div>
+            <div><p className="text-xs text-slate-400">Data source</p><p className="text-slate-700 dark:text-slate-300">{kpi.dataSource}</p></div>
+            <div><p className="text-xs text-slate-400">Last updated</p><p className="text-slate-700 dark:text-slate-300">{formatDate(kpi.lastUpdated)}</p></div>
           </div>
         </TabsContent>
 
         <TabsContent value="milestones">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {kpi.milestones.map((m) => (
-              <div key={m.quarter} className="rounded-xl border border-slate-200 bg-white p-4 text-center">
+              <div key={m.quarter} className="rounded-xl border border-slate-200 bg-white p-4 text-center dark:border-slate-800 dark:bg-slate-900">
                 <p className="text-xs font-medium text-slate-400">{m.quarter}</p>
                 <p className="mt-1 text-lg font-medium text-slate-900 dark:text-slate-100">{m.actual ?? "—"}</p>
                 <p className="text-xs text-slate-400">of {m.target} target</p>
@@ -88,10 +133,10 @@ export default function KpiDetailPage() {
               {history.map((h) => (
                 <div key={h.id} className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
                   <div className="flex items-center justify-between">
-                    <p className="text-sm font-medium capitalize text-slate-800">{h.action}</p>
+                    <p className="text-sm font-medium capitalize text-slate-800 dark:text-slate-200">{h.action}</p>
                     <span className="text-xs text-slate-400">{h.timestamp}</span>
                   </div>
-                  <p className="mt-1 text-xs text-slate-500">{h.user} ({h.role}){h.previousValue && ` · ${h.previousValue} → ${h.newValue}`}</p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{h.user} ({h.role}){h.previousValue && ` · ${h.previousValue} → ${h.newValue}`}</p>
                   {h.reason && <p className="mt-1 text-xs text-slate-400">{h.reason}</p>}
                 </div>
               ))}
@@ -101,29 +146,29 @@ export default function KpiDetailPage() {
 
         {kpi.override && (
           <TabsContent value="override">
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 dark:border-amber-900 dark:bg-amber-950">
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                <div><p className="text-xs text-amber-700">System value</p><p className="text-base font-medium text-slate-700 line-through decoration-amber-400">{kpi.override.systemValue}</p></div>
-                <div><p className="text-xs text-amber-700">Override value</p><p className="text-base font-medium text-slate-900">{kpi.override.overrideValue}</p></div>
-                <div><p className="text-xs text-amber-700">Overridden by</p><p className="text-sm text-slate-700">{kpi.override.user}</p></div>
-                <div><p className="text-xs text-amber-700">Timestamp</p><p className="text-sm text-slate-700">{formatDate(kpi.override.timestamp)}</p></div>
+                <div><p className="text-xs text-amber-700 dark:text-amber-400">System value</p><p className="text-base font-medium text-slate-700 line-through decoration-amber-400 dark:text-slate-300">{kpi.override.systemValue}</p></div>
+                <div><p className="text-xs text-amber-700 dark:text-amber-400">Override value</p><p className="text-base font-medium text-slate-900 dark:text-slate-100">{kpi.override.overrideValue}</p></div>
+                <div><p className="text-xs text-amber-700 dark:text-amber-400">Overridden by</p><p className="text-sm text-slate-700 dark:text-slate-300">{kpi.override.user}</p></div>
+                <div><p className="text-xs text-amber-700 dark:text-amber-400">Timestamp</p><p className="text-sm text-slate-700 dark:text-slate-300">{formatDate(kpi.override.timestamp)}</p></div>
               </div>
-              <p className="mt-3 text-xs text-slate-600"><span className="font-medium">Reason: </span>{kpi.override.reason}</p>
+              <p className="mt-3 text-xs text-slate-600 dark:text-slate-400"><span className="font-medium">Reason: </span>{kpi.override.reason}</p>
             </div>
           </TabsContent>
         )}
       </Tabs>
 
-      <Link to="/kpis" className="inline-block text-xs font-medium text-indigo-600 hover:underline">← Back to KPI list</Link>
+      <Link to="/kpis" className="inline-block text-xs font-medium text-indigo-600 hover:underline dark:text-indigo-400">← Back to KPI list</Link>
     </div>
   );
 }
 
 function Metric({ label, value, emphasis }: { label: string; value: string; emphasis?: boolean }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4 text-center">
+    <div className="rounded-xl border border-slate-200 bg-white p-4 text-center dark:border-slate-800 dark:bg-slate-900">
       <p className="text-xs text-slate-400">{label}</p>
-      <p className={`mt-1 text-lg ${emphasis ? "font-medium text-slate-900" : "text-slate-700"}`}>{value}</p>
+      <p className={`mt-1 text-lg ${emphasis ? "font-medium text-slate-900 dark:text-slate-100" : "text-slate-700 dark:text-slate-300"}`}>{value}</p>
     </div>
   );
 }

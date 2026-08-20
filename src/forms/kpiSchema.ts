@@ -8,6 +8,9 @@ export const kpiSchema = z
     programmeId: z.string().min(1, "Select a Programme"),
     subProgrammeId: z.string().min(1, "Select a Sub-programme"),
     unitId: z.string().min(1, "Select a Unit"),
+    // Q13: optional secondary Programme tag for the small number of KPIs
+    // that are genuinely cross-cutting, rather than a many-to-many model.
+    linkedProgrammeId: z.string().optional(),
     baseline: z.coerce.number().min(0, "Baseline must be 0 or greater"),
     target: z.coerce.number().min(0, "Target must be 0 or greater"),
     q1Target: z.coerce.number().min(0, "Must be 0 or greater").optional(),
