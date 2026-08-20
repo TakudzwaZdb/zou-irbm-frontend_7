@@ -233,7 +233,6 @@ project most likely to break silently without a test catching it.
 
 ## Reliability & UX improvements
 
-<<<<<<< HEAD
 **Latest pass — self-registration now requires approval, not just an account:**
 
 - **`User.status` gained two real states**: `pending` and `rejected`,
@@ -292,9 +291,6 @@ project most likely to break silently without a test catching it.
   it doubles as the account identifier, not a separate username.
 
 **Earlier pass — Profile & registration for existing accounts:**
-=======
-**Latest pass — Profile & registration:**
->>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
 
 - **A self-service Profile page** (`src/pages/profile/ProfilePage.tsx`, route
   `/profile`), reachable by every role from the "My profile" item in the

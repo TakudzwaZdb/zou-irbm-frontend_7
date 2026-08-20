@@ -20,15 +20,11 @@ export interface User {
   // Directorate, Regional Campus, or Department. Optional because existing
   // seed accounts predate this field; anyone can set it from their Profile.
   stationId?: string;
-<<<<<<< HEAD
   // Self-registered accounts start "pending" and can't log in until CPU/ICT
   // approves them. Accounts an admin creates directly from Users & Roles
   // start "active" immediately — an admin creating the account already is
   // the approval.
   status: "pending" | "active" | "suspended" | "rejected";
   statusReason?: string;
-=======
-  status: "active" | "suspended";
->>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
   lastLogin: string;
 }

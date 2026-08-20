@@ -21,7 +21,6 @@ export function useUpdateUser() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
   });
 }
-<<<<<<< HEAD
 
 export function useApproveUser() {
   const qc = useQueryClient();
@@ -38,5 +37,3 @@ export function useRejectUser() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
   });
 }
-=======
->>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3

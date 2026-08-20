@@ -17,7 +17,6 @@ export const userService = {
 
   // Registration — used both by a self-service Profile page (registering
   // your own account details) and by admins creating accounts for others
-<<<<<<< HEAD
   // from Users & Roles. `status` defaults to "active" (an admin creating
   // the account already is the approval); self-registration explicitly
   // passes "pending" instead.
@@ -26,14 +25,6 @@ export const userService = {
     store = [created, ...store];
     persist();
     auditService.append({ user: createdBy, role: "Administrator", action: "created", module: "User Management", record: `${created.name} (${created.email})`, previousValue: null, newValue: status === "pending" ? "pending approval" : created.role });
-=======
-  // from Users & Roles.
-  create: (payload: Omit<User, "id" | "status" | "lastLogin">, createdBy: string): Promise<User> => {
-    const created: User = { ...payload, id: `u-${Date.now()}`, status: "active", lastLogin: "Never" };
-    store = [created, ...store];
-    persist();
-    auditService.append({ user: createdBy, role: "Administrator", action: "created", module: "User Management", record: `${created.name} (${created.email})`, previousValue: null, newValue: created.role });
->>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
     return latency(created);
   },
 
@@ -44,7 +35,6 @@ export const userService = {
     if (before) auditService.append({ user: updatedBy, role: "Account holder", action: "edited", module: "User Profile", record: `${before.name} (${before.email})`, previousValue: before.role, newValue: changes.role ?? before.role });
     return latency(store.find((u) => u.id === id)!);
   },
-<<<<<<< HEAD
 
   approve: (id: string, approvedBy: string): Promise<User> => {
     const before = store.find((u) => u.id === id);
@@ -61,6 +51,4 @@ export const userService = {
     if (before) auditService.append({ user: rejectedBy, role: "Administrator", action: "rejected", module: "User Management", record: `${before.name} (${before.email})`, previousValue: "pending", newValue: "rejected", reason });
     return latency(store.find((u) => u.id === id)!);
   },
-=======
->>>>>>> 7766e67ea15f7e1d0e6c85da5d24ea3d8fc97fe3
 };
