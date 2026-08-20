@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { X, ChevronsLeft, ChevronsRight, LogOut } from "lucide-react";
 import { NAV } from "@/config/nav";
@@ -8,16 +8,58 @@ import { initials } from "@/utils/format";
 import zouLogo from "@/assets/zou-logo.png";
 
 const COLLAPSE_KEY = "zou_irbm_sidebar_collapsed";
+const WIDTH_KEY = "zou_irbm_sidebar_width";
+const MIN_WIDTH = 208;
+const MAX_WIDTH = 360;
+const DEFAULT_WIDTH = 256;
 
 export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const role = user?.role;
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSE_KEY) === "1");
+  const [width, setWidth] = useState(() => {
+    const stored = Number(localStorage.getItem(WIDTH_KEY));
+    return stored >= MIN_WIDTH && stored <= MAX_WIDTH ? stored : DEFAULT_WIDTH;
+  });
+  const [dragging, setDragging] = useState(false);
+  const asideRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
+
+  useEffect(() => {
+    localStorage.setItem(WIDTH_KEY, String(width));
+  }, [width]);
+
+  // The sidebar resizes itself entirely from its own drag state — it never
+  // reads or writes anything about the main content area's layout. The main
+  // content column is a plain `flex-1 min-w-0` in AppLayout, so it reflows
+  // on its own the instant the sidebar's width (or the drawer's open/closed
+  // state on mobile) changes, with no coordination between the two needed.
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    if (collapsed) return;
+    e.preventDefault();
+    setDragging(true);
+    const startX = e.clientX;
+    const startWidth = asideRef.current?.getBoundingClientRect().width ?? width;
+    document.body.classList.add("select-none");
+
+    function handleMove(ev: PointerEvent) {
+      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth + (ev.clientX - startX)));
+      setWidth(next);
+    }
+    function handleUp() {
+      setDragging(false);
+      document.body.classList.remove("select-none");
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+    }
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collapsed, width]);
 
   async function handleLogout() {
     await logout();
@@ -28,9 +70,11 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
     <>
       {open && <div className="fixed inset-0 z-30 bg-slate-900/40 lg:hidden" onClick={onClose} />}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 transform flex-col bg-indigo-950 transition-all duration-200 lg:static lg:translate-x-0 ${
-          open ? "translate-x-0" : "-translate-x-full"
-        } ${collapsed ? "lg:w-20" : ""}`}
+        ref={asideRef}
+        style={collapsed ? undefined : { width: `${width}px` }}
+        className={`fixed inset-y-0 left-0 z-40 flex h-dvh w-64 shrink-0 transform flex-col overflow-hidden bg-indigo-950 lg:static lg:translate-x-0 ${
+          collapsed ? "lg:w-20" : ""
+        } ${dragging ? "" : "transition-[width,transform] duration-200"} ${open ? "translate-x-0" : "-translate-x-full"}`}
       >
         <div className="flex items-center justify-between gap-2 p-4 pb-2">
           {collapsed ? (
@@ -47,8 +91,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
 
         {!collapsed && (
           <div className="px-5 pb-3">
-            <p className="text-sm font-bold leading-tight text-white">ZOU IRBM</p>
-            <p className="text-[10px] font-semibold uppercase tracking-wide leading-tight text-indigo-400">Performance dashboard</p>
+            <p className="text-base font-extrabold leading-tight tracking-tight text-white">ZOU IRBM</p>
+            <p className="text-[11px] font-semibold uppercase tracking-wider leading-tight text-indigo-300">Performance dashboard</p>
           </div>
         )}
 
@@ -64,23 +108,37 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           {NAV.map((section) => {
             const visibleItems = section.items.filter((item) => !role || item.roles.includes(role));
             if (visibleItems.length === 0) return null;
+            const isWorkflow = section.workflow;
             return (
-              <div key={section.group}>
-                {!collapsed && <p className="mb-1.5 px-2 text-[10px] font-bold uppercase tracking-wide text-indigo-400">{section.group}</p>}
-                <div className="space-y-0.5">
-                  {visibleItems.map((item) => (
+              <div
+                key={section.group}
+                className={isWorkflow && !collapsed ? "rounded-xl border border-indigo-800/60 bg-indigo-900/40 p-2.5" : undefined}
+              >
+                {!collapsed && (
+                  <p className={`mb-2 px-2 text-xs font-bold uppercase tracking-wider ${isWorkflow ? "text-indigo-200" : "text-indigo-400"}`}>
+                    {section.group}
+                  </p>
+                )}
+                <div className="space-y-1">
+                  {visibleItems.map((item, i) => (
                     <NavLink
                       key={item.to}
                       to={item.to}
                       onClick={onClose}
                       title={collapsed ? item.label : undefined}
                       className={({ isActive }) =>
-                        `flex items-center gap-2.5 rounded-lg border-l-[3px] px-2.5 py-2 text-xs font-bold transition-colors ${
-                          isActive ? "border-indigo-400 bg-indigo-800 text-white" : "border-transparent text-indigo-200 hover:bg-indigo-900 hover:text-white"
+                        `flex items-center gap-3 rounded-lg border-l-[3px] px-3 py-2.5 text-sm font-bold tracking-tight transition-all ${
+                          isActive
+                            ? "border-indigo-400 bg-indigo-800 text-white shadow-sm"
+                            : "border-transparent text-indigo-100 hover:border-indigo-600 hover:bg-indigo-900 hover:text-white"
                         } ${collapsed ? "justify-center" : ""}`
                       }
                     >
-                      <item.icon size={15} className="shrink-0" />
+                      {isWorkflow && !collapsed ? (
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-[11px] font-extrabold text-white">{i + 1}</span>
+                      ) : (
+                        <item.icon size={17} className="shrink-0" />
+                      )}
                       {!collapsed && <span className="truncate">{item.label}</span>}
                     </NavLink>
                   ))}
@@ -98,14 +156,32 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               </div>
               {!collapsed && (
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs font-medium text-white">{user.name}</p>
-                  <p className="truncate text-[10px] text-indigo-400">{ROLE_LABEL[user.role]}</p>
+                  <p className="truncate text-sm font-bold text-white">{user.name}</p>
+                  <p className="truncate text-xs text-indigo-300">{ROLE_LABEL[user.role]}</p>
                 </div>
               )}
               <button onClick={handleLogout} title="Sign out" aria-label="Sign out" className="shrink-0 text-indigo-400 hover:text-white">
                 <LogOut size={14} />
               </button>
             </div>
+          </div>
+        )}
+
+        {/* Drag handle — lets someone manually widen ("outwards") or narrow
+            ("inwards") the sidebar, independent of any page it's showing.
+            Desktop only; hidden on mobile where the sidebar is a fixed-width
+            overlay drawer instead. Double-click resets to the default width. */}
+        {!collapsed && (
+          <div
+            onPointerDown={handlePointerDown}
+            onDoubleClick={() => setWidth(DEFAULT_WIDTH)}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sidebar"
+            title="Drag to resize · double-click to reset"
+            className="absolute inset-y-0 -right-1 hidden w-2 cursor-col-resize lg:block"
+          >
+            <div className={`mx-auto h-full w-px transition-colors ${dragging ? "bg-indigo-400" : "bg-transparent hover:bg-indigo-700"}`} />
           </div>
         )}
       </aside>

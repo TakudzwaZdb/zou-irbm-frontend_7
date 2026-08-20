@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { overrideSchema, type OverrideFormValues } from "@/forms/overrideSchema";
@@ -63,11 +63,13 @@ function RagThresholdsPanel() {
   const [atRisk, setAtRisk] = useState(60);
   const [hydrated, setHydrated] = useState(false);
 
-  if (thresholds && !hydrated) {
-    setOnTrack(thresholds.onTrack);
-    setAtRisk(thresholds.atRisk);
-    setHydrated(true);
-  }
+  useEffect(() => {
+    if (thresholds && !hydrated) {
+      setOnTrack(thresholds.onTrack);
+      setAtRisk(thresholds.atRisk);
+      setHydrated(true);
+    }
+  }, [thresholds, hydrated]);
 
   async function handleSave() {
     if (atRisk >= onTrack) {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { loginSchema, type LoginFormValues } from "@/forms/loginSchema";
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { FormField } from "@/components/ui/FormField";
 import { ROLE_LABEL } from "@/config/roleLabels";
+import { DEFAULT_ROUTE } from "@/config/nav";
 import type { Role } from "@/types/user";
 import { useToast } from "@/components/ui/Toast";
 
@@ -26,17 +27,17 @@ export default function LoginPage() {
   async function onSubmit(values: LoginFormValues) {
     setServerError(null);
     try {
-      await login(values.email, values.password);
-      navigate("/dashboard");
+      const user = await login(values.email, values.password);
+      navigate(DEFAULT_ROUTE[user.role]);
     } catch (e) {
       setServerError(e instanceof Error ? e.message : "Login failed.");
     }
   }
 
   async function quickLogin(role: Role) {
-    await loginAsRole(role);
+    const user = await loginAsRole(role);
     toast({ title: "Signed in", description: `Viewing as ${ROLE_LABEL[role]}`, kind: "success" });
-    navigate("/dashboard");
+    navigate(DEFAULT_ROUTE[user.role]);
   }
 
   return (
@@ -44,21 +45,26 @@ export default function LoginPage() {
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
         <div>
           <h1 className="text-sm font-medium text-slate-900 dark:text-slate-100">Sign in</h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400">Use your ZOU credentials to access the dashboard.</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Sign in with your work email and password.</p>
         </div>
 
-        <FormField label="Email" error={errors.email?.message}>
+        <FormField label="Work email" error={errors.email?.message}>
           <Input type="email" placeholder="you@zou.ac.zw" {...register("email")} error={!!errors.email} />
         </FormField>
-        <FormField label="Password" error={errors.password?.message} hint="Demo password: zou-demo-2026">
+        <FormField label="Password" error={errors.password?.message} hint="Demo accounts use zou-demo-2026 · your own registered password otherwise">
           <Input type="password" placeholder="••••••••" {...register("password")} error={!!errors.password} />
         </FormField>
 
-        {serverError && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600">{serverError}</p>}
+        {serverError && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600 dark:bg-rose-950 dark:text-rose-300">{serverError}</p>}
 
         <Button type="submit" disabled={isSubmitting} className="w-full justify-center">
           {isSubmitting ? "Signing in…" : "Sign in"}
         </Button>
+
+        <p className="text-center text-xs text-slate-500 dark:text-slate-400">
+          Not in the system yet?{" "}
+          <Link to="/register" className="font-medium text-indigo-600 hover:underline dark:text-indigo-400">Create your profile</Link>
+        </p>
 
         <div className="relative py-1 text-center">
           <span className="bg-white px-2 text-[10px] uppercase tracking-wide text-slate-400 dark:bg-slate-900 dark:text-slate-500">Or preview as a role</span>

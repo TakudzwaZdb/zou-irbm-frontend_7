@@ -10,12 +10,12 @@ export function DialogContent({ className, children, title, ...props }: React.Co
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-slate-900/40 data-[state=open]:animate-in data-[state=open]:fade-in" />
       <DialogPrimitive.Content
-        className={cn("fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl bg-white shadow-xl", className)}
+        className={cn("fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl bg-white shadow-xl dark:bg-slate-900", className)}
         {...props}
       >
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
-          <DialogPrimitive.Title className="text-sm font-medium text-slate-900">{title}</DialogPrimitive.Title>
-          <DialogPrimitive.Close className="text-slate-400 hover:text-slate-600" aria-label="Close">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-800">
+          <DialogPrimitive.Title className="text-sm font-medium text-slate-900 dark:text-slate-100">{title}</DialogPrimitive.Title>
+          <DialogPrimitive.Close className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" aria-label="Close">
             <X size={16} />
           </DialogPrimitive.Close>
         </div>

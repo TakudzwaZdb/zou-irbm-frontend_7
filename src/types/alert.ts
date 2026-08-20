@@ -9,7 +9,7 @@ export interface Alert {
   type: AlertType;
   level: AlertLevel;
   message: string;
-  escalationStep: "Unit Head" | "Sub-programme Head" | "Programme Head" | "Vice-Chancellor";
+  escalationStep: "Unit Head" | "Sub-programme Head" | "Programme Head" | "Vice-Chancellor" | "Corporate Planning Unit";
   emailSent: boolean;
   createdAt: string;
   acknowledged: boolean;

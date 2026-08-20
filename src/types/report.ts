@@ -10,4 +10,8 @@ export interface ReportItem {
   period: string;
   generatedAt: string;
   format: "PDF" | "XLSX";
+  // Present only for reports this app can actually generate from live data
+  // (appraisal reports). Seed reports representing a future backend's
+  // output (KPI/Programme/Compliance PDFs) have no content behind them yet.
+  content?: string;
 }

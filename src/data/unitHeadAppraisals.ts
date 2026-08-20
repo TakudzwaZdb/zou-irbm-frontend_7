@@ -1,5 +1,6 @@
 import type { UnitHeadAppraisal } from "@/types/appraisal";
 import { orgUnits } from "./organisation";
+import { unitHeadIdFor } from "@/utils/unitHeadId";
 
 const weeks = ["2026-07-20", "2026-07-27", "2026-08-03", "2026-08-10"];
 
@@ -22,7 +23,7 @@ export const unitHeadAppraisals: UnitHeadAppraisal[] = seeds.map((s) => {
   const unit = orgUnits.find((u) => u.id === s.unitId);
   return {
     id: `uha${counter}`,
-    unitHeadId: `head-${s.unitId}`,
+    unitHeadId: unitHeadIdFor(s.unitId),
     unitHeadName: s.head,
     unitId: s.unitId,
     unitName: unit?.name ?? "Unknown unit",

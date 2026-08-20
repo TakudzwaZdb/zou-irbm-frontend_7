@@ -149,6 +149,10 @@ that isn't theirs. The Executive Dashboard, for example, is restricted to
 Vice-Chancellor and CPU only — everyone else who tries the URL directly is
 redirected to their relevant page instead.
 
+Not in the system yet? `/register` ("Create your profile," linked from the
+login screen) lets anyone sign up with their own work email, password, role,
+and station — see the "Self-registration" section below.
+
 ## Staff Reporting & Appraisal Procedure
 
 A second workflow layered onto the existing KPI/RAG system, following ZOU's
@@ -161,16 +165,34 @@ Staff Reporting and Appraisal Procedure:
   performance report; Administration evaluates it (also 0–100%) and the
   evaluation auto-forwards to the CPU in the same action
   (`UnitHeadPerformancePage.tsx` + `AdministrationEvaluationPage.tsx`)
-- **Operational Plans**: two protocols depending on the submitting unit's
-  type. Faculty Deans and Regional Campus Directors submit directly to the
-  Vice-Chancellor (Unit Head → VC → Governance → CPU); every other Unit Head
-  goes through the standard chain (Unit Head → Programme Head → VC →
-  Governance → CPU). `src/services/operationalPlanService.ts` exports
-  `getPlanChain(unitId)`, which picks the right chain from the unit's `type`
-  — the page renders whichever chain applies per plan rather than one fixed
-  sequence. A copy is archived automatically the moment a plan is submitted,
-  not at the end of the chain, and Governance's approval automatically
-  forwards the plan to CPU (`OperationalPlansPage.tsx`)
+- **Operational Plans**: one uniform protocol for every Unit, Department,
+  Faculty, and Regional Campus — Unit Head submits to their Programme Head
+  for approval → Programme Head approves and forwards to the
+  Vice-Chancellor → VC approves and forwards to CPU → CPU gives final
+  evaluation, monitoring, approval and validation against budget and
+  feasibility (`OperationalPlansPage.tsx`, `operationalPlanService.ts`). CPU's
+  validation requires both a budget assessment and a feasibility assessment
+  before a plan is marked `validated`. Every plan is submitted as an
+  attached document (required), and every stage — submission, Programme Head
+  review, VC review, rejection at any stage, and CPU validation — is
+  independently timestamped. A copy is archived the moment a plan is
+  submitted, independent of how far it's progressed through approval.
+- **Required document attachments**: staff weekly reports, Unit Head
+  performance reports, and operational plans all require an uploaded
+  document at submission (`src/components/shared/FileAttachmentField.tsx`).
+  The actual `File` object is kept on the record (not just a filename), so
+  reviewers can download the original document, not just a filename label.
+- **Downloads with timestamps**: every report, evaluation, and operational
+  plan can be downloaded as a plain-text summary that includes every
+  timestamp on the record — submission, review/approval, rejection, and
+  validation (`src/utils/downloadText.ts`: `buildStaffReportText`,
+  `buildUnitHeadReportText`, `buildOperationalPlanText`). Where an original
+  document was uploaded, it can be downloaded separately alongside the
+  summary. All client-side, no backend needed.
+- **Feedback**: a Unit Head can send free-text feedback to a staff member at
+  any time, independent of scoring — visible on the sender's own history
+  view with a timestamp, and included in their downloadable summary
+  (`staffAppraisalService.sendFeedback`).
 - **CPU Dashboard** (`src/pages/cpu/CpuDashboardPage.tsx`): the automated
   analytics engine. `src/utils/quarterlyAnalytics.ts` is a pure function that
   buckets every scored weekly appraisal into its calendar quarter and
@@ -198,10 +220,255 @@ Build for production:
     npm run build
     npm run preview
 
-The build was verified in a sandbox: `npx tsc --noEmit` passes with zero
-errors, and `npm run build` produces a clean `dist/` bundle.
+Run the test suite:
+
+    npm test
+
+The build was verified in a sandbox: `npx tsc -b` (the same check `npm run
+build` runs) passes with zero errors, `npm run build` produces a clean
+`dist/` bundle, and `npm test` passes 27 tests covering the RAG threshold
+logic, the quarterly analytics engine, and the AI assistant's intent
+detection and role-access mapping — the three pieces of pure logic in this
+project most likely to break silently without a test catching it.
 
 ## Reliability & UX improvements
+
+**Latest pass — self-registration now requires approval, not just an account:**
+
+- **`User.status` gained two real states**: `pending` and `rejected`,
+  alongside the existing `active`/`suspended`. Self-registration via
+  `/register` now creates a `pending` account — it cannot log in
+  (`authService.login()` explicitly checks for and blocks `pending` and
+  `rejected` accounts with a clear message) until CPU/ICT approves it.
+  Accounts an admin creates directly from Users & Roles start `active`
+  immediately, since an admin creating the account already is the approval
+  — `userService.create()` takes an explicit `status` parameter so the two
+  paths (self-registration vs. admin registration) aren't secretly sharing
+  behavior that should differ.
+- **Users & Roles has a real approval queue** — a "Pending approval"
+  section above the main table lists every self-registered account
+  awaiting a decision, with Approve (one click, immediately active) and
+  Reject (requires a reason, same inline-reason pattern used for
+  operational plan rejections elsewhere in the app) actions. Every
+  decision writes to the Audit Trail.
+- **Registering no longer signs you in.** That was the whole point of
+  adding the gate — `AuthContext.register()` used to auto-establish a
+  session immediately; now it just creates the pending account, and
+  `RegisterPage` shows a clear "submitted for approval" confirmation
+  screen instead of navigating away as if access was already granted.
+- **A new registration generates a real alert** to the Corporate Planning
+  Unit (`alertService.append(...)`, type `pending_approval`) — which
+  required extending `Alert.escalationStep` to actually include "Corporate
+  Planning Unit" as a valid target, since the existing union only had the
+  KPI-escalation-chain roles (Unit Head/Sub-programme Head/Programme
+  Head/VC), none of whom are who approves account registrations.
+
+**Earlier pass — self-registration, and a real per-account password system:**
+
+- **"Create your profile" on the login screen** (`/register`, `RegisterPage.tsx`)
+  — for someone not yet in the system. They set their work email, a
+  password, full name, role, and station, and are signed straight in on
+  success — no separate "now go log in" step, since they just proved they
+  know the password they chose. Shares one Zod schema
+  (`src/forms/registerSchema.ts`, extending `profileSchema`) with the
+  existing self-service Profile page and the admin "Register user" dialog,
+  so all three ways of getting someone's details into the system validate
+  the same way.
+- **Fixed a real bug this surfaced**: `authService.login()` was checking
+  every account against one hardcoded shared password, and — more
+  seriously — was checking against the *static seed data*, not the live
+  persisted user store. A newly registered account wouldn't have been
+  found at login at all. Both are fixed: there's now a per-account
+  password map (seed accounts still default to `zou-demo-2026` until
+  someone sets their own by registering), and every lookup goes through
+  the live `userService` store.
+- **Login now navigates straight to each role's own landing page** instead
+  of always going to `/dashboard` and relying on `RoleGuard` to redirect
+  from there. `login()`/`loginAsRole()`/`register()` in `AuthContext` now
+  return the signed-in `User`, so the page component knows the role
+  immediately rather than waiting for a re-render to read it back out.
+- Login screen copy updated — "Email" is now "Work email," matching that
+  it doubles as the account identifier, not a separate username.
+
+**Earlier pass — Profile & registration for existing accounts:**
+
+- **A self-service Profile page** (`src/pages/profile/ProfilePage.tsx`, route
+  `/profile`), reachable by every role from the "My profile" item in the
+  header's account menu — no `RoleGuard` restriction, unlike almost every
+  other route in the app. Lets anyone view and edit their own full name,
+  email, role, and **station** — a Regional Campus, Department, Directorate,
+  or Faculty, selected from the real `orgUnits` list rather than free text.
+- **A real "Register user" flow on Users & Roles**, replacing what used to
+  be a decorative button with no handler. Admins (CPU/ICT) fill the same
+  four fields — full name, email, role (all ten), station — in a dialog,
+  and the account is created immediately and shows up in the table.
+- **Both forms share one Zod schema** (`src/forms/profileSchema.ts`), so
+  "editing your own profile" and "an admin registering someone else" are the
+  same validated shape, not two different implementations that could drift.
+- **Editing your own profile updates the live session immediately** — no
+  logout/login needed to see your new name or role reflected in the header
+  and sidebar. `AuthContext` gained `updateCurrentUser()` specifically for
+  this, keeping the in-memory session and `localStorage` in sync with
+  whatever was just saved to the user record.
+- `userService` is now mutable and persisted (`create`/`update`, both
+  writing to the Audit Trail), matching every other service in the app
+  instead of being the one remaining read-only stub.
+
+**Earlier pass — the sidebar and page content now scroll independently:**
+
+- **Fixed the actual bug, not just the symptom.** On desktop, the sidebar
+  used `lg:static` so it could participate in the page's flex layout
+  (needed for the resize/collapse work). But the outer shell only had
+  `min-h-screen` — a *minimum* height, not a locked one — so once page
+  content grew taller than the viewport, the whole shell grew with it, and
+  the sidebar (now a normal flex item, no longer pinned) grew and scrolled
+  right along with the page instead of staying put.
+- **The fix**: `AppLayout.tsx`'s shell is now locked to `h-dvh overflow-hidden`
+  — an exact viewport height that never grows — with exactly two places
+  allowed to scroll inside it: the sidebar's `<nav>` (`flex-1 overflow-y-auto`,
+  itself confined by the sidebar's own `h-dvh overflow-hidden`), and the page
+  content in `<main>` (`flex-1 overflow-y-auto`). The `<html>`/`<body>` and
+  every wrapping div in between never scroll — there is no single "page
+  scroll" left to have.
+- **Sidebar text enlarged and restyled** — nav item labels moved from 12px to
+  14px, group headers from 10px to 12px with wider letter-spacing, the "ZOU
+  IRBM" title to 16px extra-bold, icons from 15px to 17px, and the numbered
+  workflow badges are visibly bigger (20px, up from 16px). Active items now
+  also get a subtle shadow alongside the existing accent bar and background
+  highlight, and hover states got a matching left-border cue instead of just
+  a background change.
+
+**Earlier pass — sidebar and page content now resize independently:**
+
+- **The sidebar has a real drag-to-resize handle** (desktop only, on its
+  right edge) — drag it inward to narrow the sidebar, outward to widen it
+  (208–360px range), independent of whatever page is showing. Double-click
+  the handle to reset to the default width. The chosen width persists per
+  browser, same as the existing collapse-to-icons toggle, which still works
+  alongside it.
+- **The two are architecturally independent, not just visually.** The
+  sidebar's width lives entirely in its own component state
+  (`src/components/layout/Sidebar.tsx`) and is never read by the main
+  content area. The main content column in `AppLayout.tsx` is a plain
+  `flex-1 min-w-0` — it reflows to fill whatever space is left the instant
+  the sidebar's width changes, via ordinary CSS flexbox, with no
+  coordination or shared state between the two. Resizing, collapsing, or
+  opening/closing the mobile drawer never triggers any layout logic in the
+  page being viewed.
+- Fixed a mobile-specific edge case introduced while building this: since
+  the collapse toggle button is desktop-only, the collapsed flag no longer
+  leaks onto the mobile drawer — a sidebar collapsed on desktop still opens
+  at full width on mobile, where there's no way to un-collapse it.
+
+**Earlier pass — real report generation and a real test suite:**
+
+- **Appraisal reports generated from the CPU Dashboard now have real content.**
+  Previously "Generate report" only added a list entry with nothing behind
+  it — clicking Export always returned a placeholder URL, regardless of
+  which report you picked. Now `reportService.generateAppraisalReport()`
+  builds an actual text summary from the quarterly analytics engine
+  (subject, unit, average score, weeks scored per person), stores it on the
+  report, and Export/Download on the Reports page triggers a real file
+  download for it. Seed reports standing in for a future backend-rendered
+  PDF/XLSX are now labeled clearly as having no generated content, instead
+  of silently behaving the same as a real report.
+- **A real test suite** — `npm test` runs 27 Vitest tests across the three
+  pieces of pure logic most likely to break silently: `ragStatus.ts` (RAG
+  threshold boundaries, division-by-zero safety), `quarterlyAnalytics.ts`
+  (quarter bucketing, averaging, tier separation, unscored-week exclusion),
+  and `aiService.ts` (intent-detection regex matching, and that every role
+  has a non-empty, correctly-restricted data-access list). See `npm test`
+  in the run instructions above.
+
+**Earlier pass — the performance-submission workflow is now actually real:**
+
+- **Approving a performance submission now updates the KPI.** This was the
+  most significant gap in the app: `performanceService.decide()` marked a
+  submission "approved" but never wrote the new actual value onto the KPI
+  record, so the Executive Dashboard, Analytics, and RAG status all stayed
+  frozen regardless of what got approved. Now approval writes the new
+  `actual` and appends to `trend`, and — because `kpiService` already
+  recomputes status live from the configured thresholds — the KPI's RAG
+  status updates immediately, everywhere it's shown.
+- **Submission lateness is now a real calculation, not a hardcoded `false`.**
+  A submission made after the 5th of the month is genuinely marked late
+  (`DUE_DAY` in `performanceService.ts`), matching the due-day shown in
+  Settings → Reporting cadence.
+- **Submission Compliance reflects real activity.** Every performance
+  submission now upserts a `ComplianceRecord` for its Sub-programme and
+  month (`complianceService.recordSubmission()`), instead of that page only
+  ever showing its original seed data regardless of what gets submitted.
+- **Two new alert triggers**: a late submission generates a warning alert,
+  and a KPI that ends up off-track after an approved submission generates a
+  critical one — both tied to the same code path as the fix above, so
+  Alerts coverage grew alongside the workflow it's meant to monitor.
+- **Centralized the `unitHeadId` convention.** The `head-${unitId}` string
+  pattern was duplicated across five call sites in four files; it's now a
+  single `unitHeadIdFor()` helper in `src/utils/unitHeadId.ts`, so the
+  convention only needs to change in one place if it ever does.
+
+**Earlier pass — audit correctness, AI scoping, and workflow parity:**
+
+- **Unit Head performance reports now have a reject/return path** — previously
+  Administration and Programme Head could only evaluate-and-forward, with no
+  way to send a report back for correction (staff appraisals already had
+  this). `unitHeadAppraisalService.returnForCorrection()` and the shared
+  `UnitHeadEvaluateRow` component now support it, and the returned reason is
+  visible on the Unit Head's own submission history.
+- **The AI Assistant now scopes answers to what each role actually sees on
+  the real pages, not just which domains they can query.** A Programme Head
+  asking about operational plans or KPIs now gets counts limited to their
+  own Programme; a Unit Head asking about staff appraisals gets counts
+  limited to reports sent to them; Administration/Programme Head get counts
+  limited to reports addressed to them — matching the filtering already
+  enforced on the Operational Plans page and the evaluation queues.
+- **Logins are now recorded in the Audit Trail** — every `login()` /
+  `loginAsRole()` call appends a "logged in" entry, closing the one gap
+  where the trail was live everywhere except authentication events.
+- **Fixed an unsafe render-body `setState`** in `RagThresholdsPanel` — the
+  threshold values were being hydrated from a query result directly inside
+  the render function instead of a `useEffect`, which works but isn't a
+  safe React pattern. Moved to `useEffect`.
+- **"Clear conversation" in the AI Assistant now confirms first** — using
+  the app's existing `ConfirmDialog` component, which (worth noting) had
+  been built earlier but never actually used anywhere until now. Also
+  brought `Dialog`/`ConfirmDialog` up to dark-mode parity with the rest of
+  the app while wiring it in.
+
+**Earlier pass — persistence, live audit/alerts, and workflow completeness:**
+
+- **Everything persists across a refresh now** — KPIs, staff/Unit Head
+  appraisals, operational plans, performance submissions, alerts, and the
+  audit trail all survive a reload via `src/utils/persistedStore.ts`
+  (`localStorage`-backed). One real limitation: uploaded `File` objects
+  aren't JSON-serializable, so attachment metadata (name, upload date)
+  persists but the original file bytes don't — "Download document" is only
+  available for attachments uploaded in the current session. A real backend
+  removes this limitation entirely.
+- **The Audit Trail is live**, not frozen seed data — appraising, returning,
+  evaluating, approving, rejecting, validating, and overriding all append a
+  real timestamped entry now (`auditService.append()`, called from every
+  mutating service function).
+- **Alerts generate from real activity** — rejecting an operational plan now
+  creates a critical alert automatically (`alertService.append()`), instead
+  of the Alerts page only ever reflecting its seed data.
+- **"Return for correction" sends a real reason** — the Unit Head types
+  their own note in a textarea before returning a staff report; it used to
+  send a hardcoded placeholder string regardless of what was typed.
+- **Rejected operational plans can be resubmitted** — `operationalPlanService.resubmit()`
+  restarts the chain at Programme Head, keeping the rejection in the audit
+  trail rather than just leaving the plan dead-ended.
+- **File attachments are validated** — type-restricted (PDF/Word/images) and
+  capped at 10 MB with inline errors, instead of silently accepting anything.
+- **Operational Plans page has status/programme filters** on its main list,
+  matching every other list page in the app.
+- **CPU Dashboard shows the operational-plans pipeline** (counts by stage),
+  not just appraisal analytics.
+- **AI Assistant persists its conversation per-user** and has a real error
+  state instead of hanging silently if a query fails.
+- **Sidebar redesign** — regrouped into a real hierarchy: Overview → **Your
+  workflow** (the signed-in role's own action items, numbered and visually
+  highlighted) → Organisation → Performance & reporting → Administration.
 
 Beyond the core IRBM and appraisal features, the following were added to close
 gaps between what the UI implies works and what actually does:
@@ -233,6 +500,40 @@ gaps between what the UI implies works and what actually does:
   the existing action-type filter.
 - **`.env.example`** for `VITE_API_BASE_URL`.
 
+## AI Assistant
+
+`src/pages/assistant/AiAssistantPage.tsx` — a role-scoped natural-language
+query interface, available to every role from the sidebar.
+
+**This is a mock, not a real LLM integration** — and deliberately so. A
+browser cannot safely hold an LLM API key, so `src/services/aiService.ts`
+demonstrates the *architecture* (detect what the question is about, check
+whether the caller's role is allowed to see that data, assemble an answer
+from only the permitted domains) using simple keyword matching against the
+existing mock services instead of an actual model call.
+
+`ROLE_DATA_ACCESS` in `aiService.ts` defines which data domains (KPIs,
+Programmes, operational plans, compliance, audit, alerts, staff/Unit Head
+appraisals, users) each role may query — mirroring the route-level access
+rules already enforced in `src/config/nav.ts` and `src/routes/RoleGuard.tsx`.
+
+**To connect a real LLM:**
+
+1. Replace the body of `aiService.ask()` with a single
+   `apiClient.post('/ai/query', { query })` call. Every page that uses the
+   assistant (`AiAssistantPage.tsx`, via `useAskAssistant()`) keeps working
+   unchanged — only this one function's implementation changes.
+2. On the backend, derive the caller's role from their authenticated
+   session — **never trust a role sent from the client**. The current
+   frontend passes `user` into `ask()` for the mock's convenience, but a
+   real backend must re-derive permissions server-side, not accept them as
+   input.
+3. Assemble only the data that role is allowed to see (same domain list as
+   `ROLE_DATA_ACCESS`, enforced server-side this time) into the LLM's
+   context, then send the question + that scoped context to the model.
+4. Return the answer. The `{ answer, domains, denied }` response shape is
+   already what the UI expects.
+
 ## 6. Remaining backend/API integration points
 
 Every page calls a hook in `src/hooks/`, which calls a function in
@@ -263,5 +564,3 @@ simulated network delay. To connect the real Laravel API:
 
 No routing, layout, or page component needs to change for any of the above —
 that's the seam this architecture was built around.
-#   z o u - i r b m - f r o n t e n d _ 7  
- 

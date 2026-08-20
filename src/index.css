@@ -1,2 +1,15 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
+
+/* Readability pass: slightly larger base size and more generous line-height
+   scales every rem-based Tailwind text utility app-wide, without needing to
+   touch each component individually. */
+@layer base {
+  html {
+    font-size: 106.25%; /* ~17px base instead of 16px */
+  }
+  body {
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+}
