@@ -1,267 +1,859 @@
-# ZOU IRBM Performance Dashboard — Frontend
+# ZOU Strategic Plan Monitor — Full-Stack Reference Application
 
-A complete, production-structured frontend for the Zimbabwe Open University
-Integrated Results-Based Management (IRBM) Performance Dashboard. Built strictly
-against the ZOU IRBM Discovery Questionnaire. Backend-free by design — every
-page reads through an Axios-shaped service layer, so connecting the real
-Laravel/REST API later is a drop-in change, not a rewrite.
+A real, working full-stack implementation of the ZOU IRBM strategic-plan
+monitoring system: a genuine Node.js/Express + SQLite backend with bcrypt
+password hashing, JWT session authentication, and server-enforced
+role-based access control, plus a browser frontend that consumes it over a
+real HTTP API. This replaces the earlier single-file HTML prototype's
+simulated login and in-memory JavaScript state with an actual backend that
+persists data, validates every request, and cannot be bypassed by editing
+the page in the browser. The frontend itself is a proper React + Tailwind
+CSS single-page app (built with Vite) rather than hand-rolled HTML/CSS/JS,
+while still talking to the same real backend over the same REST API.
 
-## 1. Final project structure
+## What's real here
 
-    src/
-      api/
-        client.ts            Axios instance, base URL + bearer token interceptor
-      services/               One file per domain, Axios-shaped async functions
-        authService.ts programmeService.ts subProgrammeService.ts unitService.ts
-        kpiService.ts performanceService.ts alertService.ts complianceService.ts
-        reportService.ts userService.ts auditService.ts strategicPlanService.ts
-      hooks/                  TanStack Query wrappers around every service
-        useProgrammes.ts useSubProgrammes.ts useUnits.ts useKpis.ts
-        usePerformance.ts useAlerts.ts useCompliance.ts useReports.ts
-        useUsers.ts useAudit.ts useStrategicPlans.ts
-      context/
-        AuthContext.tsx       Mock login (email/password + one-click role switch)
-      forms/                  Zod schemas consumed by React Hook Form
-        loginSchema.ts kpiSchema.ts performanceSubmissionSchema.ts
-        overrideSchema.ts reviewSchema.ts
-      types/                  Kpi, Programme, SubProgramme, OrgUnit, User, Alert,
-                               ComplianceRecord, ReportItem, AuditEntry, StrategicGoal
-      data/                   Realistic mock data matching ZOU's real Programme
-                               structure (3 Programmes, 6 Sub-programmes, 14 Units,
-                               15 KPIs, submissions, alerts, audit log, compliance)
-      config/
-        nav.ts                Role-aware navigation config (which roles see what)
-        roleLabels.ts
-      components/
-        ui/                   shadcn-style primitives on Radix (Button, Card, Badge,
-                               Input, Select, Dialog, ConfirmDialog, Tabs,
-                               DropdownMenu, Toast, FormField, Label, Textarea)
-        shared/                DataTable, EmptyState, ErrorState, Skeleton,
-                               Breadcrumbs, StatCard, RagBadge, WorkflowBadge,
-                               Sparkline, ProgressBar
-        charts/                TrendChart, TargetVsActualChart, RagDonut,
-                               ComplianceBarChart, ProgrammeComparisonChart,
-                               PerformanceDistributionChart
-        layout/                Sidebar (role-filtered), Header
-      layouts/
-        AppLayout.tsx AuthLayout.tsx
-      routes/
-        ProtectedRoute.tsx     Redirects to /login when not authenticated
-      pages/
-        auth/LoginPage.tsx
-        dashboard/ExecutiveDashboard.tsx
-        cpu/CpuDashboardPage.tsx          Automated quarterly analytics, tier/unit/KPI-category filters
-        appraisal/                        Staff Reporting & Appraisal Procedure
-          StaffWeeklyReportPage.tsx        Staff submit weekly job activity reports
-          UnitHeadAppraisalPage.tsx        Unit Head appraises staff reports (0-100% score)
-          UnitHeadPerformancePage.tsx      Unit Head submits own weekly performance report
-          AdministrationEvaluationPage.tsx Administration evaluates, auto-forwards to CPU
-          OperationalPlansPage.tsx         Unit Head → Programme Head → VC → Governance → CPU,
-                                            with automatic archiving on submission
-        programmes/ProgrammesPage.tsx ProgrammeDetailPage.tsx
-        subprogrammes/SubProgrammesPage.tsx SubProgrammeDetailPage.tsx
-        units/UnitsPage.tsx
-        kpis/KpisListPage.tsx KpiDetailPage.tsx KpiFormPage.tsx
-        performance/SubmitPerformancePage.tsx SubmissionsListPage.tsx CpuReviewPage.tsx
-        analytics/AnalyticsPage.tsx
-        reports/ReportsPage.tsx
-        alerts/AlertsPage.tsx
-        compliance/CompliancePage.tsx
-        audit/AuditPage.tsx
-        users/UsersPage.tsx
-        settings/SettingsPage.tsx   (includes RAG threshold config + Manual Override)
-      utils/
-        cn.ts format.ts
-      App.tsx main.tsx vite-env.d.ts
+- **Authentication**: passwords are hashed with bcrypt and checked
+  server-side; sessions are signed JWTs; there is no client-side password
+  list to inspect.
+- **Authorization**: every protected endpoint re-derives the caller's
+  current role, scope, and permissions from the database on each request.
+  The frontend hides controls a user shouldn't see, but the backend is what
+  actually blocks unauthorized actions — for example, a Sub Rep cannot
+  approve their own KPI submission even if they call the API directly,
+  and permission management is only reachable by the `ictadmin` role,
+  structurally, not just permission-gated.
+- **Data**: a persistent SQLite database file (`backend/data/zou.db`),
+  not an in-memory mock that resets on refresh.
+- **Audit trail**: every permission change, org-structure change, KPI
+  creation/edit, and data-entry/submit/approve/return/override action is
+  written to an `audit_log` table with who did what and when.
+- **Data refresh**: every action you take (saving a value, submitting,
+  approving, returning, an override) reloads its own data immediately
+  afterwards, so what you just did is reflected right away. There's also
+  a manual refresh control in the header ("Synced Xs ago") if you want to
+  pull in a change someone else made — it used to poll automatically
+  every 20/60 seconds, but that background refresh was re-rendering the
+  whole app on a timer regardless of what you were in the middle of
+  doing (typing a value, or looking at a drilled-down part of the
+  Overview tree), so it's on-demand now instead.
+- **Drill-down Overview navigation**: a "Programme structure" tree in the
+  sidebar — the same click-through navigation as the original prototype
+  — lets you walk Programme → Sub-programme → Unit → Individual and see
+  each one's own breadcrumb, own headline stats, and own KPIs, with its
+  children one click further in. A global role (Exec/CPU/ICT Admin) can
+  browse the whole structure from "All Programmes" down; a scoped role
+  (Sub Rep/Unit Head/Individual) sees only their own branch, and the tree
+  is only shown while they're on Overview (elsewhere, the sidebar is just
+  their nav). Every KPI a role could already see, they can still see —
+  this only changes how you get to it.
+- **Charts**: RAG (on track / at risk / off track / no data) distribution
+  is now a real chart — a bar chart on Overview for the KPIs in your own
+  scope, and a per-programme grouped bar chart on Reports — not just the
+  status chips and counts. Both keep the same colors as the RAG chips
+  used everywhere else, and the underlying numbers are also still shown
+  in the Reports table.
+- **Alerts**: a bell icon in the header surfaces, in one place, anything
+  that needs your attention right now — a submission of yours that was
+  returned with a comment, a submission waiting on your approval, or a
+  KPI in your scope that's currently off track — computed live from the
+  real data, not a separate notification system to keep in sync.
+- **Timestamps**: submitted/approved timestamps are shown directly on
+  each KPI card once they exist, in addition to the full audit log.
+- **A smooth submission → approval → return → feedback → reports flow**:
+  My Data Entry groups a submitter's KPIs into "Needs your action" (never
+  started, or returned with feedback), "Submitted — awaiting review", and
+  "Approved" — so it reads as a queue, not a flat list. A return always
+  carries a reviewer's comment, which follows the KPI everywhere it's
+  shown (a warning banner on Overview, a highlighted feedback box right
+  on the card) until it's resubmitted. Approvals Queue shows counts up
+  front and keeps a "Decided this period" section so an approver can see
+  what they already acted on. Reports adds a live "Submission flow" tile
+  (not started / returned / awaiting review / approved, org-wide) and a
+  "Recent activity" feed of the latest submissions, approvals, and
+  returns — so performance (RAG) and process (is the data even in yet)
+  are visible side by side, for anyone holding `view_audit`.
+- **Compliance & Escalations** (CPU and Executives): two distinct concerns,
+  computed live from real timestamps and real values, exactly like the
+  rest of the app — nothing pre-baked. Late-submission compliance checks,
+  for each Sub-programme's own KPIs, whether this period's submission came
+  in within the cut-off days set in Settings, and escalates (Programme
+  Head, then VC/Council) once it's late enough. Red-KPI performance
+  escalation is separate: it counts how many reporting periods in a row a
+  KPI has been Red — a KPI can be submitted perfectly on time and still
+  escalate this way. Both trigger thresholds live in Settings. As the page
+  itself says, there's no email/notification engine behind either — it's a
+  live view for a person to act on, the same honest scope as the alerts
+  bell.
+- **Structural-change proposals** (CPU by default, via `manage_framework`):
+  a durable, real log — not a mock list — for recording a proposed
+  Programme/Sub-programme change (e.g. "split this Sub-programme in two")
+  ahead of a planning checkpoint. Anyone can see the queue; only
+  `manage_framework` holders can add to it. There's no approval workflow
+  wired to an entry yet — it's a record for CPU/exec to review manually,
+  kept separate from the immediate, direct unit/KPI creation elsewhere on
+  Framework.
+- **Monthly/quarterly/bi-annual/annual performance appraisals, automated
+  at every tier**: data entry itself always stays monthly (that's the real
+  unit of truth), but Overview and Reports carry a separate, read-only
+  "performance lens" — a period-type picker (Monthly / Quarterly /
+  Bi-annual / Annual) that fetches the real range of months involved
+  (`GET /api/kpis/values-range`) and reports each KPI's progress as of the
+  latest actual value filed within that range. The appraisal itself is
+  never manually scored: the same `performanceRollup()` math (average
+  progress %, and a green/amber/red/no-data breakdown) runs identically at
+  every tier, over the real, live **cascade** of KPIs a node is built from
+  (`nodeOwnKpis()`) — an Individual's own KPIs; a Unit's own KPIs plus every
+  one of its Individuals'; a Sub-programme's own plus every one of its
+  Units' (Individuals included, transitively); a Programme's own
+  Sub-programmes' KPIs plus everything beneath them (Reports' three-tier
+  table). A real Individual's own monthly number is never siloed at the
+  tier it was entered — it moves their Unit's average, which moves their
+  Sub-programme's, which moves their Programme's — so a person's self-view
+  and CPU's oversight view are always built from the same real figures,
+  never a separate re-scoring at each tier. The appraisal card on both
+  Overview and Reports now also carries a real RAG-distribution pie chart
+  and a variance bar chart, both driven by the same period-type picker —
+  switch Monthly/Quarterly/Bi-annual/Annual and both recompute live.
+- **A genuine variance-vs-pace tool, with attention alerts**: variance here
+  means the honest M&E sense — not "how close to the target", but whether a
+  KPI is running ahead of, on, or behind the pace it would need to be at
+  *by this point* to reach its target on schedule (a KPI moving in a
+  straight line from baseline to target sits at 0 variance; a long way
+  from its target in January can still be perfectly on pace). Crucially,
+  "this point" is always pinned to the month the KPI's own latest value was
+  actually recorded for — never the nominal end of whichever period type
+  happens to be selected — so switching to "Annual" mid-year doesn't
+  falsely penalize every KPI for a year that hasn't finished yet. Any KPI
+  running 10+ points behind its expected pace is flagged for attention (a
+  banner on Overview/Reports listing every one, plus a badge right on its
+  own card); 10+ points ahead is flagged too, just not as an alert.
+- **Generated reports**: Reports produces two real, tangible artifacts from
+  whatever period is currently selected — a "Download CSV" button that
+  builds and downloads an actual `.csv` file of the full Programme /
+  Sub-programme / Unit appraisal table, and a "Print report" button that
+  triggers the browser's print dialog against dedicated `@media print`
+  styles that hide the app's navigation/controls and leave just the report
+  content.
+- **Annual Plan & Budget** (a real submission/approval cascade, structurally
+  parallel to the KPI one): each Unit/Department/Faculty/Region enters its
+  own next-cycle planning narrative and a requested budget figure and
+  submits it to their Sub-programme Rep, who approves or returns it with a
+  comment. The Sub-programme's own budget is never typed in separately —
+  it's always the live sum of its units' requests — and once approved, the
+  Rep submits their own sub-level narrative up for approval. At the
+  Programme tier, a real **Programme Head** account (see below) approves
+  or returns each of their own Sub-programmes' plans and compiles/submits
+  their own Programme's narrative (its budget is, again, always the
+  derived sum of its sub-programmes) — CPU can still do the same for any
+  Programme, as org-wide oversight, but it's no longer standing in for a
+  role that doesn't otherwise exist. CPU alone compiles and submits the
+  single University Annual Plan for the cycle, gated by `submit_annual_plan`.
+- **Programme Head — a real account tier, not a CPU stand-in**: one
+  Programme Head account per Programme (`role: "programme"`, scoped to
+  that Programme's id), with genuine, server-checked authority — never a
+  role label alone. On Overview, they land straight on their own
+  Programme and can drill into every Sub-programme beneath it (and
+  everything under those), read-only, the same drill-down every other
+  role uses — but never another Programme's. On Annual Plan & Budget,
+  they approve/return their own Sub-programmes' plan proposals and
+  compile/submit their own Programme's plan — `POST /api/plans/subs/:id/approve`
+  and the Programme-tier routes check `role === 'programme' && scope_id
+  === <that Programme's id>` server-side, not just role, so a Programme
+  Head can't act on another Programme's plan even by calling the API
+  directly (verified with a real 403). ICT admin can promote any existing
+  account to Programme Head from the Permissions page, choosing which
+  Programme it's scoped to.
+- **Internal messaging, across every tier**: a real "Messages" page open to
+  every signed-in account regardless of role — write to anyone else in the
+  system directly (an Individual can message the Vice Chancellor, not just
+  their own chain of command), with a real Inbox/Sent split and read/unread
+  state that persists (`messages`/`message_recipients` tables, not
+  component state that resets on refresh). There's no outbound SMTP/email
+  delivery configured for this reference deployment — same honest scope as
+  the admin-assisted password reset — so this is the genuine, working
+  answer: an in-app inbox addressed by each account's real `@zou.ac.zw`
+  email, with an unread-count badge on the nav item. Sent messages carry a
+  real WhatsApp-style double-tick delivery/read marker — gray once
+  delivered, colored once every recipient has actually opened it — built
+  directly off each recipient's real `read_at` timestamp, never a guess
+  (open the same message as the recipient and the sender's tick genuinely
+  changes color on their next look at Sent). A short notification tone
+  (synthesized in the browser, no audio file to ship) plays when a message
+  you compose is sent, and again when your unread count goes up on a
+  refresh — with a mute toggle in the header (🔔/🔕, remembered per device)
+  for anyone who'd rather it stayed silent.
+- **Light / dark / system theme**: a toggle in the header (cycling
+  Light → Dark → Match system) persisted to `localStorage` and applied
+  before first paint (no flash of the wrong theme on reload). Built as a
+  small set of semantic CSS custom-property tokens (`bg-page`, `bg-surface`,
+  `text-ink`, `border-line`, …) rather than a `dark:` variant bolted onto
+  every element, so the whole app — including the RAG bar charts, which
+  render as inline SVG and need their colors read explicitly — re-themes
+  from one attribute on `<html>`.
+- **Mobile-responsive dashboard**: the Overview drill-down (org tree,
+  breadcrumb, KPI cards, the RAG chart, the appraisal card), the sidebar
+  (a slide-over on narrow screens, opened from the header's ☰ button), and
+  every other page were verified at a 375px-wide viewport — no horizontal
+  overflow, no unreachable controls, the same real data and real actions
+  as desktop. The sidebar and the main content area scroll fully
+  independently of each other on mobile — the app shell is locked to
+  exactly the viewport height (`h-dvh`, not just a minimum), so there's
+  never a second, page-level scrollbar fighting the two nested ones, and
+  the body is locked while the mobile sidebar overlay is open so a touch
+  drag over it can't rubber-band the page underneath.
+- **Admin user directory**: the ICT Systems Administrator's Permissions
+  page is also a searchable directory of every account in the system — one
+  search box matches name, email, title, role, and where the person sits
+  in the org tree (e.g. searching a unit or sub-programme name surfaces
+  everyone under it) — and an "Edit profile" action lets ICT admin correct
+  a user's name, title, or email directly (separate from, and in addition
+  to, the existing role-change and permission-grant controls).
+- **Two more real, revocable permissions — `view_overview` and
+  `view_framework`**: Overview and Framework used to be visible to every
+  signed-in user unconditionally; every account is still seeded holding
+  both, but ICT admin can now actually take either away from one specific
+  person from the Permissions page, exactly like Reports/Audit/Settings
+  already worked — a genuine server-enforced gate (`GET`-level nav
+  filtering plus a route-level check on the frontend router), not a
+  cosmetic toggle.
+- **A narrower `add_individual` permission**: creating a Unit and creating
+  an Individual used to both live behind the one broad `manage_org_units`
+  grant. ICT admin can now instead hand a Sub-programme Rep or Unit Head
+  just the ability to add an Individual — and it's genuinely
+  scope-restricted server-side: a Unit Head holding only this permission
+  can add someone into their own unit and nowhere else, a Sub Rep into any
+  unit within their own sub-programme and nowhere else — verified with a
+  real 403 when either tries to add outside their scope.
+- **Profile photos**: every user can upload, replace, or remove their own
+  photo from the new "My Profile" page (reachable from the header, or the
+  sidebar on mobile). The image is resized and re-compressed to a small
+  square client-side before it's ever sent, then stored as a real, persisted
+  `data:` URL on their account — it shows up immediately in the header, the
+  sidebar (mobile), and the ICT admin user directory, not a mocked preview
+  that resets on refresh. Every photo (your own on My Profile, or anyone
+  else's small thumbnail in the ICT admin user directory) is also clickable
+  — it opens a full-size lightbox view, since the thumbnails everywhere
+  else are deliberately tiny for layout and were otherwise the only way to
+  see a photo at all.
+- **Self-service password change, and a real answer to "forgot it"**: every
+  user can change their own password from My Profile (their current
+  password is verified server-side first). There's no email or SMS
+  infrastructure behind this app to send a "reset your password" link
+  through, and faking that flow with nowhere for the email to go would be
+  exactly the kind of mocked feature this project avoids — so instead, an
+  ICT Systems Administrator can reset anyone's password directly from the
+  Permissions page (typing a specific new one, or generating a random one),
+  the same immediate, real pattern already used elsewhere in this app for
+  provisioning a new Unit Head's or Individual's account password.
+- **Individuals see their whole unit, and can be assigned to contribute to
+  one of its KPIs — with their own figures approved by their Unit Head and
+  automatically summed into the Unit's total**: an Individual used to only
+  ever see their own personally-owned KPI(s) — nothing about the
+  Department/Unit/Faculty/Regional Campus they actually belong to.
+  Overview now also shows every KPI their own unit owns, read-only, so
+  "what is my unit being measured on" is visible even for KPIs someone
+  else enters. On top of that, a Unit Head can assign one specific Unit
+  KPI to one or more named people in their unit — "this is one of your
+  duties" — from an "Assign to a team member" control right on that KPI's
+  card (a real, persisted grant, `kpi_assignments`, checked server-side; a
+  Unit Head can only assign their own unit's KPIs to people in that same
+  unit). Where this used to hand the assignee the KPI's own value outright,
+  it's now a genuine two-step chain, because several people are routinely
+  assigned the same KPI (e.g. three advisors each counting the students
+  they mentored) and their figures need combining, not overwriting one
+  another: each assignee gets their own monthly figure — a **contribution**
+  (`kpi_contributions`), with its own draft → submit → approve lifecycle,
+  entered and submitted from a dedicated card in their own My Data Entry.
+  Their Unit Head reviews each teammate's contribution individually from
+  the Approvals Queue (a "Contributions from your team" section, alongside
+  a per-assignee breakdown right on the KPI card) and approves or returns
+  each one with a comment, exactly like any other submission. The moment a
+  contribution is approved, the KPI's own value is automatically
+  recomputed as the live sum of every currently-approved contribution for
+  that period (`recomputeUnitTotal`, server-side) — the KPI is permanently
+  marked automated once it has any assignees, and its own existing
+  override control (already built for automated KPIs) is what lets the
+  Unit Head hand-correct the computed total if it's ever genuinely wrong.
+  The Unit Head then submits that real, computed total onward to the
+  Sub-programme Rep exactly like any other Unit KPI — the approval chain
+  above the Unit Head never changed, only how the Unit's own number gets
+  built underneath them. If an assignee's contribution is amended after
+  the Unit's total was already approved by the Sub Rep, the total is
+  recomputed and — if it actually changed — the Unit's own approval
+  reverts to "submitted" for re-review, the same amendment-safety rule
+  already used everywhere else values can change after approval. A KPI
+  assigned to no one behaves exactly as before — this table, and this
+  whole flow, is only ever touched once a KPI actually has assignees.
+- **Creating a KPI can seed its custodians in the same step, and a KPI can
+  be edited or deleted afterward**: assigning several people to a shared
+  Unit KPI (see above) used to always mean creating it first, then a second
+  trip to "Assign to a team member" per person. Framework's "Create a KPI"
+  form now shows a multi-select of that unit's own Individuals the moment a
+  Unit owner is picked — check as many as apply and they're all assigned in
+  the same `POST /api/kpis` call (`assigneeIds`, validated server-side
+  exactly like the existing single-assign endpoint: every id must actually
+  belong to that unit). Separately, "Edit or delete a KPI" is a genuine
+  update/delete pair, not just the narrower baseline/target patch that
+  existed before: `PUT /api/kpis/:id` (gated by `create_kpi` — a bigger
+  authority than `edit_targets`, since it can rename a KPI or redefine what
+  it measures, not just adjust its numbers) and `DELETE /api/kpis/:id`,
+  which really does remove the row along with everything that points at
+  it — its values, assignments, and contributions all cascade (`ON DELETE
+  CASCADE`) — while past audit_log entries about it are left exactly as
+  the individual-removal route already treats them: a real historical
+  record, each entry self-contained, not tidied away just because the KPI
+  itself is gone now. Holding only `edit_targets` still gets the narrower
+  baseline/target-only form, unchanged, with no Delete button.
+- **A message can be deleted — genuinely, per participant, like real
+  email**: deleting a message from your Inbox only ever removes YOUR copy
+  of it (`message_recipients.deleted_at`) — the sender's Sent view, and
+  every other recipient's Inbox, are untouched; deleting from your own
+  Sent only clears your copy (`messages.sender_deleted_at`) and never pulls
+  the message out of anyone's Inbox. Once every participant — the sender
+  AND every recipient — has cleared their own copy, the underlying row has
+  nothing left pointing at it and is purged outright, so deleted mail
+  doesn't sit around forever once nobody can actually see it.
+- **A real PDF, generated for whatever cadence is selected**: alongside the
+  existing CSV/print, Reports now has a genuine "Download PDF" button — an
+  actual multi-page PDF document (via `jspdf`/`jspdf-autotable`, built
+  client-side) containing the same three-tier Programme/Sub-programme/Unit
+  table, the same flagged-variance list, and the same org-wide RAG counts
+  already on screen, for whichever Monthly/Quarterly/Bi-annual/Annual
+  period is currently picked. It's built from the exact same computed
+  `programmeRows`/`orgVariance`/`orgRagCounts` the page renders — never a
+  second computation that could quietly drift from what's on screen, and
+  never dependent on someone remembering to "print to PDF" themselves.
+- **A one-time welcome after signing in**: a small "Welcome back, `<name>`"
+  banner appears the moment the authenticated app shell first mounts and
+  fades away after 10 seconds on its own — a genuine one-shot (it fires
+  once per sign-in, keyed to that account, never again while navigating
+  around the app afterward), not a toast that could be confused with a
+  save confirmation.
+- **Real protection against losing typed-but-unsaved work to an
+  interruption** — a power cut, a crashed tab, a closed laptop lid — before
+  anyone got to click Save: KPI value/note entry, a contributor's own
+  figure, and composing a message all mirror every keystroke into
+  `localStorage` (synchronously — already durable before any network
+  request would even fire), scoped per user/KPI/period so it can never
+  bleed into someone else's entry. This changes nothing about when data
+  actually reaches the server — the explicit Save/Submit buttons are still
+  what writes a real value, deliberately, since a KPI's draft/submit/
+  approve lifecycle depends on the user choosing when something is ready.
+  What it adds is the safety net underneath: if the tab reopens later and
+  finds a draft that disagrees with what the server has, the field starts
+  from that draft instead of silently discarding it, with a small banner
+  explaining it hasn't actually been saved yet — verified by typing a
+  value, reloading with nothing saved, and confirming it comes back.
+  Saving for real clears the draft, since the server now agrees.
+- ~~An Individual can browse and self-claim their unit's KPIs~~ — **superseded**
+  by the Unit-scoped KPI template pool further down ("What's real here" →
+  the `kpi_templates` entry): this self-claim mechanism (and its
+  `POST/DELETE /api/kpis/:id/claim` routes) has been removed outright, since
+  it let an Individual volunteer into their Unit Head's own aggregate KPI
+  just by browsing it. An Individual now only ever picks up KPIs genuinely
+  created for individuals; a Unit Head can still explicitly delegate one of
+  their Unit's own KPIs via the unchanged `POST/DELETE /api/kpis/:id/assign`.
+- **Refresh is reachable everywhere, and has a fast path**: the header's
+  refresh control used to disappear below the desktop breakpoint —
+  invisible on mobile/tablet, a real accessibility gap now fixed. It's also
+  no longer a single action: clicking it now runs a genuine "quick
+  refresh" — only the fast-changing, period-scoped data (values,
+  contributions, the performance lens, unread messages) — while the small
+  caret opens a two-item menu offering that same quick refresh alongside
+  the slower full refresh (also reloading the org chart, KPI catalogue,
+  settings, and assignments, for the rarer case one of those changed).
+  Verified by watching actual network calls: quick refresh fires 4 requests,
+  full refresh fires all 8 — never a difference in what each shows on
+  screen, just how much it re-fetches to get there.
+- **The Annual Plan & Budget page now has a real "Download PDF"**,
+  mirroring Reports' pattern exactly: a genuine multi-page PDF (`jspdf`/
+  `jspdf-autotable`, built client-side) with the University Annual Plan's
+  status and budget, the full Programme → Sub-programme → Unit proposal
+  table, and every Programme's planning narrative — all built from the
+  exact same `data` object (already scoped to the caller's role by
+  `GET /api/plans`) the on-screen panels render, never a second
+  computation that could drift from what's on screen.
+- **The notification bell and the sound toggle are two different icons
+  now**, not the same 🔔/🔕 emoji reused in two places — a real bell shape
+  for alerts, a distinct speaker shape (with sound waves when on, an X
+  when muted) for the message-tone toggle, both drawn in the same sky-blue
+  accent so they read as a matched pair of controls without being
+  mistakable for each other.
+- **Every KPI card now shows an automated monthly pace, not just the
+  static Baseline/Target/Current figures**: alongside those three, a real
+  progress bar and two computed numbers — "Expected by `<month>`" (where a
+  straight-line pace from the KPI's baseline to its annual target says it
+  should be by this point) and "Assumed baseline this month" (that same
+  pace's position at the end of the PREVIOUS month) — turn "progress to
+  date" into a genuine monthly performance figure: the gap between this
+  month's actual entry and the assumed baseline is what this one month
+  alone was expected to move the needle by, shown as "This month so far:
+  `±n` (expected `±n`)" plus an On/Behind-pace badge. None of it is typed in
+  or stored anywhere — `lib/scope.js`'s `expectedValueForMonth`/
+  `assumedMonthlyBaseline`/`monthlyPace` compute it fresh from the KPI's own
+  baseline/target and whatever value is on screen, the same automated-pace
+  math Reports' variance analysis already used in % terms, just expressed
+  here in the KPI's own real units and surfaced at the point of entry
+  instead of only in a later report.
+- **Every year dropdown in the app — data entry, the performance lens, the
+  Annual Plan cycle — now reaches out to 2065**, not just a year or two
+  around today, via one shared `yearRange()` helper so extending how far
+  any of them looks into the future is a single number to change.
+- **A contributor sees the whole KPI they're submitting toward, not just
+  their own figure**: `ContributionCard` — the surface an assigned or
+  self-claimed Individual submits their own number through — now shows the
+  shared KPI's real Baseline, annual Target, its current live automated
+  total (the sum of everyone's approved contributions), and its automated
+  score (the same RAG % a Unit Head or owner sees), plus a red alert banner
+  right on the card whenever that score is off track, telling them their
+  figure is what would help bring it back on pace. Previously they could
+  only see their own submitted value in isolation — asking someone to
+  submit "their part" without ever showing them the whole they're part of.
+  This is purely additive: the automated total, its RAG score, and the
+  existing off-track alert in the notification bell were all already
+  computed elsewhere in the app (see the pace/variance math above); this
+  just surfaces the same real numbers at the point they matter most —
+  right where the person is about to submit.
+- **Data entry is more readable, and approval actions moved out of it**:
+  every KpiCard/ContributionCard on My Data Entry now groups its automated
+  figures (Baseline/Target/Current, the monthly-pace bar and its stats)
+  into one visually distinct panel instead of a dense run of small inline
+  text, with a labeled legend on the pace bar (expected pace vs. actual vs.
+  the assumed-baseline marker) so the colors don't have to be guessed, and
+  larger type throughout (KPI names, RAG chips, section spacing) for
+  quicker scanning. Separately, a Unit Head's own My Data Entry used to
+  ALSO show their team's Approve/Return buttons for shared-KPI
+  contributions — the exact same decision Approvals Queue exists for,
+  duplicated in two places. That's now split cleanly: My Data Entry shows
+  a read-only "N of M approved · N awaiting your review in Approvals
+  Queue" summary, and the actual Approve/Return actions live only on the
+  Approvals Queue page. The underlying KPI lists were already correctly
+  scoped per role before this (an Individual only ever sees their own
+  KPIs, a Unit Head only their own unit's, a Sub-programme Rep only their
+  own sub's — see `canEnterData`/`isOwner` in `lib/scope.js`) — this only
+  removed the duplicated approval UI, it didn't change who sees what KPI.
+- **Anyone, at any tier, can mark a KPI "not relevant to me" and hide it
+  from their own browsing view — genuinely per-person, never shared**: a
+  new `kpi_hidden` table (`user_id`, `kpi_id`) backs a real
+  `GET/POST/DELETE /api/kpis/:id/hide` — no permission gate beyond being
+  signed in, since it's a personal display preference, not a data change.
+  It shows up wherever someone browses KPIs beyond their own duties —
+  Overview's drill-down into any node, and an Individual's "your unit's
+  other KPIs" self-claim list — as a small "Not relevant — hide" link, with
+  a transparent, reversible "N hidden from your view — show" toggle right
+  next to the section heading (nothing is ever silently gone for good).
+  Two safeguards keep this from being real functionality dressed up as a
+  toggle: it can never hide a KPI that's actually the viewer's own duty
+  (computed via `canEnterData`/`canContribute`, regardless of which page
+  passes the option in) — canceling any risk of using it to dodge an
+  accountability item — and it only ever filters the list of individual
+  KPI cards rendered, never the objective rollup numbers (headline stats,
+  RAG distribution, variance) on the same page, which stay accurate
+  regardless of what one person chose to declutter. Verified directly
+  against the database: hiding a KPI as one user leaves a second user's own
+  hidden list completely untouched, and a hide survives a full page reload
+  (it's a real server-side preference, not a client-side illusion).
+- **The monthly pace tracker (see above) is now shared, not duplicated,
+  and reaches contributors too**: `MonthlyPaceBar` and the small `Fig`
+  stat tile were pulled out into their own components so KpiCard and
+  ContributionCard render the exact same pace picture from the exact same
+  code, instead of two copies that could quietly drift apart. It also
+  picked up a couple of real readability improvements — Baseline and
+  Target are now labeled directly on the two ends of the bar itself, and a
+  "no value recorded yet" note appears when there's nothing to compare
+  against yet — and, since ContributionCard now renders it against the
+  shared KPI's own value row, an assigned contributor sees the identical
+  automated pace picture their Unit Head sees, not just their own
+  isolated figure.
+- **A KPI meant for individuals is now created once, against a Unit, not
+  once per named person**: a new `kpi_templates` table (see `db.js`) backs
+  a real `GET/POST /api/kpi-templates`, `DELETE /api/kpi-templates/:id`,
+  and `POST /api/kpi-templates/:id/pick`. In Framework's "Create a KPI"
+  form, choosing "Individuals (under a unit)" as the owner type swaps the
+  usual owner picker for a Unit picker — submitting creates the definition
+  once, owned by nobody yet, scoped to that unit. Anyone in that unit then
+  sees it in their own My Data Entry, under "KPIs for individuals in your
+  unit", and picking it up ("This is mine — add it") instantiates a real,
+  independent `kpis` row for that person alone (owner_type='individual',
+  their own baseline/target/value to enter and submit) — never a number
+  shared or summed with anyone else who also picks it up. Framework also
+  gained a "KPIs for individuals — by unit" management list showing real
+  adoption (`N of M in this unit picked up`) and a way to remove a template
+  (removing it only takes it out of the pool for anyone who hasn't picked
+  it up yet — see `kpis.template_id`'s `ON DELETE SET NULL` — it never
+  touches anyone's already-instantiated personal KPI).
+- **Individuals no longer browse and self-claim their whole Unit's own
+  aggregate KPI** — the self-claim feature from an earlier round
+  (`POST/DELETE /api/kpis/:id/claim`) has been removed outright in favor of
+  the template pool above, so an Individual's actionable lists only ever
+  show KPIs genuinely created for individuals, never "the unit's" KPI
+  (which belongs to the Unit Head's own official reporting number). A Unit
+  Head can still explicitly delegate one of their Unit's KPIs to a specific
+  person via the unchanged `POST/DELETE /api/kpis/:id/assign` — that
+  remains a duty assigned TO someone by their Unit Head, which is a
+  different, still-legitimate path from browsing and helping yourself.
+  Verified server-side: `POST /api/kpis/:id/claim` now 404s, a template
+  pick is rejected across unit boundaries, picking twice is rejected, and a
+  picked KPI runs through the completely ordinary data-entry/submit/approve
+  pipeline with zero special-casing. (Adding an Individual into the system
+  already required picking their Unit from a dropdown — Framework's "Add an
+  individual" form — before this round; that was already real and needed
+  no change.)
+- **Performance is now automatically cumulative — everywhere, across every
+  tier**: what a submitter types into a KPI's period entry is treated as
+  that period's own figure alone (stored in the new `kpi_values.entered_value`
+  column), never a running total. The moment their Unit Head/Sub Rep/CPU
+  approves it, the backend automatically computes the new official running
+  total — `previousOfficialValue + entered_value` — and stores it in the
+  existing `kpi_values.value` column (see `previousOfficialValue()` and the
+  rewritten `POST /api/kpis/:id/approve` in `routes/kpis.js`), which is why
+  every existing reader of `value` (RAG scoring, the monthly pace tracker,
+  Reports, the Annual Plan PDF export) needed zero changes — it was always
+  "the official cumulative figure" and still is, it's just computed for you
+  now instead of typed by hand. `previousOfficialValue()` walks backward
+  through real prior periods (skipping months nobody entered anything for,
+  and correctly crossing year boundaries, e.g. Dec 2026 → Jan 2027), and
+  falls back to the KPI's baseline when there's no earlier approved period
+  at all. This is uniform across every ownership tier (Individual, Unit,
+  Sub-programme) and also covers shared/contribution-based Unit KPIs —
+  `recomputeUnitTotal` applies the identical previous-total-plus-this-period
+  rule the moment a Unit Head approves the combined contributions for a
+  period. The UI reflects the split honestly: KpiCard's editable field is
+  now explicitly labelled "This period's entry", pre-filled from
+  `entered_value` (never from the cumulative figure), with a line explaining
+  what it'll be added to; the read-only "Current" figure is now labelled
+  "Current (cumulative)" everywhere it appears, including on
+  ContributionCard for people submitting into a shared total. Verified via
+  direct API calls across a normal month-to-month run (15→20→23), a run
+  with a skipped month in between, a Dec→Jan year-boundary rollover, and
+  the shared-KPI contribution path (70→74→80) — all producing the correct
+  automatic total with zero manual arithmetic.
+- **A read notification only ever quiets the bell, never hides the duty
+  it's about**: opening the Alerts bell now clears its red unread-count
+  badge (tracked per-account in the browser via `lib/seenAlerts.js`,
+  keyed by an alert's id **and** message so if the same kind of alert
+  recurs with different content — say, returned a second time with new
+  feedback — it reads as new again), but the dropdown itself always lists
+  every alert that's still genuinely true, seen or not: a pending review,
+  a returned submission, an off-track KPI doesn't disappear from the list
+  just because someone glanced at the bell once. This mirrors the same
+  principle already established by the "hide a KPI from your own view"
+  feature elsewhere in this app — a personal display preference is allowed
+  to quiet an attention cue, never to make a real accountability item
+  invisible.
 
-## 2. Technologies used
+## What's simplified versus the original prototype
 
-- React 19 + TypeScript, built with Vite
-- Tailwind CSS v4 (via `@tailwindcss/vite`)
-- shadcn-style component layer hand-assembled on Radix UI primitives
-  (`@radix-ui/react-dialog`, `-dropdown-menu`, `-tabs`, `-toast`, `-select`, `-label`) —
-  the shadcn CLI itself pulls from a registry domain outside this build
-  environment's network allowlist, so the components are the same Radix +
-  Tailwind + `class-variance-authority` pattern shadcn generates, assembled
-  directly instead of fetched
-- React Router v6 for routing, with a `ProtectedRoute` guard
-- TanStack Query for all data fetching/mutation state (loading, caching, invalidation)
-- React Hook Form + Zod for every form (login, KPI create/edit, performance
-  submission, manual override)
-- Axios, configured with a base URL and bearer-token interceptor, ready for a
-  real backend
-- Recharts for all charts
-- lucide-react for icons
+This is an honest, from-scratch backend rebuild, not a port of every
+simulated detail from the earlier prototype. The following were kept
+deliberately simple so the project stays reviewable and correct rather than
+sprawling:
 
-## 3. Available routes
+- RAG (red/amber/green) status is a straightforward percentage-of-target
+  calculation against configurable thresholds, not the prototype's
+  pace-adjusted milestone math.
+- There's no cross-cutting KPI linking (one KPI counted toward two
+  Programmes at once).
+- Automated cumulative performance (see "What's real here" above) doesn't
+  cascade retroactively: amending an already-approved period leaves its
+  stored `value` frozen at the old official figure until that period is
+  re-approved, at which point it recomputes from whatever the *current*
+  previous-period total is. Later periods that were already approved off
+  the old figure are not automatically walked forward and recalculated —
+  a deliberate scope boundary, not an oversight, to avoid a single edit
+  silently rewriting a long chain of already-signed-off history.
 
-    /login                        Public
-    /dashboard                    Executive dashboard (protected, all roles)
-    /programmes                   Programme list
-    /programmes/:id               Programme detail — Sub-programme breakdown, charts
-    /sub-programmes               Sub-programme list
-    /sub-programmes/:id           Sub-programme detail — KPI drill-down
-    /units                        Organisational units (Faculties, Directorates,
-                                   Regional Campuses, Departments)
-    /kpis                         KPI list, filterable by Programme/status
-    /kpis/new                     Create KPI (validated form)
-    /kpis/:id                     KPI detail — overview / milestones / history / override tabs
-    /kpis/:id/edit                Edit KPI
-    /performance/submit           Monthly performance submission (Sub-programme Rep)
-    /performance/submissions      All submissions, filterable by status
-    /performance/review           CPU validation & approval queue
-    /analytics                    Drill-down analytics (Programme → Sub-programme → Unit)
-    /reports                      Report list, preview dialog, export action
-    /alerts                       Alerts & escalation, with email-sent indicators
-    /compliance                   Submission compliance dashboard
-    /audit                        Audit trail
-    /users, /roles                Users & roles
-    /settings                     RAG thresholds, cadence, notifications, manual override
+Everything else — real auth, real RBAC, the full organisational hierarchy
+(Programmes → Sub-programmes → Units/Departments/Faculties/Regions →
+Individuals), the complete KPI submission → review → approval cascade,
+override handling for automated KPIs, and the audit log — is implemented
+and working end-to-end, and was verified with automated browser tests
+covering every approval tier before this was packaged.
 
-Unauthenticated visits to any protected route redirect to `/login`. Unknown
-routes redirect to `/dashboard`.
+## Project layout
 
-## 4. Mock user roles
+```
+zou-fullstack/
+├── backend/                  Node.js + Express + SQLite API
+│   ├── src/
+│   │   ├── db.js             Schema + database connection
+│   │   ├── seed.js           Seeds the org structure, KPIs, and demo accounts
+│   │   ├── server.js         Express app entry point (also serves the built frontend)
+│   │   ├── middleware/auth.js
+│   │   ├── routes/           auth, users, org, kpis, plans, messages, audit,
+│   │   │                       settings, compliance
+│   │   └── utils/            permissions catalogue, email-generation helpers
+│   ├── package.json
+│   └── .env.example
+├── frontend/                  React + Tailwind CSS single-page app (built with Vite)
+│   ├── src/
+│   │   ├── main.jsx, App.jsx
+│   │   ├── context/           auth/data state (AppContext), toast notifications
+│   │   ├── components/        Layout (topbar+sidebar), OrgTree (drill-down nav),
+│   │   │                       ThemeToggle, KpiCard, PeriodPicker,
+│   │   │                       PeriodTypePicker (monthly/quarterly/bi-annual/annual)
+│   │   ├── pages/              Login, Overview, Entry, Approvals, Framework, Planning
+│   │   │                       (Annual Plan & Budget), Compliance, Reports, Audit,
+│   │   │                       Settings, Users (Permissions & user directory),
+│   │   │                       Profile (self-service photo & password, every role),
+│   │   │                       Messages (internal messaging, every role)
+│   │   └── lib/                 API client, RBAC/scope logic (mirrors the backend),
+│   │                             performance-lens period helpers, nav config, theme
+│   ├── public/assets/           ZOU logo
+│   ├── dist/                    pre-built production bundle (ships ready to run)
+│   └── package.json
+└── README.md                    This file
+```
 
-Every role can be previewed instantly from the login screen's role buttons —
-no password needed for those. For the credentials form, any listed email
-below with password `zou-demo-2026` works:
+The backend serves the frontend's built output (`frontend/dist`) directly,
+so in normal day-to-day use you run one process and open one URL. A
+pre-built `dist/` is included in this project so it runs immediately
+without needing a frontend build step — see **Just run it** below. If you
+edit the React source, rebuild it with `npm run build` (see **Developing
+the frontend**).
 
-| Role | Email | Sidebar scope |
+## Just run it
+
+Requires **Node.js 22.5 or later** (the backend uses Node's built-in
+`node:sqlite` module — see "Why no database to install" below).
+
+All commands below run **inside the `backend` folder only**. The
+`frontend` folder has its own `package.json` for its own build tooling —
+you don't need to touch it unless you're changing the React source (see
+**Developing the frontend**).
+
+```bash
+cd backend
+npm install
+cp .env.example .env
+npm run seed      # creates backend/data/zou.db and seeds it
+npm start
+```
+
+Then open **http://localhost:4000/** in a browser. That one URL serves
+both the pre-built React app and the API.
+
+You'll see one or two lines like `ExperimentalWarning: SQLite is an
+experimental feature` when the server starts — that's expected and
+harmless; Node still marks its built-in SQLite support as experimental.
+
+To reset to a clean demo state at any time, stop the server and re-run
+`npm run seed` — it wipes and rebuilds all tables.
+
+## Developing the frontend
+
+If you want to change the React/Tailwind source in `frontend/src`:
+
+```bash
+# terminal 1 — the real backend API
+cd backend && npm start
+
+# terminal 2 — the frontend dev server, with hot reload
+cd frontend
+npm install
+npm run dev
+```
+
+Open **http://localhost:5173/** — Vite's dev server proxies every `/api/*`
+request straight to the backend on port 4000 (see `vite.config.js`), so
+you're developing against the same real API and real database the whole
+time, not a mock. There is no separate frontend "connection setting" to
+keep in sync; the dev proxy and the production build both simply call
+`/api/...` on whatever origin is serving the page.
+
+When you're done, build the production bundle so `backend`'s `npm start`
+picks up your changes:
+
+```bash
+cd frontend
+npm run build      # writes to frontend/dist
+```
+
+### Why no database to install
+
+Earlier versions of this project used the `better-sqlite3` package, which
+needs a native binary compiled for your exact OS/CPU/Node version — on
+some Windows setups (especially very new Node releases without a
+prebuilt binary available yet, or machines without Visual Studio Build
+Tools/Python installed) that compilation step fails with errors like
+`Could not locate the bindings file`. The backend now uses Node's
+built-in `node:sqlite` module instead, so there is nothing to compile —
+`npm install` only installs plain JavaScript packages.
+
+## Test credentials — one account per access level
+
+All seeded accounts use the same password:
+
+```
+Zou@2026
+```
+
+This same list is also shown right on the login page itself (under "Demo
+accounts for testing"), so you don't need to come back to this file to
+try a different role:
+
+| Access level | Email | What they can do |
 |---|---|---|
-| Staff | t.marufu@zou.ac.zw | Submit weekly job activity reports |
-| Unit Head | j.zvomuya@zou.ac.zw | Appraise staff, submit own performance, operational plans |
-| Administration | administration@zou.ac.zw | Evaluate Unit Head performance reports |
-| Vice-Chancellor | vc@zou.ac.zw | Full read access, CPU dashboard, audit trail |
-| University Council | council@zou.ac.zw | Executive views |
-| Programme Head | t.mangwiro@zou.ac.zw | Structure + KPI management for their Programme |
-| Sub-programme Head | k.moyo@zou.ac.zw | KPI management, submission |
-| Sub-programme Rep | p.ndlovu@zou.ac.zw | Submit performance only |
-| Corporate Planning Unit | cpu@zou.ac.zw | Full access incl. CPU dashboard, validation, audit, settings |
-| ICT Administrator | ictadmin@zou.ac.zw | Full access incl. users & settings |
+| Executive (Vice Chancellor) | `l.chareka@zou.ac.zw` | Read-only executive view (Reports only) |
+| Corporate Planning Unit (CPU) | `t.moyo@zou.ac.zw` | Approves sub-programme submissions, manages org structure, KPIs, and settings |
+| ICT Systems Administrator | `l.chikomo@zou.ac.zw` | The only role that can grant/revoke permissions, change a user's role, or remove an account — and by default can also add/remove units and individuals, create new KPIs, edit KPI targets, and apply overrides |
+| Programme Head | `s.chitiyo@zou.ac.zw` | Read-only oversight of every Sub-programme in their own Programme (Governance & Administration) only; approves/returns those Sub-programmes' Annual Plan proposals and compiles/submits their own Programme's plan |
+| Sub-programme Representative | `b.gwatidzo@zou.ac.zw` | Enters KPI data owned by their sub-programme; approves the Unit Heads below them |
+| Unit Head | `f.rusike@zou.ac.zw` | Enters KPI data owned by their unit; approves the Individuals below them |
+| Individual staff member | `n.moyana@zou.ac.zw` | Enters only their own personally-owned KPI data |
 
-The sidebar and available actions change based on the signed-in role — see
-`src/config/nav.ts` for the exact role → navigation-item mapping. Every route
-is also guarded server-side-equivalent in the frontend: `src/routes/RoleGuard.tsx`
-wraps each route and redirects anyone without permission to their own default
-landing page (`DEFAULT_ROUTE` in `nav.ts`), rather than showing a role a page
-that isn't theirs. The Executive Dashboard, for example, is restricted to
-Vice-Chancellor and CPU only — everyone else who tries the URL directly is
-redirected to their relevant page instead.
+Each row above is a genuinely separate account — its own database row, its
+own email, its own password hash, its own permission grants — not one
+account wearing different hats. Corporate Planning Unit and Sub-programme
+Representative in particular are easy to conflate by name, but they don't
+overlap: CPU (`t.moyo@zou.ac.zw`) is unscoped (`scope_type: null`) with 11
+broad permissions including `manage_settings`, `manage_org_units`,
+`create_kpi`, and `submit_annual_plan`; a Sub Rep like
+`b.gwatidzo@zou.ac.zw` is scoped to exactly
+one sub-programme (`scope_type: "sub"`) with only 4 permissions
+(`data_entry`, `approve_own_tier`, and the `view_overview`/`view_framework`
+pair every account gets by default) that only ever apply within that one
+sub-programme. Signing in as each and comparing the sidebar is the
+fastest way to see the difference for yourself — Settings only appears
+for CPU, and the Framework page's "Add a unit", "Create a KPI" and "Edit
+targets" forms only appear for accounts holding those specific
+permissions (CPU and ICT admin, by default).
 
-## Staff Reporting & Appraisal Procedure
+There's a second Executive account (`f.museta@zou.ac.zw`, Council
+Chairperson) and many more Sub Rep / Unit Head / Individual accounts —
+`npm run seed`'s console output and the Framework page (visible to
+CPU/ICT admin) show the full organisational tree, from which you can find
+any of them by name to sign in and explore. To try the full submission →
+review → approval chain end to end: sign in as `n.moyana@zou.ac.zw`
+(Individual), enter and submit a KPI value, then sign in as
+`m.chirisa@zou.ac.zw` (their Unit Head, Postgraduate Research Unit) and
+approve it from the Approvals Queue.
 
-A second workflow layered onto the existing KPI/RAG system, following ZOU's
-Staff Reporting and Appraisal Procedure:
+## Before using this for anything real
 
-- **Staff → Unit Head**: weekly job activity reports, appraised on a 0–100%
-  score (`src/pages/appraisal/StaffWeeklyReportPage.tsx` +
-  `UnitHeadAppraisalPage.tsx`)
-- **Unit Head → Administration → CPU**: Unit Heads submit their own weekly
-  performance report; Administration evaluates it (also 0–100%) and the
-  evaluation auto-forwards to the CPU in the same action
-  (`UnitHeadPerformancePage.tsx` + `AdministrationEvaluationPage.tsx`)
-- **Operational Plans**: two protocols depending on the submitting unit's
-  type. Faculty Deans and Regional Campus Directors submit directly to the
-  Vice-Chancellor (Unit Head → VC → Governance → CPU); every other Unit Head
-  goes through the standard chain (Unit Head → Programme Head → VC →
-  Governance → CPU). `src/services/operationalPlanService.ts` exports
-  `getPlanChain(unitId)`, which picks the right chain from the unit's `type`
-  — the page renders whichever chain applies per plan rather than one fixed
-  sequence. A copy is archived automatically the moment a plan is submitted,
-  not at the end of the chain, and Governance's approval automatically
-  forwards the plan to CPU (`OperationalPlansPage.tsx`)
-- **CPU Dashboard** (`src/pages/cpu/CpuDashboardPage.tsx`): the automated
-  analytics engine. `src/utils/quarterlyAnalytics.ts` is a pure function that
-  buckets every scored weekly appraisal into its calendar quarter and
-  averages per subject, per tier (staff / Unit Head), rolled up per unit —
-  this is the "automatically average every 3 months" requirement. The
-  dashboard lets CPU filter the resulting summaries by tier and unit, filter
-  Programme KPIs by output/outcome category, and one-click generate a
-  structured report per tier for the selected quarter (filed alongside the
-  existing Programme KPI reports).
+This is a demonstration/reference implementation, not a production
+deployment. Before putting it in front of real ZOU staff or data:
 
-This module deliberately keeps its own scoring model (`score: number` 0–100,
-no baseline/target) separate from the `Kpi` type, since staff and Unit Head
-evaluations are direct percentage scores rather than baseline-relative RAG
-KPIs — see `src/types/appraisal.ts`.
+- Replace every seeded account and the shared demo password with real
+  individual credentials (and consider adding password-reset and
+  multi-factor authentication).
+- Set a long, random `JWT_SECRET` in `.env` — never use the default.
+- Put it behind HTTPS, on real hosting, with a real backup strategy for
+  the SQLite file (or migrate to a managed database).
+- Have ZOU's IT/security team review authentication, data-retention, and
+  access-control requirements before go-live.
 
-## 5. How to run the application
+## API reference (summary)
 
-    npm install
-    npm run dev
+All endpoints are under `/api`. Authenticated endpoints require an
+`Authorization: Bearer <token>` header from `POST /api/auth/login`.
 
-Open the local URL Vite prints (usually `http://localhost:5173`).
-
-Build for production:
-
-    npm run build
-    npm run preview
-
-The build was verified in a sandbox: `npx tsc --noEmit` passes with zero
-errors, and `npm run build` produces a clean `dist/` bundle.
-
-## Reliability & UX improvements
-
-Beyond the core IRBM and appraisal features, the following were added to close
-gaps between what the UI implies works and what actually does:
-
-- **Auth survives a refresh** — `AuthContext` rehydrates from `localStorage`
-  instead of dropping the session on reload.
-- **RAG thresholds are real** — Settings → RAG thresholds now persists to
-  `localStorage` via `settingsService`, and `kpiService` recomputes every
-  KPI's status live from those thresholds (`src/utils/ragStatus.ts`) instead
-  of a value baked in at seed time.
-- **Working global search** — the header search bar queries KPIs, Programmes,
-  and Reports and links straight to the match.
-- **Error boundary** — a single top-level boundary (`src/components/shared/ErrorBoundary.tsx`)
-  catches render errors app-wide instead of showing a blank white screen.
-- **Skeleton loading states** — replaced blank-screen loading on detail pages
-  with `PageLoading`, consistent with the skeletons already used in tables.
-- **Code splitting** — every page is `React.lazy`-loaded behind a `Suspense`
-  boundary; the initial JS payload dropped from one ~1.1 MB bundle to a
-  ~460 KB main chunk plus per-page chunks loaded on demand.
-- **Sidebar** — collapsible (persisted per browser), an accent bar on the
-  active item, and a footer with the signed-in user's name, role, and a
-  one-click sign-out.
-- **Programme Head evaluation inbox** (`ProgrammeHeadEvaluationPage.tsx`) —
-  when a Unit Head addresses their performance report to a Programme Head
-  instead of Administration, there's now a page to actually evaluate it.
-- **Editable KPI milestones** — the KPI form now exposes Q1–Q4 target fields
-  directly instead of always splitting the annual target evenly.
-- **Audit trail search** — a text filter across record/user/module, alongside
-  the existing action-type filter.
-- **`.env.example`** for `VITE_API_BASE_URL`.
-
-## 6. Remaining backend/API integration points
-
-Every page calls a hook in `src/hooks/`, which calls a function in
-`src/services/`, which currently reads from `src/data/` mock arrays with a
-simulated network delay. To connect the real Laravel API:
-
-1. In each `src/services/*.ts` file, replace the mock function body with an
-   `apiClient` call to the matching endpoint — e.g.
-   `kpiService.list()` → `apiClient.get('/kpis', { params: filters })`,
-   `performanceService.submit()` → `apiClient.post('/performance-submissions', payload)`,
-   `kpiService.override()` → `apiClient.post('/kpis/{id}/override', payload)`.
-   The hooks and every page stay untouched — they only know about the
-   service functions' return shape, defined in `src/types/`.
-2. Replace `authService.login()` with a real
-   `POST /auth/login` call (e.g. Laravel Sanctum), and store the returned
-   token — `src/api/client.ts` already reads it from `localStorage` under
-   `zou_irbm_token` on every request.
-3. RAG thresholds are intentionally not hard-coded (the questionnaire states
-   ZOU has no standard thresholds yet) — the Settings → RAG thresholds tab is
-   wired to local component state as a placeholder; wire it to a real
-   `GET/PUT /settings/rag-thresholds` endpoint once one exists, and have
-   `kpiService` (or the backend) compute `status` from those thresholds
-   instead of the current hard-coded 85%/60% split in `src/data/kpis.ts`.
-4. Report export (`reportService.export`) returns a placeholder `{ url: "#" }`
-   — connect it to whatever endpoint generates the PDF/XLSX server-side.
-5. `VITE_API_BASE_URL` is read in `src/api/client.ts`; set it in a `.env` file
-   once the backend exists (defaults to `/api`).
-
-No routing, layout, or page component needs to change for any of the above —
-that's the seam this architecture was built around.
-#   z o u - i r b m - f r o n t e n d _ 7  
- 
+- `POST /api/auth/login`, `GET /api/auth/me`,
+  `POST /api/auth/change-password` (any signed-in user, own account,
+  requires their current password), `PUT|DELETE /api/auth/me/avatar`
+  (any signed-in user, own profile photo — a `data:` URL, capped size)
+- `GET /api/org`, `POST /api/org/units` (requires `manage_org_units`),
+  `POST /api/org/individuals` (`manage_org_units` OR the narrower,
+  scope-restricted `add_individual` — a Unit Head may only target their own
+  unit, a Sub Rep only a unit within their own sub-programme) /
+  `DELETE /api/org/individuals/:id` (`manage_org_units` only — adding or
+  removing an individual also provisions or removes their login account
+  and, on removal, any KPIs they directly own)
+- `GET /api/org/proposals`, `POST /api/org/proposals` (`manage_framework`) —
+  the structural-change proposal log
+- `GET /api/kpis`, `GET /api/kpis/values?year&month`,
+  `GET /api/kpis/values-range?year&fromMonth&toMonth` (the performance-lens
+  read used by the quarterly/bi-annual/annual view — reports the latest
+  value in the range per KPI, not a value for every month),
+  `GET /api/kpis/:id/values`,
+  `POST /api/kpis` (`create_kpi` — optionally seeds `assigneeIds`, a Unit-
+  owned KPI only, each id validated as actually belonging to that unit),
+  `PUT /api/kpis/:id` (`create_kpi` — the KPI's real definition:
+  name/type/measure/baseline/target; owner is deliberately not editable
+  here, see "What's real here" above) / `DELETE /api/kpis/:id` (`create_kpi`
+  — a real delete; values/assignments/contributions all cascade),
+  `PATCH /api/kpis/:id/targets` (`edit_targets` — baseline/target only, the
+  narrower tier),
+  `PUT /api/kpis/:id/value` / `POST /api/kpis/:id/submit` (`data_entry`, the
+  KPI's owner only — an assigned Individual no longer owns the KPI's own
+  value, only their own contribution row; see below — `PUT .../value` now
+  writes the submitter's figure to `entered_value`, this period's own
+  number, not the cumulative `value` column),
+  `POST /api/kpis/:id/approve` / `POST /api/kpis/:id/return` (`approve_own_tier`,
+  approver only — approving now automatically computes and stores the new
+  cumulative `value` as the previous official total plus `entered_value`;
+  see "What's real here" above for the automated cumulative-performance
+  feature),
+  `POST|DELETE /api/kpis/:id/override` (`apply_override`, automated KPIs only),
+  `PUT /api/kpis/:id/explanation`,
+  `GET /api/kpis/assignments` (every current KPI→Individual assignment),
+  `POST /api/kpis/:id/assign` / `DELETE /api/kpis/:id/assign/:individualId`
+  (`data_entry`, and only the Unit Head who owns that Unit-scoped KPI,
+  targeting someone in that same unit) — (`POST/DELETE /api/kpis/:id/claim`,
+  the individual self-claim of a Unit-owned KPI, has been removed; see
+  `/api/kpi-templates` below for its replacement)
+- `GET /api/kpis/contributions?year&month` (every assignee's own
+  contribution row for the period, scoped the same as `/kpis/values`),
+  `PUT /api/kpis/:id/contribution` / `POST /api/kpis/:id/contribution/submit`
+  / `PUT /api/kpis/:id/contribution/explanation` (`data_entry`, only an
+  assignee entering their own figure toward a KPI they're assigned to —
+  never the KPI's own `kpi_values` row),
+  `POST /api/kpis/:id/contribution/:individualId/approve` /
+  `POST /api/kpis/:id/contribution/:individualId/return`
+  (`approve_own_tier`, only the Unit Head who owns that Unit-scoped KPI —
+  approving recomputes the KPI's own value as the live sum of every
+  currently-approved contribution for that period, see above)
+- `GET /api/kpi-templates` (any signed-in user — the Unit-scoped "KPI for
+  individuals" pool, each with a real `picked_count`),
+  `POST /api/kpi-templates` (`create_kpi` — `{ unitId, name, type, measure,
+  baseline, target }`, creates the definition once against a Unit, owned by
+  nobody yet), `DELETE /api/kpi-templates/:id` (`create_kpi` — removes it
+  from the pool only; anyone who already picked it up keeps their own KPI,
+  see `kpis.template_id`'s `ON DELETE SET NULL`),
+  `POST /api/kpi-templates/:id/pick` (`data_entry`, Individual role only,
+  and only for a template scoped to their own unit — instantiates a real,
+  independent `kpis` row owned solely by them; rejects a second pick of the
+  same template by the same person)
+- `GET /api/plans?year=<cycleYear>` — the whole compiled Annual Plan &
+  Budget picture for one cycle year (units, sub-programmes, programmes,
+  and the university row, each with its own proposal and, above Unit
+  tier, a live-derived `approvedBudget`/`provisionalBudget`).
+  `PUT /api/plans/units/:unitId` / `POST /api/plans/units/:unitId/submit`
+  (`data_entry`, the unit's own head only),
+  `POST /api/plans/units/:unitId/approve|return` (`approve_own_tier`, the
+  unit's Sub-programme Rep only — `return` requires a `comment`).
+  `PUT /api/plans/subs/:subId` / `POST /api/plans/subs/:subId/submit`
+  (`data_entry`, the sub's own Rep only — budget is read-only, derived),
+  `POST /api/plans/subs/:subId/approve|return` (CPU, or the Programme
+  Head who owns that sub's Programme — checked server-side by role AND
+  `scope_id`, not role alone).
+  `PUT /api/plans/programmes/:programmeId` /
+  `POST /api/plans/programmes/:programmeId/submit` (CPU, or that
+  Programme's own Programme Head only).
+  `PUT /api/plans/university` / `POST /api/plans/university/submit`
+  (`submit_annual_plan`, CPU only).
+- `GET /api/messages/directory` (every other account's name/title/email/role
+  — who you can write to; open to any signed-in user, deliberately not
+  scope-restricted), `GET /api/messages/unread-count`,
+  `GET /api/messages?box=inbox|sent`,
+  `POST /api/messages` (`{ recipientIds, subject, body }` — every id must be
+  a real account), `POST /api/messages/:id/read` (only a real recipient of
+  that message can mark it read), `DELETE /api/messages/:id` (deletes only
+  the caller's own copy — their Inbox row if they're a recipient, their
+  Sent row if they're the sender; the message is only actually purged once
+  every participant has deleted their own copy).
+- `GET /api/users`, `PATCH /api/users/:id/profile` (update name/title/email),
+  `POST /api/users/:id/reset-password` (set a specific password or, if none
+  given, generate a random one — returned once, in the response, to the
+  admin who just set it — the real, working answer to a forgotten password
+  in a system with no email/SMS delivery behind it),
+  `POST /api/users/:id/permissions/:key/grant|revoke`,
+  `PATCH /api/users/:id/role` (change a user's role/scope),
+  `DELETE /api/users/:id` (remove an account — a user can't change their own
+  role or remove their own account) — all `ictadmin` role only
+- `GET /api/audit` (`view_audit`)
+- `GET /api/settings`, `PATCH /api/settings` (`manage_settings`)
+- `GET /api/compliance?year&month` — late-submission compliance per
+  Sub-programme and Red-KPI performance escalation, computed live from
+  real timestamps and values against the thresholds in Settings

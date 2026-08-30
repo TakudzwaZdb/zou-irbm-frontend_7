@@ -1,0 +1,127 @@
+@import "tailwindcss";
+
+/* A gentle entrance for the post-login greeting banner (see Layout.jsx) —
+   drops in and settles, rather than just popping into place. Matches the
+   banner's own -translate-x-1/2 centering so the two transforms agree. */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translate(-50%, -6px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@theme {
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Manrope", system-ui, sans-serif;
+
+  --color-accent-50: #eaf2fc;
+  --color-accent-100: #d6e6fa;
+  --color-accent-400: #5b9bec;
+  --color-accent-500: #2a78d6;
+  --color-accent-600: #1c5cab;
+  --color-accent-700: #164a89;
+
+  --color-good: #0ca30c;
+  --color-good-soft: #e4f6e4;
+  --color-warning: #c98500;
+  --color-warning-soft: #fdf1da;
+  --color-critical: #d03b3b;
+  --color-critical-soft: #fbe6e6;
+
+  /* Theme-aware surface/text/border tokens — the same palette as the
+     reference prototype's CSS variables (see its :root / dark blocks), so
+     dark mode here looks like a continuation of that design, not a
+     different one. Every one of these is a REAL runtime CSS custom
+     property (Tailwind v4 emits @theme values as :root variables, not
+     inlined literals), so overriding them under [data-theme] below changes
+     every utility built from them (bg-page, bg-surface, bg-sunken,
+     text-ink, text-ink-secondary, text-ink-muted, border-line,
+     border-line-strong) without touching a single component file. */
+  --color-page: #f7f7f5;
+  --color-surface: #ffffff;
+  --color-sunken: #f0efec;
+  --color-ink: #15140f;
+  --color-ink-secondary: #54524a;
+  --color-ink-muted: #8c8a80;
+  --color-line: rgb(21 20 15 / 0.12);
+  --color-line-strong: rgb(21 20 15 / 0.20);
+}
+
+/* System preference ("system" theme choice — the default until someone
+   picks explicitly, see ThemeContext.jsx): follows the OS/browser, but an
+   explicit "light" choice (data-theme="light") always wins over it. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-page: #111110;
+    --color-surface: #1a1a18;
+    --color-sunken: #0d0d0c;
+    --color-ink: #f5f4f0;
+    --color-ink-secondary: #c7c4b8;
+    --color-ink-muted: #8f8c82;
+    --color-line: rgb(245 244 240 / 0.12);
+    --color-line-strong: rgb(245 244 240 / 0.22);
+  }
+}
+/* Explicit "dark" choice — wins over system preference either way. */
+:root[data-theme="dark"] {
+  --color-page: #111110;
+  --color-surface: #1a1a18;
+  --color-sunken: #0d0d0c;
+  --color-ink: #f5f4f0;
+  --color-ink-secondary: #c7c4b8;
+  --color-ink-muted: #8f8c82;
+  --color-line: rgb(245 244 240 / 0.12);
+  --color-line-strong: rgb(245 244 240 / 0.22);
+}
+
+@layer base {
+  body {
+    font-family: var(--font-sans);
+    @apply bg-page text-ink antialiased;
+  }
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    letter-spacing: -0.01em;
+  }
+}
+
+@layer components {
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold whitespace-nowrap;
+  }
+  .chip-rag-green { @apply bg-good-soft text-good; }
+  .chip-rag-amber { @apply bg-warning-soft text-warning; }
+  .chip-rag-red { @apply bg-critical-soft text-critical; }
+  .chip-rag-none { @apply bg-sunken text-ink-muted; }
+  .chip-st-draft { @apply bg-sunken text-ink-secondary; }
+  .chip-st-submitted { @apply bg-accent-50 text-accent-600; }
+  .chip-st-approved { @apply bg-good-soft text-good; }
+  .chip-st-returned { @apply bg-warning-soft text-warning; }
+  .chip-st-none { @apply bg-sunken text-ink-muted; }
+  .chip-tag { @apply bg-sunken text-ink-secondary font-semibold; }
+
+  .btn {
+    @apply inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-[12.5px] font-semibold text-ink hover:bg-sunken disabled:opacity-40 disabled:cursor-not-allowed transition-colors;
+  }
+  .btn-primary { @apply bg-accent-500 text-white border-transparent hover:bg-accent-600; }
+  .btn-danger { @apply text-critical border-critical/40 hover:bg-critical-soft; }
+  .btn-ghost { @apply border-transparent bg-transparent hover:bg-sunken; }
+  .btn-sm { @apply px-2 py-1 text-[11.5px] rounded-md; }
+
+  .card { @apply rounded-2xl border border-line bg-surface p-4 shadow-sm; }
+
+  .field-label { @apply text-[12px] font-bold text-ink-secondary; }
+  .field-input {
+    @apply w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:ring-2 focus:ring-accent-500/50 focus:border-accent-500;
+  }
+}
+
+/* Printing a generated report (see Reports.jsx's "Print report" button):
+   drop the app chrome and let just the report content fill the page. Any
+   element the app doesn't want in a printout — nav, buttons, the picker
+   controls — carries .no-print. */
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff; }
+  main { overflow: visible !important; padding: 0 !important; }
+  .card { box-shadow: none !important; border-color: #ddd !important; break-inside: avoid; }
+  table { font-size: 11px; }
+}
