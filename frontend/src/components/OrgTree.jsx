@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import {
   subsOfProgramme, unitsOfSub, individualsOfUnit, nodeOwnKpis, nodeRagCls,
-  performanceRollup, defaultNodeForRole, nodeAncestryChain,
+  performanceRollup, defaultNodeForRole, nodeAncestryChain, canDrillToKind,
 } from '../lib/scope.js';
 
 const RAG_DOT = {
@@ -83,11 +83,18 @@ export default function OrgTree({ setRoute, onNavigate }) {
   function row(kind, id, label, depth, hasChildren, expandedKey) {
     const isSel = effectiveNode ? effectiveNode.kind === kind && effectiveNode.id === id : false;
     const open = hasChildren && isOpen(expandedKey);
+    // Same Overview navigation ceiling Overview.jsx's ChildCards enforces
+    // (see lib/scope.js's canDrillToKind) — a restricted row still shows
+    // (so the tree's shape stays honest about what exists) but isn't
+    // clickable, with a lock cursor rather than a click that silently does
+    // nothing.
+    const restricted = !canDrillToKind(user, kind);
     return (
       <div
         key={expandedKey}
-        onClick={() => select(kind, id)}
-        className={`flex items-center gap-1.5 py-1.5 px-1.5 rounded-md cursor-pointer text-[12.3px] ${isSel ? 'bg-accent-50 text-accent-600 font-semibold' : 'text-ink-secondary hover:bg-sunken'}`}
+        onClick={() => { if (!restricted) select(kind, id); }}
+        title={restricted ? 'Restricted for your account by your ICT System Administrator' : undefined}
+        className={`flex items-center gap-1.5 py-1.5 px-1.5 rounded-md text-[12.3px] ${restricted ? 'cursor-not-allowed opacity-45' : 'cursor-pointer'} ${isSel ? 'bg-accent-50 text-accent-600 font-semibold' : 'text-ink-secondary hover:bg-sunken'}`}
         style={{ paddingLeft: `${6 + depth * 12}px` }}
       >
         {hasChildren ? (
@@ -98,6 +105,7 @@ export default function OrgTree({ setRoute, onNavigate }) {
         ) : <span className="w-3 flex-none" />}
         {ragDot(kind, id)}
         <span className="truncate">{label}</span>
+        {restricted && <span className="flex-none text-[10px]">🔒</span>}
       </div>
     );
   }

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import {
   relevantKpis, computeRag, canEnterData, canContribute, performanceRollup, varianceRollup, VARIANCE_ATTENTION_THRESHOLD, valueStatus, scopeBreadcrumb, MONTHS,
-  byId, subsOfProgramme, unitsOfSub, individualsOfUnit, nodeOwnKpis, nodeAncestryChain, defaultNodeForRole,
+  byId, subsOfProgramme, unitsOfSub, individualsOfUnit, nodeOwnKpis, nodeAncestryChain, defaultNodeForRole, canDrillToKind, ownerName, ownerKindLabel,
 } from '../lib/scope.js';
 import { labelFor } from '../lib/period.js';
 import KpiCard from '../components/KpiCard.jsx';
@@ -16,7 +16,7 @@ const KIND_LABEL = { programme: 'Programme', sub: 'Sub-programme', unit: 'Unit',
 
 export default function Overview() {
   const { user, org, kpis, values, contributions, settings, period, assignments, selNode, selectNode, clearSelNode } = useApp();
-  const isGlobal = ['cpu', 'exec', 'ictadmin'].includes(user.role);
+  const isGlobal = ['cpu', 'exec', 'ictadmin', 'council'].includes(user.role);
 
   // The node the drill-down is actually showing: whatever's explicitly
   // selected (clicked in the sidebar tree or a card below), falling back to
@@ -78,14 +78,27 @@ export default function Overview() {
 // same real kpi_values rows the monthly view reads, just aggregated by a
 // wider date range.
 function AppraisalCard({ kpiList, heading }) {
-  const { settings, perfPeriod, perfValues } = useApp();
+  const { org, settings, perfPeriod, perfValues } = useApp();
   if (kpiList.length === 0) return null;
   const appraisal = performanceRollup(kpiList, perfValues, settings);
   const label = labelFor(perfPeriod.type, perfPeriod.year, perfPeriod.idx, MONTHS);
   const variance = varianceRollup(kpiList, perfValues, settings);
+  // Every KPI with a value gets its own bar here — never cut short by
+  // chart width — labeled with both its own name AND who owns it (see
+  // ownerName), since "Digital Theses Uploaded" means something different
+  // depending on whether it's the Library's KPI or a named individual's.
+  // VarianceChart scrolls horizontally once there are more KPIs than fit,
+  // rather than squeezing bars until they're unreadable.
+  // Full, untruncated name/owner — VarianceChart does its own short
+  // truncation for the cramped on-chart label, but keeps the complete text
+  // for its hover tooltip, so nothing is ever permanently cut off, only
+  // shortened where space is genuinely tight.
   const varianceData = variance.items
     .filter((i) => i.actualPct != null)
-    .map((i) => ({ name: i.kpi.name.length > 22 ? i.kpi.name.slice(0, 21) + '…' : i.kpi.name, actual: i.actualPct, expected: i.expectedPct, variance: i.variance, flag: i.flag }));
+    .map((i) => ({
+      name: i.kpi.name, owner: ownerName(org, i.kpi), ownerKind: ownerKindLabel(i.kpi),
+      actual: i.actualPct, expected: i.expectedPct, variance: i.variance, flag: i.flag,
+    }));
 
   return (
     <div className="card mb-6">
@@ -152,12 +165,22 @@ function AllProgrammesView({ onSelect }) {
   // "All Programmes" is the university-wide root of the same cascade every
   // other node uses (see lib/scope.js's nodeOwnKpis) — every KPI in the
   // system belongs to exactly one Programme's subtree, so this is simply
-  // every KPI there is.
+  // every KPI there is. This is also, genuinely, "overall institutional
+  // performance" — not a separately computed figure, the exact same live
+  // rollup every Programme/Sub-programme/Unit card below already uses, just
+  // read at the top of the whole tree instead of one branch of it.
   const appraisalKpis = kpis;
+  const owner = org.executiveOwner;
 
   return (
     <>
-      <AppraisalCard kpiList={appraisalKpis} heading="Performance appraisal — All Programmes" />
+      {owner && (
+        <div className="mb-4 rounded-lg bg-accent-50 text-accent-600 text-[12px] px-3.5 py-2.5">
+          <b>Executive Owner: {owner.name}</b>{owner.title ? ` — ${owner.title}` : ''} is accountable for overall
+          institutional performance against the Plan — the appraisal below, aggregated across every Programme.
+        </div>
+      )}
+      <AppraisalCard kpiList={appraisalKpis} heading="Overall Institutional Performance — All Programmes" />
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5 mb-6">
         <Stat label="KPIs in view" value={list.length} />
@@ -327,13 +350,32 @@ function NodeView({ node, onHome, onSelect }) {
         </>
       )}
 
-      {kind === 'sub' && <ChildCards kind="unit" items={unitsOfSub(org, id)} subtitleFn={(u) => `${u.kind || 'Unit'} · ${u.head}`} onSelect={onSelect} />}
-      {kind === 'unit' && <ChildCards kind="individual" items={individualsOfUnit(org, id)} subtitleFn={(i) => i.role_title} onSelect={onSelect} />}
-      {kind === 'programme' && <ChildCards kind="sub" items={subsOfProgramme(org, id)} subtitleFn={(s) => s.head} onSelect={onSelect} />}
+      {kind === 'sub' && (canDrillToKind(user, 'unit')
+        ? <ChildCards kind="unit" items={unitsOfSub(org, id)} subtitleFn={(u) => `${u.kind || 'Unit'} · ${u.head}`} onSelect={onSelect} />
+        : <OverviewRestrictedNote label="Unit" />)}
+      {kind === 'unit' && (canDrillToKind(user, 'individual')
+        ? <ChildCards kind="individual" items={individualsOfUnit(org, id)} subtitleFn={(i) => i.role_title} onSelect={onSelect} />
+        : <OverviewRestrictedNote label="Individual" />)}
+      {kind === 'programme' && (canDrillToKind(user, 'sub')
+        ? <ChildCards kind="sub" items={subsOfProgramme(org, id)} subtitleFn={(s) => s.head} onSelect={onSelect} />
+        : <OverviewRestrictedNote label="Sub-programme" />)}
 
       {kind === 'individual' && ownKpis.length === 0 && unitKpisForContext.length === 0 && (
         <div className="card text-center text-ink-muted py-10">No KPIs recorded for this individual yet.</div>
       )}
+    </div>
+  );
+}
+
+// Shown instead of a tier's ChildCards when this account's Overview
+// navigation is capped short of it (see lib/scope.js's canDrillToKind /
+// users.overview_limit) — transparent about WHY nothing further is
+// clickable here, rather than the section just silently not appearing.
+function OverviewRestrictedNote({ label }) {
+  return (
+    <div className="mt-6 rounded-lg bg-sunken text-ink-muted text-[11.8px] px-3.5 py-2.5">
+      🔒 {label}-level detail is restricted for your account by your ICT System Administrator — you can see this
+      tier's own rollup above, but not drill further in.
     </div>
   );
 }

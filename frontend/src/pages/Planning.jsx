@@ -175,6 +175,7 @@ export default function Planning() {
       {data && user.role === 'rep' && <RepPanel data={data} cycleYear={cycleYear} reload={() => load()} />}
       {data && user.role === 'programme' && <ProgrammeHeadPanel data={data} cycleYear={cycleYear} reload={() => load()} />}
       {data && user.role === 'cpu' && <CpuPanel data={data} cycleYear={cycleYear} reload={() => load()} />}
+      {data && user.role === 'council' && <CouncilPanel data={data} cycleYear={cycleYear} reload={() => load()} />}
       {data && ['exec', 'ictadmin', 'individual'].includes(user.role) && <ReadOnlyPanel data={data} />}
     </div>
   );
@@ -511,9 +512,15 @@ function ProgrammeCompileForm({ programme, cycleYear, reload }) {
 function UniversityPlanCard({ data, cycleYear, reload }) {
   const toast = useToast();
   const proposal = data.university.proposal;
+  const status = planStatus(proposal);
   const [narrative, setNarrative] = useState(proposal?.narrative || '');
   const [busy, setBusy] = useState(false);
-  const locked = proposal?.status === 'submitted';
+  // Locked while awaiting the University Council's review OR once they've
+  // actually approved it — an approved plan is officially in effect for the
+  // cycle, so CPU can't quietly overwrite it; only a Council return reopens
+  // it (see routes/plans.js's PUT /university, which now enforces this
+  // same rule server-side).
+  const locked = proposal && proposal.status !== 'draft';
   useEffect(() => { setNarrative(proposal?.narrative || ''); }, [proposal?.narrative]);
 
   const allProgrammesSubmitted = data.programmes.length > 0 && data.programmes.every((p) => p.proposal?.status === 'submitted');
@@ -525,7 +532,7 @@ function UniversityPlanCard({ data, cycleYear, reload }) {
   }
   async function submit() {
     setBusy(true);
-    try { await api('/plans/university/submit', { method: 'POST', body: { cycleYear } }); toast(`University Annual Plan for ${cycleYear} submitted.`); await reload(); }
+    try { await api('/plans/university/submit', { method: 'POST', body: { cycleYear } }); toast(`University Annual Plan for ${cycleYear} submitted to the University Council.`); await reload(); }
     catch (err) { toast(err.message, 'err'); } finally { setBusy(false); }
   }
 
@@ -533,8 +540,18 @@ function UniversityPlanCard({ data, cycleYear, reload }) {
     <div className="card mt-2 border-2 border-accent-500/20">
       <div className="flex items-center gap-2 mb-1 flex-wrap">
         <h2 className="font-display font-bold text-[15px]">University Annual Plan — {cycleYear}</h2>
-        <span className={`chip chip-st-${proposal?.status || 'draft'}`}>{STATUS_LABEL[proposal?.status || 'draft']}</span>
+        <span className={`chip chip-st-${status}`}>{STATUS_LABEL[status]}</span>
       </div>
+      {status === 'approved' && (
+        <div className="mb-3 rounded-lg bg-good-soft text-good text-[12.8px] px-3.5 py-2.5 font-semibold">
+          ✓ Validated and approved by the University Council — this is the official Annual Plan in effect for {cycleYear}.
+        </div>
+      )}
+      {proposal?.return_comment && status === 'returned' && (
+        <div className="mb-3 rounded-lg bg-warning-soft text-warning text-[12.8px] px-3.5 py-2.5">
+          <b>Returned by the University Council:</b> {proposal.return_comment}
+        </div>
+      )}
       <p className="text-[12px] text-ink-secondary mb-3">
         Total budget — approved: <b>{fmtMoney(data.university.approvedBudget)}</b>,
         including not-yet-approved submissions: <b>{fmtMoney(data.university.provisionalBudget)}</b>.
@@ -545,8 +562,115 @@ function UniversityPlanCard({ data, cycleYear, reload }) {
       <div className="flex gap-2">
         <button className="btn btn-sm" disabled={locked || busy} onClick={saveDraft}>Save draft</button>
         <button className="btn btn-sm btn-primary" disabled={locked || busy || !narrative.trim()} onClick={submit}>
-          Submit University Annual Plan
+          Submit to University Council
         </button>
+      </div>
+    </div>
+  );
+}
+
+// The University Council's own view: the full compiled picture (every
+// Programme down to its Sub-programmes and Units, exactly what
+// ReadOnlyPanel shows everyone else) so validating "the annual plan and its
+// structure" is actually informed by the structure it's built from, plus
+// the one real action that's theirs — approve (puts it into effect for the
+// cycle) or return with a reason, on the University Annual Plan once CPU
+// has submitted it. See routes/plans.js's POST /university/approve|return.
+function CouncilPanel({ data, cycleYear, reload }) {
+  const toast = useToast();
+  const proposal = data.university.proposal;
+  const status = planStatus(proposal);
+  const [busy, setBusy] = useState(false);
+  const [returning, setReturning] = useState(false);
+  const [comment, setComment] = useState('');
+
+  async function approve() {
+    setBusy(true);
+    try {
+      await api('/plans/university/approve', { method: 'POST', body: { cycleYear } });
+      toast(`University Annual Plan for ${cycleYear} approved — now in effect.`);
+      await reload();
+    } catch (err) { toast(err.message, 'err'); } finally { setBusy(false); }
+  }
+  async function doReturn() {
+    if (!comment.trim()) { toast('A reason is required to return the plan.', 'err'); return; }
+    setBusy(true);
+    try {
+      await api('/plans/university/return', { method: 'POST', body: { cycleYear, comment: comment.trim() } });
+      toast('Returned to CPU.'); setReturning(false); setComment(''); await reload();
+    } catch (err) { toast(err.message, 'err'); } finally { setBusy(false); }
+  }
+
+  return (
+    <div>
+      <p className="text-[12.5px] text-ink-secondary mb-4 max-w-[70ch]">
+        Validating the Annual Plan means reviewing the compiled structure it's built from too — every Programme's
+        own position below, and the Sub-programmes and Units beneath each — not just the top-level narrative.
+      </p>
+      {data.programmes.map((p) => (
+        <div key={p.id} className="card mb-3">
+          <div className="flex justify-between items-start gap-3 flex-wrap">
+            <p className="font-bold text-[14px]">{p.name}</p>
+            <span className={`chip chip-st-${planStatus(p.proposal)}`}>{STATUS_LABEL[planStatus(p.proposal)]}</span>
+          </div>
+          <p className="text-[11.8px] text-ink-secondary mt-1">
+            Approved: <b>{fmtMoney(p.approvedBudget)}</b> · Provisional: <b>{fmtMoney(p.provisionalBudget)}</b>
+            {' · '}{data.subs.filter((s) => s.programme_id === p.id).length} Sub-programme(s),{' '}
+            {data.units.filter((u) => data.subs.some((s) => s.programme_id === p.id && s.id === u.sub_id)).length} Unit(s)
+          </p>
+          {p.proposal?.narrative && <p className="text-[12.6px] mt-2">{p.proposal.narrative}</p>}
+          <div className="mt-2 space-y-1">
+            {data.subs.filter((s) => s.programme_id === p.id).map((s) => (
+              <div key={s.id} className="text-[11.8px] text-ink-secondary pl-3 border-l-2 border-line">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span>• {s.name}</span>
+                  <span className={`chip chip-st-${planStatus(s.proposal)}`}>{STATUS_LABEL[planStatus(s.proposal)]}</span>
+                </div>
+                {data.units.filter((u) => u.sub_id === s.id).map((u) => (
+                  <div key={u.id} className="pl-4 flex items-center gap-2 flex-wrap text-[11.3px]">
+                    <span>◦ {u.name}</span>
+                    <span className={`chip chip-st-${planStatus(u.proposal)}`}>{STATUS_LABEL[planStatus(u.proposal)]}</span>
+                    <span className="tabular-nums">{fmtMoney(u.proposal?.budget)}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      <div className="card border-2 border-accent-500/20">
+        <div className="flex items-center gap-2 mb-1 flex-wrap">
+          <h2 className="font-display font-bold text-[15px]">University Annual Plan — {cycleYear}</h2>
+          <span className={`chip chip-st-${status}`}>{STATUS_LABEL[status]}</span>
+        </div>
+        <p className="text-[12px] text-ink-secondary mb-2">
+          Total — approved: <b>{fmtMoney(data.university.approvedBudget)}</b> · provisional: <b>{fmtMoney(data.university.provisionalBudget)}</b>
+        </p>
+        {data.university.proposal?.narrative && <p className="text-[12.6px] mb-3">{data.university.proposal.narrative}</p>}
+        {!data.university.proposal && <p className="text-[12.6px] text-ink-muted mb-3">Not yet compiled by CPU for this cycle.</p>}
+
+        {status === 'approved' && (
+          <div className="rounded-lg bg-good-soft text-good text-[12.8px] px-3.5 py-2.5 font-semibold">
+            ✓ You validated and approved this plan — it is the official Annual Plan in effect for {cycleYear}.
+          </div>
+        )}
+        {status !== 'submitted' && status !== 'approved' && (
+          <p className="text-[12.3px] text-ink-muted">Nothing awaiting your review for this cycle yet.</p>
+        )}
+        {status === 'submitted' && (
+          <div className="flex gap-2 flex-wrap">
+            <button className="btn btn-sm btn-primary" disabled={busy} onClick={approve}>Approve — put into effect</button>
+            <button className="btn btn-sm btn-danger" onClick={() => setReturning((v) => !v)}>Return…</button>
+          </div>
+        )}
+        {returning && (
+          <div className="mt-2.5 space-y-1.5">
+            <textarea rows={2} className="field-input" placeholder="Reason for returning this plan to CPU"
+              value={comment} onChange={(e) => setComment(e.target.value)} />
+            <button className="btn btn-sm btn-danger" disabled={busy} onClick={doReturn}>Confirm return</button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -577,6 +701,11 @@ function ReadOnlyPanel({ data }) {
         </p>
         {data.university.proposal?.narrative && <p className="text-[12.6px] mt-2">{data.university.proposal.narrative}</p>}
         {!data.university.proposal && <p className="text-[12.6px] text-ink-muted mt-2">Not yet compiled by CPU for this cycle.</p>}
+        {data.university.proposal?.status === 'approved' && (
+          <div className="mt-3 rounded-lg bg-good-soft text-good text-[12.3px] px-3 py-2 font-semibold">
+            ✓ Validated and approved by the University Council — official for {(data.university.proposal.approved_at || '').slice(0, 10) || 'this cycle'}.
+          </div>
+        )}
       </div>
     </div>
   );

@@ -56,7 +56,17 @@ export const ROLE_NAV_KEYS = {
   rep: ['entry', 'approvals', 'overview', 'framework', 'planning', 'messages'],
   cpu: ['overview', 'approvals', 'framework', 'planning', 'compliance', 'reports', 'audit', 'settings', 'messages'],
   ictadmin: ['overview', 'framework', 'users', 'audit', 'messages'],
-  programme: ['overview', 'framework', 'planning', 'reports', 'messages'],
+  // 'approvals' added: a Sub-programme's own KPI submission now stops at
+  // its Programme Head first (see lib/scope.js's isApprover / routes/kpis.js)
+  // before ever reaching CPU, so Programme Head needs a real Approvals Queue
+  // of their own now, not just read-only oversight.
+  programme: ['overview', 'approvals', 'framework', 'planning', 'reports', 'messages'],
+  // University Council: read-only oversight (Overview/Framework/Reports,
+  // same as every other role) plus the one real action that's theirs —
+  // validating and approving (or returning) the University Annual Plan on
+  // Annual Plan & Budget once CPU has submitted it. See pages/Planning.jsx's
+  // CouncilPanel / routes/plans.js's POST /university/approve|return.
+  council: ['overview', 'planning', 'framework', 'reports', 'messages'],
 };
 
 export function currentNav(user, hasPerm) {

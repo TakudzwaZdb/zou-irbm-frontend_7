@@ -164,6 +164,116 @@ while still talking to the same real backend over the same REST API.
   directly (verified with a real 403). ICT admin can promote any existing
   account to Programme Head from the Permissions page, choosing which
   Programme it's scoped to.
+- **University Council — a real approval gate on the Annual Plan, not just
+  CPU's word for it**: a new `council` role (permission `validate_annual_plan`,
+  its own permission group "Governance") sits above CPU on the University
+  Annual Plan cascade. CPU still compiles and submits the single University
+  Annual Plan for the cycle, but it no longer takes effect on submission —
+  it moves to `submitted` and waits for the University Council to review the
+  full compiled structure (every Programme, Sub-programme, and Unit beneath
+  it, the same live data the rest of the app already shows) and either
+  **approve** it (`status: 'approved'`, and only then is it "the official
+  Annual Plan in effect for" that cycle, called out as such everywhere it's
+  shown) or **return** it with a required comment, which reopens it as a
+  draft for CPU with the feedback attached, the same return/resubmit pattern
+  already used at every other tier. Both actions are gated server-side by
+  `validate_annual_plan`, not just hidden in the UI — a non-Council account
+  gets a real 403 calling the approve/return endpoints directly. While a
+  plan is submitted or approved, CPU's own edit and (re)submit endpoints are
+  now genuinely locked (previously an oversight: unlike every other tier in
+  the same file, the University-level routes had no server-side lock at
+  all, so CPU could silently overwrite an in-effect plan — closed as part of
+  this feature).
+- **Vice Chancellor — designated Executive Owner, accountable for overall
+  institutional performance**: a single-holder `is_executive_owner` flag on
+  `users` (enforced in one DB transaction — setting it on one account always
+  clears it from every other), assigned by default to the seeded VC account
+  and reassignable by ICT admin from the Permissions page. It's a real,
+  publicly-visible designation (`GET /api/org` returns `executiveOwner:
+  {id, name, title}`, the same visibility as the rest of the plain org-chart
+  data) rather than an extra approval gate: it surfaces as a badge next to
+  the holder's name in the header everywhere they're signed in, and as an
+  accountability note directly above the "Overall Institutional Performance
+  — All Programmes" appraisal on Overview — the same live, real rollup every
+  other tier already had, just named and attributed at the top.
+- **Admin-grantable Overview navigation limits**: ICT admin can now cap, per
+  account, how deep that account's Overview drill-down is allowed to go —
+  no restriction (the overall structure), or capped at Programme,
+  Sub-programme, or Unit level — from a new control on the Permissions page,
+  independent of role or permissions (an account can hold every reporting
+  permission there is and still be capped from drilling past its own
+  Programme in the Overview tree, if that's what ICT admin sets). This is
+  enforced in three places, not just one: the node-selection handler itself
+  refuses to select anything past the cap (the real backstop, not a UI
+  nicety), the main content area shows a lock note instead of the next
+  tier's cards, and the sidebar's Programme-structure tree dims and
+  locks the same rows with a 🔒 icon — so a capped account sees the shape of
+  the structure it can't enter (transparency about what exists) but can't
+  actually open it from anywhere in the app.
+- **Automated quarterly and bi-annual targets**: alongside the existing
+  monthly figures, every KPI card now also shows its own automatically
+  computed "Automated Q_ target" and "Automated H_ target" — the same
+  straight-line baseline-to-target pace math the variance tooling already
+  uses (`expectedValueForMonth`), evaluated at the end of the current
+  quarter and half-year rather than the current month. Nobody enters or
+  edits these — they're derived live from each KPI's own baseline, target,
+  and current month, exactly like the rest of the app's rollups, and they
+  update automatically as the KPI's baseline/target change or the period
+  rolls forward.
+- **Performance, automated all the way up to "overall"**: this was mostly
+  already true of the existing rollup architecture (every tier's appraisal —
+  Individual → Unit → Sub-programme → Programme → All Programmes — is a live
+  computation over real KPI values, never a manually re-entered summary at
+  a higher tier), so the real gap closed here was giving that top-of-cascade
+  number an explicit owner and framing: it's now presented as "Overall
+  Institutional Performance", directly under the Executive Owner
+  accountability note described above, rather than just another
+  "All Programmes" card among several.
+- **Actual vs. expected pace chart — every KPI, labeled by owner and tier,
+  scrollable**: the per-KPI variance chart on Overview's appraisal card no
+  longer caps or samples down the number of KPIs shown — every KPI with a
+  value in the selected period gets its own pair of bars, however many that
+  is. Each bar's tick carries three lines: the KPI's own name, who owns it
+  (the same "owner" resolution already used elsewhere in the app), and —
+  underneath that — which tier the owner is: Individual, Unit, or
+  Sub-programme. That third line is what actually disambiguates two KPIs
+  that happen to share the exact same name but belong to two different
+  people (e.g. two different Individuals each holding their own "Vacuum
+  Cleaning" duty KPI in two different Units) — the name alone can't tell
+  them apart, but the owner name plus tier always can, both on the chart
+  itself and in its tooltip. All three lines are shortened only as far as a
+  single chart slot's width genuinely requires — hovering any bar's tooltip
+  always shows the complete, untruncated name, owner, and tier regardless of
+  how the on-chart label was shortened. Each KPI keeps a fixed minimum slot
+  width, so once there are enough of them to genuinely not fit the card, the
+  chart scrolls horizontally in both directions, all the way to the last
+  KPI, rather than squeezing every label into an unreadable sliver. Whether
+  the "↔ Scroll, drag, or use the arrows to see all N KPIs" hint and the
+  ‹ › buttons show up is decided by actually measuring the chart's real
+  width against its card's real width in the browser (with a `ResizeObserver`
+  watching for layout changes — a resized window, a toggled sidebar), not by
+  guessing from a fixed KPI count — a count-based guess is wrong on a
+  narrower window or a phone (needs scroll sooner) and on a very wide
+  monitor (needs it later), so measuring live is what makes the hint/arrows
+  appear exactly when scrolling is genuinely possible, no more and no less.
+  Scrolling itself works four ways, not just one: an ordinary vertical
+  mouse-wheel scroll over the chart moves it left/right (a plain wheel
+  doesn't scroll a horizontally-overflowing element by default in any
+  browser, and React's own default wheel handling is passive and silently
+  blocks the conversion — this is wired up with a real, manually-attached,
+  non-passive browser listener instead, so it works cleanly on the first try
+  on every browser), a genuine horizontal trackpad swipe or shift+wheel
+  still passes straight through unconverted, click-and-drag ("grab to
+  scroll") works for a plain mouse with neither, and the ‹ › buttons step
+  the chart by a few KPIs at a time for anyone who'd rather click than
+  gesture. A short list that genuinely fits its card renders exactly as it
+  always did — no hint, no buttons, no scrollbar, filling the
+  available width. The "N KPIs need attention" list right below the chart
+  gets the same treatment vertically: once more than 6 KPIs are flagged,
+  that list caps to
+  a fixed height and scrolls up/down (with its own "↕ Scroll to see all N"
+  hint) instead of growing the page indefinitely — again, only once it's
+  actually long enough to need it.
 - **Internal messaging, across every tier**: a real "Messages" page open to
   every signed-in account regardless of role — write to anyone else in the
   system directly (an Individual can message the Vice Chancellor, not just
@@ -542,6 +652,121 @@ while still talking to the same real backend over the same REST API.
   feature elsewhere in this app — a personal display preference is allowed
   to quiet an attention cue, never to make a real accountability item
   invisible.
+- **A Sub-programme's own KPI performance submission now goes through its
+  Programme Head before CPU, not straight to CPU**: previously every
+  sub-owned KPI (`kpis.owner_type = 'sub'`) had exactly one approver — CPU
+  — the same single-stage shape as every other tier. It's now a genuine
+  two-stage review: the Sub Rep submits (`status: 'submitted'`), their own
+  Programme Head reviews it first, and approving moves it to a new
+  intermediate status, `'programme_approved'`, and forwards it on to CPU
+  for the real final sign-off (`status: 'approved'`) — CPU is blocked with
+  a 403 from acting on it at the first stage, and the Programme Head is
+  equally blocked from acting on it once it's already moved past them.
+  Individual- and Unit-owned KPIs are completely unaffected — still their
+  original single approver, one stage, exactly as before. The automated
+  cumulative-value computation (`previousOfficialValue + entered_value`,
+  see above) deliberately still only ever happens at the one true final
+  approval — CPU's — never at the Programme Head's intermediate sign-off,
+  so a KPI's official running total is never provisional. A return, at
+  either stage, always resets the submission all the way back to a plain
+  `'draft'` with the reviewer's comment attached — it never bounces
+  sideways to the other reviewer to pass along, matching how every other
+  return in this app already works.
+  - **Server-enforced**: `kpi_values.status`'s CHECK constraint was widened
+    (SQLite requires the create-table-and-copy migration technique used
+    elsewhere in this codebase, since a CHECK can't be altered in place —
+    see `db.js`, detected idempotently off the table's own stored schema
+    text) to allow `'programme_approved'` alongside the existing
+    draft/submitted/approved values, with a new `programme_approved_at`
+    timestamp column alongside the existing `submitted_at`/`approved_at`.
+    `routes/kpis.js`'s `isApprover(user, kpi, status)` now takes the row's
+    current status as a real parameter — for a sub-owned KPI it resolves to
+    the Programme Head while status is `'submitted'`, or CPU once it's
+    `'programme_approved'` — and both `POST /:id/approve` and
+    `POST /:id/return` check the row's actual current status against this
+    before allowing the action, so nobody can skip ahead or act out of turn
+    by calling the API directly regardless of what the UI shows them.
+    `programme`'s default permission set gained `approve_own_tier` (already
+    held by Sub Reps/Unit Heads) — and, since permissions are granted
+    per-user only once at seed time rather than re-derived from the role at
+    request time, a one-time idempotent backfill in `db.js` grants it
+    directly to every already-seeded Programme Head account too, so this
+    works immediately on a database that predates the feature, not only on
+    a freshly reseeded one.
+  - **Frontend**: `lib/scope.js`'s `isApprover` mirrors the backend exactly,
+    including the `status` parameter; Programme Head gained a real
+    Approvals Queue nav item (`lib/nav.js`) now that they hold
+    `approve_own_tier`, which correctly buckets a sub-owned KPI as pending
+    only while it's actually at the stage they can act on, and files a
+    forwarded-to-CPU item under "Decided this period" rather than either
+    losing track of it or leaving it stuck looking "pending" forever
+    (`pages/Approvals.jsx`). The submitter's own My Data Entry groups
+    `'programme_approved'` together with `'submitted'` under "awaiting
+    review" (`pages/Entry.jsx`) — from the Sub Rep's own point of view it's
+    still just waiting on someone else, whichever of the two reviewers that
+    currently is. `components/KpiCard.jsx` locks the entry field through
+    both pending stages and shows a distinct "Approved by Programme — with
+    CPU" chip (new `.chip-st-programme_approved` style) so the two stages
+    read as visibly different, without borrowing the "done" green already
+    reserved for a true final approval. The pending-review item in the
+    Alerts bell (`lib/alerts.js`) now correctly reaches whichever of the two
+    reviewers actually owns the current stage.
+  - **Verified**: a full submit → Programme Head approve → CPU approve run
+    via direct API calls, confirming CPU is 403'd at the first stage and
+    the Programme Head is 403'd once it's moved past them, that the
+    cumulative value is computed only at CPU's final approval (not the
+    Programme Head's), and the return path resets all the way back to
+    draft at both stages, with a resubmit-and-retry run through the whole
+    cycle a second time; a regression check confirming Individual- and
+    Unit-owned KPIs still run their original single-stage approval
+    completely unchanged; and a full browser walk-through (Sub Rep submits
+    → Programme Head's Approvals Queue shows and approves it → CPU's own
+    Approvals Queue shows it with the new status chip and gives final
+    approval), plus a role-by-role sweep of every page for all eight
+    account types with zero console errors.
+- **An approver can now actually see what they're approving**: a
+  submitted-but-not-yet-approved KPI's own `value` is deliberately still
+  NULL until the moment it's approved (see above) — which previously meant
+  the person about to approve or return it saw a completely blank "Current"
+  figure and a "No data" score, with nothing to actually judge the
+  submission against. `routes/kpis.js`'s new `attachPreview` helper now
+  computes a read-only `preview_value` — `previousOfficialValue +
+  entered_value`, the identical math final approval itself uses, recomputed
+  fresh on every read and never stored — and attaches it to exactly these
+  rows in both `GET /kpis/values` (the batch read Approvals Queue/My Data
+  Entry use) and `GET /kpis/:id/values`. Automated (shared/contribution-
+  summed) KPIs are excluded — their `value` is already kept live by
+  `recomputeUnitTotal` the moment a contribution is approved, so there's
+  nothing to preview. On the frontend, `KpiCard` builds a display-only
+  synthetic row with this preview standing in for `value` — used for the
+  score chip, the "Current" figure (relabeled "Projected total if
+  approved"), and the monthly pace bar (labeled "(projected)" throughout) —
+  while every write action still reads and writes the real row underneath,
+  never the preview. The raw submitted figure itself now also gets its own
+  clearly labeled figure ("Submitted this period") that was previously only
+  ever visible inside the submitter's own (locked) entry box, invisible to
+  anyone reviewing it; and `mode="approver"` cards gained an explicit
+  callout right next to the Approve/Return buttons restating exactly what's
+  being decided on — the submitted figure, the projected new total, its
+  score, and the submitter's own note, all in one place, so nobody has to
+  approve blind or piece it together from elsewhere on the card. Verified
+  via direct API calls confirming `preview_value` appears exactly while a
+  row is pending (at both the Programme Head's and CPU's stage for a
+  sub-owned KPI) and disappears once real approval sets the official
+  `value`, plus a full browser check of the Approvals Queue showing the
+  submitted figure, projected total, and score before a decision is made.
+  In the course of this, a separate pre-existing display bug was also
+  found and fixed: `kpi.is_automated` is a raw SQLite 0/1 integer, not a
+  real boolean, so `{kpi.is_automated && ...}` rendered the literal digit
+  "0" on every non-automated KPI's approver card — fixed with `!!`.
+- **The "Actual vs. expected pace" chart's owner label is now unmissable**:
+  each bar's owner name (added earlier — see `ownerName`/`ownerKindLabel`
+  in `lib/scope.js`) was previously a small, muted, grey line easy to miss
+  next to the KPI's own name above it. It's now bold and set in the accent
+  color, distinctly larger than the tier label beneath it, so it reads as
+  real information under every bar rather than faint chrome — the KPI name,
+  who owns it, and what tier that owner is are now three visually distinct
+  lines instead of one that stands out and two that blend together.
 
 ## What's simplified versus the original prototype
 
@@ -563,6 +788,20 @@ sprawling:
   the old figure are not automatically walked forward and recalculated —
   a deliberate scope boundary, not an oversight, to avoid a single edit
   silently rewriting a long chain of already-signed-off history.
+- Executive Owner is a display and accountability designation only — it
+  marks who the app holds out as accountable for overall institutional
+  performance and puts their name on it, but it is not an extra approval
+  gate anywhere in the University Annual Plan cascade (that gate is the
+  University Council's `validate_annual_plan`, described above). The VC
+  isn't required to click anything for the Plan to take effect.
+- The admin-grantable Overview navigation limit (`overview_limit`) caps
+  only the Overview drill-down tree — it's a visibility ceiling on
+  navigation depth, deliberately independent of the permission catalog. It
+  doesn't touch what a capped account can do elsewhere (Reports, Approvals,
+  messaging, …), and it isn't a data-scoping mechanism like a Sub Rep's or
+  Unit Head's own scope — a capped global-role account still sees the
+  correct rollup figures at its own capped tier, just not the tiers deeper
+  than that.
 
 Everything else — real auth, real RBAC, the full organisational hierarchy
 (Programmes → Sub-programmes → Units/Departments/Faculties/Regions →
@@ -695,9 +934,10 @@ try a different role:
 
 | Access level | Email | What they can do |
 |---|---|---|
-| Executive (Vice Chancellor) | `l.chareka@zou.ac.zw` | Read-only executive view (Reports only) |
-| Corporate Planning Unit (CPU) | `t.moyo@zou.ac.zw` | Approves sub-programme submissions, manages org structure, KPIs, and settings |
-| ICT Systems Administrator | `l.chikomo@zou.ac.zw` | The only role that can grant/revoke permissions, change a user's role, or remove an account — and by default can also add/remove units and individuals, create new KPIs, edit KPI targets, and apply overrides |
+| Executive (Vice Chancellor) | `l.chareka@zou.ac.zw` | Read-only executive view (Reports only); designated **Executive Owner**, accountable for overall institutional performance against the Plan (badge in the header, accountability note on Overview) |
+| University Council (Chairperson) | `f.museta@zou.ac.zw` | Reviews the fully compiled University Annual Plan (every Programme/Sub-programme/Unit beneath it) and approves it into effect, or returns it to CPU with a comment — the top validation gate on the Annual Plan cascade |
+| Corporate Planning Unit (CPU) | `t.moyo@zou.ac.zw` | Approves sub-programme submissions, manages org structure, KPIs, and settings; compiles and submits the University Annual Plan to the Council |
+| ICT Systems Administrator | `l.chikomo@zou.ac.zw` | The only role that can grant/revoke permissions, change a user's role, or remove an account — and by default can also add/remove units and individuals, create new KPIs, edit KPI targets, apply overrides, set a user's Overview navigation limit, and designate the Executive Owner |
 | Programme Head | `s.chitiyo@zou.ac.zw` | Read-only oversight of every Sub-programme in their own Programme (Governance & Administration) only; approves/returns those Sub-programmes' Annual Plan proposals and compiles/submits their own Programme's plan |
 | Sub-programme Representative | `b.gwatidzo@zou.ac.zw` | Enters KPI data owned by their sub-programme; approves the Unit Heads below them |
 | Unit Head | `f.rusike@zou.ac.zw` | Enters KPI data owned by their unit; approves the Individuals below them |
@@ -720,15 +960,18 @@ for CPU, and the Framework page's "Add a unit", "Create a KPI" and "Edit
 targets" forms only appear for accounts holding those specific
 permissions (CPU and ICT admin, by default).
 
-There's a second Executive account (`f.museta@zou.ac.zw`, Council
-Chairperson) and many more Sub Rep / Unit Head / Individual accounts —
-`npm run seed`'s console output and the Framework page (visible to
-CPU/ICT admin) show the full organisational tree, from which you can find
-any of them by name to sign in and explore. To try the full submission →
-review → approval chain end to end: sign in as `n.moyana@zou.ac.zw`
-(Individual), enter and submit a KPI value, then sign in as
-`m.chirisa@zou.ac.zw` (their Unit Head, Postgraduate Research Unit) and
-approve it from the Approvals Queue.
+There are many more Sub Rep / Unit Head / Individual accounts beyond the
+one of each shown above — `npm run seed`'s console output and the
+Framework page (visible to CPU/ICT admin) show the full organisational
+tree, from which you can find any of them by name to sign in and explore.
+To try the full submission → review → approval chain end to end: sign in
+as `n.moyana@zou.ac.zw` (Individual), enter and submit a KPI value, then
+sign in as `m.chirisa@zou.ac.zw` (their Unit Head, Postgraduate Research
+Unit) and approve it from the Approvals Queue. To try the University
+Annual Plan's own top-level cascade: sign in as `t.moyo@zou.ac.zw` (CPU),
+compile and submit the University Annual Plan from Annual Plan & Budget,
+then sign in as `f.museta@zou.ac.zw` (University Council) and approve it
+(or return it with a comment) from the same page.
 
 ## Before using this for anything real
 
@@ -753,7 +996,9 @@ All endpoints are under `/api`. Authenticated endpoints require an
   `POST /api/auth/change-password` (any signed-in user, own account,
   requires their current password), `PUT|DELETE /api/auth/me/avatar`
   (any signed-in user, own profile photo — a `data:` URL, capped size)
-- `GET /api/org`, `POST /api/org/units` (requires `manage_org_units`),
+- `GET /api/org` (now also returns `executiveOwner: { id, name, title } | null`
+  — the single account, if any, currently designated Executive Owner),
+  `POST /api/org/units` (requires `manage_org_units`),
   `POST /api/org/individuals` (`manage_org_units` OR the narrower,
   scope-restricted `add_individual` — a Unit Head may only target their own
   unit, a Sub Rep only a unit within their own sub-programme) /
@@ -832,7 +1077,13 @@ All endpoints are under `/api`. Authenticated endpoints require an
   `POST /api/plans/programmes/:programmeId/submit` (CPU, or that
   Programme's own Programme Head only).
   `PUT /api/plans/university` / `POST /api/plans/university/submit`
-  (`submit_annual_plan`, CPU only).
+  (`submit_annual_plan`, CPU only — both now reject the request once the
+  plan is `submitted` or `approved`, the same lock every other tier already
+  enforced), `POST /api/plans/university/approve` (`validate_annual_plan`,
+  University Council only — only while `status: 'submitted'`; sets
+  `status: 'approved'`) / `POST /api/plans/university/return`
+  (`validate_annual_plan` — requires a `comment`; reopens the plan as a
+  `draft` for CPU with that comment attached).
 - `GET /api/messages/directory` (every other account's name/title/email/role
   — who you can write to; open to any signed-in user, deliberately not
   scope-restricted), `GET /api/messages/unread-count`,
@@ -850,6 +1101,12 @@ All endpoints are under `/api`. Authenticated endpoints require an
   in a system with no email/SMS delivery behind it),
   `POST /api/users/:id/permissions/:key/grant|revoke`,
   `PATCH /api/users/:id/role` (change a user's role/scope),
+  `PATCH /api/users/:id/overview-limit` (`{ overview_limit: null|'programme'|
+  'sub'|'unit' }` — caps that account's Overview drill-down depth,
+  independent of role/permissions),
+  `PATCH /api/users/:id/executive-owner` (`{ on: true|false }` — setting
+  `true` clears any existing holder first, in one transaction, so there is
+  never more than one),
   `DELETE /api/users/:id` (remove an account — a user can't change their own
   role or remove their own account) — all `ictadmin` role only
 - `GET /api/audit` (`view_audit`)

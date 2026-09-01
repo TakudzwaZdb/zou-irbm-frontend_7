@@ -230,10 +230,20 @@ router.post('/programmes/:programmeId/submit', requireAnyPerm('approve_own_tier'
   res.json({ ok: true });
 });
 
-// ---- University tier: CPU compiles and submits the whole annual plan -----
+// ---- University tier: CPU compiles and submits the whole annual plan,
+// the University Council validates and approves (or returns) it — only a
+// Council approval actually puts it into effect for the cycle. Same
+// draft/submitted/approved shape as every other tier's cascade, and now the
+// same "locked while under review" rule the Unit/Sub tiers already enforce
+// (previously this route had no such guard at all, which meant CPU could
+// silently overwrite even an already-Council-approved, in-effect plan).
 router.put('/university', requirePerm('submit_annual_plan'), (req, res) => {
   const { cycleYear, narrative } = req.body || {};
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
+  const existing = getRow(cycleYear, 'university', null);
+  if (existing && existing.status !== 'draft') {
+    return res.status(400).json({ error: 'This plan is locked while submitted or approved — ask the University Council to return it first.' });
+  }
   const row = upsertDraft(cycleYear, 'university', null, { narrative: narrative || null, status: 'draft' });
   res.json({ proposal: row });
 });
@@ -243,9 +253,41 @@ router.post('/university/submit', requirePerm('submit_annual_plan'), (req, res) 
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
   const row = getRow(cycleYear, 'university', null);
   if (!row || !row.narrative) return res.status(400).json({ error: 'Enter the compiled annual-plan narrative before submitting.' });
-  db.prepare('UPDATE plan_proposals SET status = \'submitted\', submitted_at = datetime(\'now\') WHERE id = ?').run(row.id);
+  if (row.status !== 'draft') return res.status(400).json({ error: 'This plan has already been submitted to the University Council.' });
+  db.prepare('UPDATE plan_proposals SET status = \'submitted\', submitted_at = datetime(\'now\'), return_comment = NULL WHERE id = ?').run(row.id);
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'submit_annual_plan', 'plan_proposal', row.id, `University Annual Plan for ${cycleYear} submitted.`
+    req.user.id, 'submit_annual_plan', 'plan_proposal', row.id, `University Annual Plan for ${cycleYear} submitted to the University Council for validation.`
+  );
+  res.json({ ok: true });
+});
+
+// The one gate that puts an Annual Plan into effect: the University
+// Council validates the compiled plan AND the structure it was built from
+// (every Programme's own compiled position, which is what GET /plans
+// already exposes in full to a Council reviewer — same data, same numbers,
+// nothing recomputed specially for this) and either approves it — final,
+// official for the cycle — or returns it to CPU with a reason, exactly
+// like every return elsewhere in this app.
+router.post('/university/approve', requirePerm('validate_annual_plan'), (req, res) => {
+  const { cycleYear } = req.body || {};
+  if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
+  const row = getRow(cycleYear, 'university', null);
+  if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending the University Council\'s review for that cycle.' });
+  db.prepare('UPDATE plan_proposals SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
+  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+    req.user.id, 'approve_annual_plan', 'plan_proposal', row.id, `University Annual Plan for ${cycleYear} validated and approved by the University Council — now in effect.`
+  );
+  res.json({ ok: true });
+});
+
+router.post('/university/return', requirePerm('validate_annual_plan'), (req, res) => {
+  const { cycleYear, comment } = req.body || {};
+  if (!comment || !comment.trim()) return res.status(400).json({ error: 'A reason is required when returning the plan.' });
+  const row = getRow(cycleYear, 'university', null);
+  if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending the University Council\'s review for that cycle.' });
+  db.prepare('UPDATE plan_proposals SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment.trim(), row.id);
+  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+    req.user.id, 'return_annual_plan', 'plan_proposal', row.id, `University Annual Plan for ${cycleYear} returned by the University Council: "${comment.trim()}"`
   );
   res.json({ ok: true });
 });

@@ -15,7 +15,7 @@ const router = express.Router();
 router.use(requireAuth, requireRole('ictadmin'));
 
 router.get('/', (req, res) => {
-  const users = db.prepare('SELECT id, name, title, email, role, scope_type, scope_id, avatar FROM users ORDER BY role, name').all();
+  const users = db.prepare('SELECT id, name, title, email, role, scope_type, scope_id, avatar, overview_limit, is_executive_owner FROM users ORDER BY role, name').all();
   const permRows = db.prepare('SELECT user_id, permission_key FROM user_permissions').all();
   const permsByUser = {};
   permRows.forEach((r) => {
@@ -97,7 +97,8 @@ router.post('/:id/reset-password', (req, res) => {
   res.json({ newPassword: chosen });
 });
 
-const ROLES = ['exec', 'cpu', 'ictadmin', 'rep', 'unithead', 'individual', 'programme'];
+const ROLES = ['exec', 'cpu', 'ictadmin', 'rep', 'unithead', 'individual', 'programme', 'council'];
+const OVERVIEW_LIMITS = ['programme', 'sub', 'unit'];
 const SCOPE_TYPES = ['sub', 'unit', 'individual', 'programme'];
 
 // Change a user's role/scope — e.g. reassigning a Unit Head to a different
@@ -121,6 +122,51 @@ router.patch('/:id/role', (req, res) => {
     req.user.id, 'change_role', 'user', id, `${target.name}: role changed from "${target.role}" to "${role}".`
   );
   res.json({ user: db.prepare('SELECT id, name, title, email, role, scope_type, scope_id FROM users WHERE id = ?').get(id) });
+});
+
+// Sets (or clears) how deep this account may drill into Overview's
+// Programme -> Sub-programme -> Unit -> Individual structure — a real
+// visibility ceiling on the exploratory browsing view, independent of role
+// or any other permission (see db.js's users.overview_limit / lib/scope.js's
+// canDrillToKind on the frontend, which is what actually enforces it).
+// null clears the restriction entirely ("the overall structure" — no cap).
+router.patch('/:id/overview-limit', (req, res) => {
+  const { id } = req.params;
+  const { overviewLimit } = req.body || {};
+  if (overviewLimit != null && !OVERVIEW_LIMITS.includes(overviewLimit)) {
+    return res.status(400).json({ error: `overviewLimit must be one of: ${OVERVIEW_LIMITS.join(', ')}, or null.` });
+  }
+  const target = db.prepare('SELECT id, name FROM users WHERE id = ?').get(id);
+  if (!target) return res.status(404).json({ error: 'User not found.' });
+  db.prepare('UPDATE users SET overview_limit = ? WHERE id = ?').run(overviewLimit || null, id);
+  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+    req.user.id, 'set_overview_limit', 'user', id,
+    overviewLimit ? `${target.name}'s Overview navigation was capped at "${overviewLimit}" level.` : `${target.name}'s Overview navigation restriction was cleared.`
+  );
+  res.json({ ok: true });
+});
+
+// Designates (or un-designates) the single account that is this
+// university's Executive Owner — accountable for overall institutional
+// performance against the Plan (see routes/org.js's GET / and
+// Overview.jsx's "Overall Institutional Performance" card). Deliberately
+// single-holder: setting it on one account clears it from every other in
+// the same transaction, so "who is accountable" is never ambiguous.
+router.patch('/:id/executive-owner', (req, res) => {
+  const { id } = req.params;
+  const { executiveOwner } = req.body || {};
+  const target = db.prepare('SELECT id, name FROM users WHERE id = ?').get(id);
+  if (!target) return res.status(404).json({ error: 'User not found.' });
+  const txn = db.transaction(() => {
+    if (executiveOwner) db.prepare('UPDATE users SET is_executive_owner = 0 WHERE is_executive_owner = 1').run();
+    db.prepare('UPDATE users SET is_executive_owner = ? WHERE id = ?').run(executiveOwner ? 1 : 0, id);
+  });
+  txn();
+  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+    req.user.id, 'set_executive_owner', 'user', id,
+    executiveOwner ? `${target.name} designated Executive Owner — accountable for overall institutional performance.` : `${target.name} un-designated as Executive Owner.`
+  );
+  res.json({ ok: true });
 });
 
 // Remove a user account entirely. Any unit/sub they head/represent, or

@@ -11,7 +11,7 @@ function getUserPermissions(userId) {
 }
 
 function loadUser(userId) {
-  const user = db.prepare('SELECT id, name, title, email, role, scope_type, scope_id, avatar FROM users WHERE id = ?').get(userId);
+  const user = db.prepare('SELECT id, name, title, email, role, scope_type, scope_id, avatar, overview_limit, is_executive_owner FROM users WHERE id = ?').get(userId);
   if (!user) return null;
   user.permissions = getUserPermissions(user.id);
   return user;

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { api, setToken, setUnauthorizedHandler } from '../lib/api.js';
-import { currentPeriod } from '../lib/scope.js';
+import { currentPeriod, canDrillToKind } from '../lib/scope.js';
 import { defaultIdx, rangeFor, latestInRange } from '../lib/period.js';
 import { playTone } from '../lib/sound.js';
 
@@ -61,7 +61,16 @@ export function AppProvider({ children }) {
   // lib/scope.js's defaultNodeForRole; a global role falls back to "All
   // Programmes"). Cleared on logout so the next sign-in starts fresh.
   const [selNode, setSelNode] = useState(null);
-  const selectNode = useCallback((kind, id) => setSelNode({ kind, id }), []);
+  // Enforces this account's own Overview navigation ceiling (see
+  // lib/scope.js's canDrillToKind / users.overview_limit) right at the one
+  // place every drill-down action funnels through — a no-op past the cap,
+  // not just a rendering choice, so there's no second path that bypasses
+  // it. Overview.jsx also avoids rendering the deeper cards as clickable in
+  // the first place; this is the backstop.
+  const selectNode = useCallback((kind, id) => {
+    if (!canDrillToKind(user, kind)) return;
+    setSelNode({ kind, id });
+  }, [user]);
   const clearSelNode = useCallback(() => setSelNode(null), []);
 
   // A separate, read-only "performance lens" (Overview/Reports) — see

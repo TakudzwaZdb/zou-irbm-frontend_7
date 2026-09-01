@@ -5,10 +5,17 @@ import { api } from '../lib/api.js';
 import { avatarClass, initialsOf, scopeBreadcrumb } from '../lib/scope.js';
 import PhotoLightbox from '../components/PhotoLightbox.jsx';
 
-const ROLES = ['exec', 'cpu', 'ictadmin', 'rep', 'unithead', 'individual', 'programme'];
+const ROLES = ['exec', 'cpu', 'ictadmin', 'rep', 'unithead', 'individual', 'programme', 'council'];
 const ROLE_LABEL = {
   exec: 'Executive', cpu: 'Corporate Planning Unit', ictadmin: 'ICT Systems Administrator',
   rep: 'Sub-programme Rep', unithead: 'Unit Head', individual: 'Individual', programme: 'Programme Head',
+  council: 'University Council',
+};
+const OVERVIEW_LIMIT_LABEL = {
+  '': 'No restriction — the overall structure',
+  programme: 'Up to Programme level only',
+  sub: 'Up to Sub-programme level',
+  unit: 'Up to Unit level',
 };
 
 export default function Users() {
@@ -117,6 +124,33 @@ export default function Users() {
       toast(`Password reset for ${u.name}.`);
     } catch (err) { toast(err.message, 'err'); }
     finally { setBusyId(null); }
+  }
+
+  // Overview navigation restriction — a visibility ceiling independent of
+  // role/permissions (see db.js's users.overview_limit / lib/scope.js's
+  // canDrillToKind), not a permission grant, so it lives here as its own
+  // control rather than another catalog chip.
+  async function setOverviewLimit(u, value) {
+    setBusyId(u.id);
+    try {
+      await api(`/users/${u.id}/overview-limit`, { method: 'PATCH', body: { overviewLimit: value || null } });
+      toast(`${u.name}'s Overview navigation ${value ? `capped at ${OVERVIEW_LIMIT_LABEL[value].toLowerCase()}` : 'restriction cleared'}.`);
+      await load();
+    } catch (err) { toast(err.message, 'err'); } finally { setBusyId(null); }
+  }
+
+  // Executive Owner — single-holder accountability designation (see
+  // db.js's users.is_executive_owner / routes/org.js's GET /), ordinarily
+  // the Vice Chancellor. Setting it on one account clears it from any
+  // other, server-side, in one transaction.
+  async function setExecutiveOwner(u, on) {
+    if (on && !window.confirm(`Designate ${u.name} as Executive Owner? This clears the designation from anyone who currently holds it.`)) return;
+    setBusyId(u.id);
+    try {
+      await api(`/users/${u.id}/executive-owner`, { method: 'PATCH', body: { executiveOwner: on } });
+      toast(on ? `${u.name} designated Executive Owner.` : `${u.name} un-designated as Executive Owner.`);
+      await load();
+    } catch (err) { toast(err.message, 'err'); } finally { setBusyId(null); }
   }
 
   async function removeAccount(u) {
@@ -253,6 +287,30 @@ export default function Users() {
                   </button>
                 );
               })}
+            </div>
+
+            <div className="flex flex-wrap items-end gap-2.5 mt-3.5 pt-3 border-t border-line">
+              <div className="space-y-1">
+                <label className="field-label">Overview navigation limit</label>
+                <select
+                  className="field-input py-1.5"
+                  value={u.overview_limit || ''}
+                  disabled={busyId === u.id}
+                  onChange={(e) => setOverviewLimit(u, e.target.value)}
+                >
+                  {Object.entries(OVERVIEW_LIMIT_LABEL).map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+                </select>
+              </div>
+              <label className="flex items-center gap-1.5 text-[12px] font-semibold cursor-pointer select-none pb-1.5">
+                <input
+                  type="checkbox"
+                  checked={!!u.is_executive_owner}
+                  disabled={busyId === u.id}
+                  onChange={(e) => setExecutiveOwner(u, e.target.checked)}
+                />
+                Executive Owner
+                <span className="text-ink-muted font-normal">(accountable for overall institutional performance)</span>
+              </label>
             </div>
 
             {!isSelf && (

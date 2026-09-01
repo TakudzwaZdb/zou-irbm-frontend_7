@@ -10,7 +10,14 @@ import { readDraft, writeDraft, clearDraft, draftDiffersFrom } from '../lib/auto
 import Fig from './Fig.jsx';
 import MonthlyPaceBar from './MonthlyPaceBar.jsx';
 
-const STATUS_LABEL = { none: 'Not started', draft: 'Draft', returned: 'Returned', submitted: 'Submitted', approved: 'Approved' };
+const STATUS_LABEL = {
+  none: 'Not started', draft: 'Draft', returned: 'Returned', submitted: 'Submitted',
+  // Only ever reached by a Sub-programme's own KPI (owner_type = 'sub'): the
+  // Programme Head has approved it and forwarded it on — it's now with CPU
+  // for final sign-off, not yet the KPI's official "Approved" figure.
+  programme_approved: 'Approved by Programme — with CPU',
+  approved: 'Approved',
+};
 
 // `context` keeps the two review surfaces that share this same card from
 // bleeding into each other: 'entry' (My Data Entry — the default) is a
@@ -50,8 +57,21 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
   const isShared = kpi.owner_type === 'unit' && assignees.length > 0;
   const kpiContributions = isShared ? contributions.filter((c) => c.kpi_id === kpi.id) : [];
   const valueRow = values[`${kpi.id}-${period.year}-${period.month}`];
-  const rag = computeRag(kpi, valueRow, settings);
   const status = valueStatus(valueRow);
+  // A submitted-but-not-yet-approved row's real `value` is deliberately
+  // still null (see below) — so without this, whoever is about to approve
+  // or return it would see a blank "Current" figure and a "No data" score,
+  // with nothing to actually judge the submission against. The backend now
+  // attaches a read-only `preview_value` to exactly these rows (see
+  // routes/kpis.js's attachPreview) — previousOfficialValue + entered_value,
+  // the identical math final approval itself uses — and this builds a
+  // synthetic row with that preview standing in for `value`, used ONLY for
+  // display (score chip, Current figure, the pace bar): every write action
+  // (Save/Submit/Approve/Return) still reads and writes the real valueRow,
+  // never this one.
+  const isPreview = !!(valueRow && valueRow.value == null && valueRow.preview_value != null);
+  const effectiveRow = isPreview ? { ...valueRow, value: valueRow.preview_value } : valueRow;
+  const rag = computeRag(kpi, effectiveRow, settings);
   // Variance vs. the pace expected by the currently-selected performance
   // period (Monthly/Quarterly/Bi-annual/Annual — see LiveIndicator's sibling
   // PeriodTypePicker on Overview/Reports) — the same real number driving the
@@ -66,7 +86,7 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
   // entry on its own, never a running total the submitter has to work out
   // by hand — the server adds it to the previous period's official total
   // automatically, the moment this one is approved.
-  const current = valueRow ? (valueRow.override_value != null ? valueRow.override_value : valueRow.value) : null;
+  const current = effectiveRow ? (effectiveRow.override_value != null ? effectiveRow.override_value : effectiveRow.value) : null;
   const enteredValue = valueRow ? valueRow.entered_value : null;
 
   // A local-only safety net against an interruption mid-typing — a power
@@ -101,7 +121,12 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
     finally { setBusy(false); }
   }
 
-  const locked = valueRow && valueRow.status === 'submitted';
+  // Locked for editing throughout BOTH pending stages of a Sub-programme's
+  // own KPI — 'submitted' (with the Programme Head) and 'programme_approved'
+  // (forwarded on to CPU) — not just the first one, since the submitter
+  // can't touch it again until either final approval or a return resets it
+  // back to 'draft'.
+  const locked = valueRow && (valueRow.status === 'submitted' || valueRow.status === 'programme_approved');
   // A shared/automated KPI's own row is gated on `value` (recomputeUnitTotal
   // already fills it from approved contributions); every directly-entered
   // KPI is gated on `entered_value` — the number PUT /:id/value actually
@@ -159,10 +184,26 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
         <div className="flex gap-x-8 gap-y-2 flex-wrap">
           <Fig k="Baseline" v={kpi.baseline} />
           <Fig k="Target" v={kpi.target} />
-          <Fig k="Current (cumulative)" v={current != null ? current : '—'} />
+          {/* The raw submitted figure itself — entered_value — separate from
+              the cumulative total below. Without this, a reviewer had no way
+              to see what was actually typed in before deciding whether to
+              approve it. Shown for anyone reviewing or looking back at a
+              period that's actually had something entered. */}
+          {valueRow?.entered_value != null && ['submitted', 'programme_approved', 'approved'].includes(status) && (
+            <Fig k="Submitted this period" v={`${valueRow.entered_value} ${kpi.measure}`} />
+          )}
+          <Fig
+            k={isPreview ? 'Projected total if approved' : 'Current (cumulative)'}
+            v={current != null ? current : '—'}
+          />
         </div>
+        {isPreview && (
+          <p className="text-[11px] text-ink-muted mt-2 italic">
+            Not yet official — this is what the cumulative total and score above would become if this submission is approved as-is.
+          </p>
+        )}
 
-        <MonthlyPaceBar kpi={kpi} valueRow={valueRow} period={period} />
+        <MonthlyPaceBar kpi={kpi} valueRow={effectiveRow} period={period} isPreview={isPreview} />
       </div>
 
       {valueRow?.override_value != null && (
@@ -251,6 +292,35 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
 
       {mode === 'approver' && (
         <>
+          {/* Restates exactly what's being decided on, right next to the
+              decision itself — the entered figure, what it projects to once
+              approved, and the score that projection scores as — so the
+              approver never has to approve blind or hunt for it further up
+              the card. explanation is the submitter's own note, if any. */}
+          <div className="mt-3 rounded-lg border border-line bg-sunken/60 px-3.5 py-3 text-[12.6px]">
+            <p className="font-semibold text-ink mb-1">
+              {isShared ? (
+                <>
+                  Team total submitted: <span className="tabular-nums">{current != null ? `${current} ${kpi.measure}` : '—'}</span>
+                  {current != null && <span className="text-ink-muted font-normal"> ({rag.label})</span>}
+                </>
+              ) : (
+                <>
+                  Submitted: <span className="tabular-nums">{valueRow?.entered_value != null ? `${valueRow.entered_value} ${kpi.measure}` : '—'}</span>
+                  {isPreview && current != null ? (
+                    <>
+                      <span className="text-ink-muted font-normal"> → if approved, new total </span>
+                      <span className="tabular-nums">{current} {kpi.measure}</span>
+                      <span className="text-ink-muted font-normal"> ({rag.label})</span>
+                    </>
+                  ) : current != null && (
+                    <span className="text-ink-muted font-normal"> ({rag.label})</span>
+                  )}
+                </>
+              )}
+            </p>
+            {valueRow?.explanation && <p className="text-ink-secondary">“{valueRow.explanation}” — submitter's note</p>}
+          </div>
           <div className="flex gap-2 flex-wrap mt-3">
             <button className="btn btn-sm btn-primary" disabled={busy}
               onClick={() => run(() => api(`/kpis/${kpi.id}/approve`, { method: 'POST', body: { year: period.year, month: period.month } }), 'Approved.')}>
@@ -271,7 +341,11 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
               </button>
             </div>
           )}
-          {kpi.is_automated && hasPerm('apply_override') && (
+          {/* !! coerces is_automated (a raw SQLite 0/1 integer, not a real
+              boolean) — otherwise a non-automated KPI (is_automated === 0)
+              renders the literal digit "0" here instead of nothing, since
+              `0 && x` evaluates to `0`, not `false`. */}
+          {!!kpi.is_automated && hasPerm('apply_override') && (
             <div className="flex gap-2 flex-wrap items-center mt-3">
               <input type="number" step="any" placeholder="Override value" className="field-input w-32"
                 value={overrideValue} onChange={(e) => setOverrideValue(e.target.value)} />

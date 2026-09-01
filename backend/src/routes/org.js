@@ -17,7 +17,14 @@ router.get('/', (req, res) => {
   const subs = db.prepare('SELECT * FROM subs ORDER BY id').all();
   const units = db.prepare('SELECT * FROM units ORDER BY id').all();
   const individuals = db.prepare('SELECT * FROM individuals ORDER BY id').all();
-  res.json({ programmes, subs, units, individuals });
+  // Whoever ICT admin has designated as Executive Owner (see users.
+  // is_executive_owner / routes/users.js's PATCH /:id/executive-owner) —
+  // ordinarily the Vice Chancellor — accountable for overall institutional
+  // performance against the Plan. Plain name/title only, like every other
+  // org-chart "head" field already exposed here to every signed-in
+  // account; this is a public designation, not a permission grant.
+  const executiveOwner = db.prepare('SELECT id, name, title FROM users WHERE is_executive_owner = 1 LIMIT 1').get() || null;
+  res.json({ programmes, subs, units, individuals, executiveOwner });
 });
 
 // Live creation of a Unit / Department / Faculty / Region under a

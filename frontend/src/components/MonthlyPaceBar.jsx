@@ -1,4 +1,4 @@
-import { MONTHS, expectedValueForMonth, assumedMonthlyBaseline, monthlyPace, roundMeasure } from '../lib/scope.js';
+import { MONTHS, expectedValueForMonth, assumedMonthlyBaseline, monthlyPace, roundMeasure, automatedPeriodTargets } from '../lib/scope.js';
 import Fig from './Fig.jsx';
 
 // The automated monthly pace picture — see lib/scope.js's
@@ -18,7 +18,7 @@ import Fig from './Fig.jsx';
 // contributor sees for the shared KPI's overall pace) — same component,
 // same math, so a Unit Head and their team never look at two different
 // pictures of the same KPI's pace.
-export default function MonthlyPaceBar({ kpi, valueRow, period }) {
+export default function MonthlyPaceBar({ kpi, valueRow, period, isPreview = false }) {
   const base = Number(kpi.baseline), tgt = Number(kpi.target);
   const span = tgt - base;
   const pctOf = (v) => (span === 0 ? 100 : Math.max(0, Math.min(100, ((v - base) / span) * 100)));
@@ -26,6 +26,7 @@ export default function MonthlyPaceBar({ kpi, valueRow, period }) {
   const assumedBaseline = assumedMonthlyBaseline(kpi, period.month);
   const pace = monthlyPace(kpi, valueRow);
   const monthLabel = MONTHS[period.month];
+  const { quarter, half, quarterTarget, halfTarget } = automatedPeriodTargets(kpi, period.month);
 
   return (
     <div className="mt-3.5 pt-3.5 border-t border-line-strong">
@@ -33,7 +34,7 @@ export default function MonthlyPaceBar({ kpi, valueRow, period }) {
         <span className="field-label">Automated monthly pace — {monthLabel} {period.year}</span>
         {pace && (
           <span className={`chip ${pace.onPaceForMonth ? 'chip-rag-green' : 'chip-rag-red'}`}>
-            {pace.onPaceForMonth ? 'On pace this month' : 'Behind pace this month'}
+            {pace.onPaceForMonth ? 'On pace this month' : 'Behind pace this month'}{isPreview ? ' (projected)' : ''}
           </span>
         )}
       </div>
@@ -60,9 +61,20 @@ export default function MonthlyPaceBar({ kpi, valueRow, period }) {
         <Fig k="Annual target" v={`${tgt} ${kpi.measure}`} />
       </div>
 
+      {/* Automated quarterly/bi-annual targets — the same straight-line
+          baseline -> annual-target pace above, just read off at the end of
+          this month's own quarter/half instead of the whole year. Nobody
+          sets these separately; they're implied by the KPI's own
+          baseline/target and recomputed every render, so they can never
+          drift from the annual figure they're derived from. */}
+      <div className="grid grid-cols-2 gap-x-6 gap-y-3 mt-3 pt-3 border-t border-line">
+        <Fig k={`Automated Q${quarter} target`} v={`${quarterTarget} ${kpi.measure}`} />
+        <Fig k={`Automated H${half} target`} v={`${halfTarget} ${kpi.measure}`} />
+      </div>
+
       {pace && (
         <div className={`mt-3 rounded-lg px-3 py-2.5 text-[12.5px] font-semibold ${pace.onPaceForMonth ? 'bg-good-soft text-good' : 'bg-critical-soft text-critical'}`}>
-          This month so far: {pace.actualMonthlyDelta >= 0 ? '+' : ''}{pace.actualMonthlyDelta} {kpi.measure}
+          {isPreview ? 'Projected, if approved' : 'This month so far'}: {pace.actualMonthlyDelta >= 0 ? '+' : ''}{pace.actualMonthlyDelta} {kpi.measure}
           <span className="font-normal opacity-80"> (expected {pace.expectedMonthlyDelta >= 0 ? '+' : ''}{pace.expectedMonthlyDelta} {kpi.measure})</span>
         </div>
       )}

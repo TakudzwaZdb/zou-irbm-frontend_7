@@ -50,8 +50,23 @@ const txn = db.transaction(() => {
   }
 
   console.log('Seeding executive & admin accounts...');
-  makeUser('Prof. L. Chareka', 'Vice Chancellor', 'exec', null, null);
-  makeUser('Mr. F. Museta', 'Council Chairperson', 'exec', null, null, ['view_reports', 'view_overview', 'view_framework']);
+  // The Vice Chancellor is this university's Executive Owner — the one
+  // account structurally accountable for overall institutional performance
+  // against the Plan (see users.is_executive_owner / routes/org.js's GET /,
+  // which exposes this to every signed-in account, and Overview.jsx's
+  // "Overall Institutional Performance" card). A real designation, not just
+  // a job title: it's what the app itself points to when it says who owns
+  // that number.
+  const vcId = makeUser('Prof. L. Chareka', 'Vice Chancellor', 'exec', null, null);
+  db.prepare('UPDATE users SET is_executive_owner = 1 WHERE id = ?').run(vcId);
+  // University Council: the final validation/approval authority over the
+  // compiled University Annual Plan, above CPU's own compile-and-submit
+  // step — see routes/plans.js's POST /university/approve|return. A real
+  // account tier (role='council'), not a relabeled Executive — read-only
+  // everywhere else in the app (DEFAULT_PERMS_BY_ROLE.council), the one
+  // thing this account can actually do is validate and either approve
+  // (putting it into effect) or return the Annual Plan once CPU submits it.
+  makeUser('Mr. F. Museta', 'Council Chairperson', 'council', null, null);
   const cpuId = makeUser('T. Moyo', 'Corporate Planning Unit', 'cpu', null, null);
   const ictId = makeUser('L. Chikomo', 'ICT Systems Administrator', 'ictadmin', null, null);
 
@@ -201,7 +216,7 @@ const txn = db.transaction(() => {
   insertAudit.run(ictId, 'seed', 'system', null, 'Database seeded with initial org structure, accounts, and KPIs.');
 
   console.log('Done. Demo login: any seeded email + password "' + DEMO_PASSWORD + '".');
-  console.log('e.g. t.moyo@zou.ac.zw (CPU), l.chikomo@zou.ac.zw (ICT Admin), l.chareka@zou.ac.zw (VC).');
+  console.log('e.g. t.moyo@zou.ac.zw (CPU), l.chikomo@zou.ac.zw (ICT Admin), l.chareka@zou.ac.zw (VC / Executive Owner), f.museta@zou.ac.zw (University Council).');
 });
 
 txn();

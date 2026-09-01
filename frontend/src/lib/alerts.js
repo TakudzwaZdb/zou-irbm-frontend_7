@@ -16,7 +16,12 @@ export function computeAlerts(org, kpis, values, settings, user, period, assignm
         message: `"${k.name}" was returned to you: ${v.return_comment}`,
       });
     }
-    if (isApprover(org, user, k) && v?.status === 'submitted') {
+    // 'submitted' and 'programme_approved' are both "pending review"
+    // statuses — the latter only ever applies to a Sub-programme's own KPI
+    // once its Programme Head has forwarded it on to CPU. Passing v?.status
+    // through to isApprover is what keeps this alert going to the RIGHT
+    // person for whichever of the two stages the submission is actually at.
+    if (['submitted', 'programme_approved'].includes(v?.status) && isApprover(org, user, k, v.status)) {
       alerts.push({
         id: `pending-${k.id}`, kind: 'pending', route: 'approvals',
         message: `"${k.name}" from ${ownerName(org, k)} is waiting on your review.`,

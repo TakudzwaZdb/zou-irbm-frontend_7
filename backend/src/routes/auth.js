@@ -36,6 +36,8 @@ router.post('/login', (req, res) => {
       scope_type: user.scope_type,
       scope_id: user.scope_id,
       avatar: user.avatar || null,
+      overview_limit: user.overview_limit || null,
+      is_executive_owner: !!user.is_executive_owner,
       permissions,
     },
   });

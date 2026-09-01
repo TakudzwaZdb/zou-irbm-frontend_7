@@ -93,6 +93,11 @@
   .chip-rag-none { @apply bg-sunken text-ink-muted; }
   .chip-st-draft { @apply bg-sunken text-ink-secondary; }
   .chip-st-submitted { @apply bg-accent-50 text-accent-600; }
+  /* A Sub-programme's own KPI submission, approved by its Programme Head and
+     now forwarded on to CPU for final sign-off — a distinct, slightly
+     deeper accent than plain "Submitted" so the two pending stages read as
+     different at a glance, without borrowing the "done" green of Approved. */
+  .chip-st-programme_approved { @apply bg-accent-100 text-accent-700; }
   .chip-st-approved { @apply bg-good-soft text-good; }
   .chip-st-returned { @apply bg-warning-soft text-warning; }
   .chip-st-none { @apply bg-sunken text-ink-muted; }

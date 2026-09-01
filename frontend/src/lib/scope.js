@@ -21,10 +21,22 @@ export function isOwner(user, kpi) {
   if (kpi.owner_type === 'unit') return user.role === 'unithead' && user.scope_id === kpi.owner_id;
   return user.role === 'individual' && user.scope_id === kpi.owner_id;
 }
-export function isApprover(org, user, kpi) {
+// Mirrors backend/src/routes/kpis.js's isApprover exactly, including its
+// `status` param: a Sub-programme's own KPI submission (owner_type = 'sub')
+// now passes through TWO different approvers depending on which stage it's
+// at — the Programme Head first (while status is 'submitted'), then CPU for
+// final sign-off (once status is 'programme_approved'). `status` is
+// optional: pass it whenever you're asking "am I the approver of THIS
+// specific value row right now" (Approvals.jsx's pending bucket, alerts);
+// leave it out only when asking "could my role ever be an approver of this
+// KPI at all, at either stage" (see Approvals.jsx's `mine`, which calls this
+// twice — once per stage — to build that broader set).
+export function isApprover(org, user, kpi, status) {
   if (kpi.owner_type === 'individual') return user.role === 'unithead' && user.scope_id === individualUnitId(org, kpi.owner_id);
   if (kpi.owner_type === 'unit') return user.role === 'rep' && user.scope_id === unitSubId(org, kpi.owner_id);
-  return user.role === 'cpu';
+  if (status === 'programme_approved') return user.role === 'cpu';
+  const programmeId = byId(org.subs, kpi.owner_id)?.programme_id;
+  return user.role === 'programme' && programmeId != null && user.scope_id === programmeId;
 }
 export function inJurisdiction(org, user, kpi) {
   if (['cpu', 'ictadmin', 'exec'].includes(user.role)) return true;
@@ -51,6 +63,18 @@ export function ownerName(org, kpi) {
   return byId(org.individuals, kpi.owner_id)?.name || '—';
 }
 
+// The owner's tier, in plain words — shown alongside ownerName() wherever a
+// chart or list needs to disambiguate two same-named KPIs owned by two
+// different people/units/sub-programmes (e.g. two Individuals both holding
+// a "Vacuum Cleaning" duty KPI in different Units — the name alone doesn't
+// tell them apart, but "T. Moyo — Individual" vs "R. Banda — Individual"
+// does, and the chart still shows both bars distinctly by owner name too).
+export function ownerKindLabel(kpi) {
+  if (kpi.owner_type === 'sub') return 'Sub-programme';
+  if (kpi.owner_type === 'unit') return 'Unit';
+  return 'Individual';
+}
+
 // ---- org-tree navigation helpers (Overview drill-down + sidebar tree) ----
 // Mirrors the original prototype's Programme → Sub-programme → Unit →
 // Individual browsing: click a node, see its own breadcrumb and its own
@@ -59,7 +83,26 @@ export function ownerName(org, kpi) {
 export const ROLE_LABEL = {
   exec: 'Executive', cpu: 'Corporate Planning Unit', ictadmin: 'ICT Systems Administrator',
   rep: 'Sub-programme Rep', unithead: 'Unit Head', individual: 'Individual', programme: 'Programme Head',
+  council: 'University Council',
 };
+
+// How deep Overview's Programme -> Sub-programme -> Unit -> Individual
+// drill-down may go for one account — see db.js's users.overview_limit /
+// routes/users.js's PATCH /:id/overview-limit. A visibility ceiling ICT
+// admin can place on top of whatever a role would otherwise see; unset
+// (null/undefined) means no cap at all — "the overall structure", every
+// tier down to Individual. This only ever gates the exploratory Overview
+// browse (AppContext's selectNode / Overview.jsx's ChildCards) — never an
+// accountability surface (My Data Entry, Approvals Queue, alerts), which
+// always show a person's own real duties regardless of this setting.
+const OVERVIEW_KIND_DEPTH = { programme: 0, sub: 1, unit: 2, individual: 3 };
+export function overviewCapDepth(user) {
+  const limit = user?.overview_limit;
+  return limit && OVERVIEW_KIND_DEPTH[limit] != null ? OVERVIEW_KIND_DEPTH[limit] : Infinity;
+}
+export function canDrillToKind(user, kind) {
+  return OVERVIEW_KIND_DEPTH[kind] <= overviewCapDepth(user);
+}
 export function subsOfProgramme(org, programmeId) { return org.subs.filter((s) => s.programme_id === programmeId); }
 export function unitsOfSub(org, subId) { return org.units.filter((u) => u.sub_id === subId); }
 export function individualsOfUnit(org, unitId) { return org.individuals.filter((i) => i.unit_id === unitId); }
@@ -154,7 +197,7 @@ export function defaultNodeForRole(user) {
 // them — see isAssignedIndividual/canEnterData below), so "what is my unit
 // being measured on" is visible even for the KPIs someone else enters.
 export function relevantKpis(org, kpis, user) {
-  if (['cpu', 'exec', 'ictadmin'].includes(user.role)) return kpis;
+  if (['cpu', 'exec', 'ictadmin', 'council'].includes(user.role)) return kpis;
   if (user.role === 'individual') {
     const unitId = individualUnitId(org, user.scope_id);
     return kpis.filter((k) =>
@@ -356,6 +399,31 @@ export function expectedValueForMonth(kpi, month) {
 // this one month itself was expected to move the needle by.
 export function assumedMonthlyBaseline(kpi, month) {
   return expectedValueForMonth(kpi, Math.max(0, (Number(month) || 0) - 1));
+}
+
+// Automated Quarterly and Bi-annual TARGETS — nobody sets a separate
+// quarterly or half-year target number for a KPI; it's simply the same
+// straight-line baseline -> annual-target pace (expectedValueForMonth
+// above) read off at the end month of whichever quarter/half the given
+// month falls in. Q1 ends month 3, Q2 month 6, Q3 month 9, Q4 month 12; H1
+// ends month 6, H2 month 12. This is what makes "automate quarterly and
+// bi-annual targets" true across the whole KPI catalogue at once: every
+// KPI's own baseline/target already implies its quarterly and half-year
+// targets, computed here, never typed in separately and never able to
+// drift from the annual figure they're derived from.
+export function periodEndMonths(month) {
+  const m = Math.max(1, Math.min(12, Number(month) || 1));
+  const quarter = Math.ceil(m / 3);
+  const half = m <= 6 ? 1 : 2;
+  return { quarter, quarterEndMonth: quarter * 3, half, halfEndMonth: half === 1 ? 6 : 12 };
+}
+export function automatedPeriodTargets(kpi, month) {
+  const { quarter, quarterEndMonth, half, halfEndMonth } = periodEndMonths(month);
+  return {
+    quarter, half,
+    quarterTarget: roundMeasure(expectedValueForMonth(kpi, quarterEndMonth)),
+    halfTarget: roundMeasure(expectedValueForMonth(kpi, halfEndMonth)),
+  };
 }
 
 // Rounds to 1 decimal only when the figure isn't already a whole number —

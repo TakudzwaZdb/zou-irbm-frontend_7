@@ -103,7 +103,14 @@ export default function Layout({ route, setRoute, children }) {
             </span>
           )}
           <div className="leading-tight min-w-0 text-left">
-            <div className="text-[12.5px] font-bold truncate max-w-[180px]">{user.name}</div>
+            <div className="text-[12.5px] font-bold truncate max-w-[180px] flex items-center gap-1.5">
+              <span className="truncate">{user.name}</span>
+              {user.is_executive_owner && (
+                <span className="chip bg-accent-500 text-white text-[9px] px-1.5 py-0.5 flex-none" title="Accountable for overall institutional performance against the Plan">
+                  Executive Owner
+                </span>
+              )}
+            </div>
             <div className="text-[10.8px] text-ink-secondary truncate max-w-[180px]">{user.title || user.role}</div>
           </div>
         </button>

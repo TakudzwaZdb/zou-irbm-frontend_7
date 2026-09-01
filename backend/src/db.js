@@ -383,4 +383,130 @@ if (!kpiValueColumns.includes('entered_value')) {
   db.exec('ALTER TABLE kpi_values ADD COLUMN entered_value REAL');
 }
 
+// Migration: widen the users.role CHECK to also allow 'council' — the
+// University Council's own account tier, which validates/approves the
+// compiled University Annual Plan before it takes effect (see
+// routes/plans.js's POST /university/approve|return). Same rebuild
+// technique as the earlier 'programme' migration above (SQLite CHECK
+// constraints can't be altered in place), detected the same way — by
+// looking at the table's own stored CREATE TABLE text — so this only ever
+// runs once per database, and safely no-ops on a brand-new one (the CREATE
+// TABLE at the top of this file only ever runs before this check, so a
+// fresh database always ends up here needing the rebuild exactly once).
+const usersSqlForCouncil = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get()?.sql || '';
+if (!usersSqlForCouncil.includes("'council'")) {
+  console.log('Migrating users table to allow role = "council"...');
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec(`
+    CREATE TABLE users_new2 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      title TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('exec','cpu','ictadmin','rep','unithead','individual','programme','council')),
+      scope_type TEXT CHECK(scope_type IN ('sub','unit','individual','programme') OR scope_type IS NULL),
+      scope_id INTEGER,
+      avatar TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO users_new2 (id, name, title, email, password_hash, role, scope_type, scope_id, avatar, created_at)
+      SELECT id, name, title, email, password_hash, role, scope_type, scope_id, avatar, created_at FROM users;
+    DROP TABLE users;
+    ALTER TABLE users_new2 RENAME TO users;
+  `);
+  db.exec('PRAGMA foreign_keys = ON');
+}
+
+// Migration: per-account cap on how deep Overview's Programme -> Sub-
+// programme -> Unit -> Individual drill-down may go for THIS account —
+// 'programme' | 'sub' | 'unit' | NULL (NULL/unset = no cap, the full
+// structure all the way to Individual). This is deliberately independent
+// of role/permissions: it's a visibility ceiling ICT admin can place on top
+// of whatever a role would otherwise see (see routes/users.js's PATCH
+// /:id/overview-limit), for accounts that should see the organisational
+// picture down to a point without reaching individual-level personal
+// performance detail. Enforced in the frontend's Overview drill-down
+// (lib/scope.js's canDrillToKind) — a navigation restriction on the
+// exploratory browsing view, not a data-access change to any of the
+// accountability surfaces (My Data Entry / Approvals Queue / alerts),
+// which never consult it.
+const usersColumnsForLimit = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+if (!usersColumnsForLimit.includes('overview_limit')) {
+  db.exec('ALTER TABLE users ADD COLUMN overview_limit TEXT');
+}
+
+// Migration: marks the ONE account that is this university's Executive
+// Owner — accountable for overall institutional performance against the
+// Plan (see routes/org.js's GET / exposing whoever holds this, and
+// Overview.jsx's "Overall Institutional Performance" card). Deliberately a
+// single-holder flag, not a role: it's an accountability designation ICT
+// admin assigns to a real exec account (ordinarily the Vice Chancellor),
+// separate from what that account can actually click or edit. See
+// routes/users.js's PATCH /:id/executive-owner, which clears it from any
+// other account before setting it on the new one.
+if (!usersColumnsForLimit.includes('is_executive_owner')) {
+  db.exec('ALTER TABLE users ADD COLUMN is_executive_owner INTEGER NOT NULL DEFAULT 0');
+}
+
+// Migration: widen kpi_values.status to also allow 'programme_approved' —
+// the new intermediate stage a Sub-programme's own KPI submission passes
+// through on its way to CPU. Individual- and Unit-owned KPIs stay
+// single-stage (submitted -> approved, straight to their one real
+// approver) exactly as before; only a Sub-programme's OWN KPIs (owner_type
+// = 'sub') now go submitted -> programme_approved -> approved: the Sub
+// Rep's own Programme Head reviews it first (see routes/kpis.js's
+// isApprover), and only once THEY approve does it move on to CPU for the
+// real, final sign-off that also computes the new cumulative value (see
+// previousOfficialValue / POST :id/approve) — a Sub-owned KPI is never
+// "official" on the strength of the Programme Head's approval alone. Same
+// SQLite CHECK-constraint rebuild technique as the 'council' role
+// migration above (CHECK constraints can't be altered in place), detected
+// the same way by inspecting the table's own stored CREATE TABLE text, so
+// this runs at most once per database and no-ops on a fresh one.
+const kpiValuesSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='kpi_values'").get()?.sql || '';
+if (!kpiValuesSql.includes("'programme_approved'")) {
+  console.log('Migrating kpi_values table to allow status = "programme_approved"...');
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec(`
+    CREATE TABLE kpi_values_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kpi_id INTEGER NOT NULL REFERENCES kpis(id) ON DELETE CASCADE,
+      year INTEGER NOT NULL,
+      month INTEGER NOT NULL,
+      value REAL,
+      override_value REAL,
+      override_note TEXT,
+      status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','submitted','programme_approved','approved')),
+      explanation TEXT,
+      entered_value REAL,
+      submitted_at TEXT,
+      programme_approved_at TEXT,
+      approved_at TEXT,
+      return_comment TEXT,
+      UNIQUE(kpi_id, year, month)
+    );
+    INSERT INTO kpi_values_new (id, kpi_id, year, month, value, override_value, override_note, status, explanation, entered_value, submitted_at, approved_at, return_comment)
+      SELECT id, kpi_id, year, month, value, override_value, override_note, status, explanation, entered_value, submitted_at, approved_at, return_comment FROM kpi_values;
+    DROP TABLE kpi_values;
+    ALTER TABLE kpi_values_new RENAME TO kpi_values;
+  `);
+  db.exec('PRAGMA foreign_keys = ON');
+}
+
+// Backfill: grant 'approve_own_tier' to every already-seeded Programme Head
+// account. Permissions live per-user in `user_permissions`, populated only
+// once at seed time from DEFAULT_PERMS_BY_ROLE (see utils/permissions.js) —
+// a database seeded BEFORE this feature existed has Programme Head accounts
+// with no row for this permission at all, even though the role's default
+// set now includes it, so without this backfill every Programme Head would
+// get a real 403 trying to use the Approvals Queue this feature just gave
+// them a nav item for. Idempotent (INSERT OR IGNORE — the (user_id,
+// permission_key) primary key makes a re-run a no-op) and harmless on a
+// freshly-seeded database, where seed.js already granted this directly.
+db.exec(`
+  INSERT OR IGNORE INTO user_permissions (user_id, permission_key)
+  SELECT id, 'approve_own_tier' FROM users WHERE role = 'programme'
+`);
+
 module.exports = db;

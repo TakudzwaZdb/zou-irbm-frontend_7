@@ -39,7 +39,12 @@ export default function Entry() {
     : [];
 
   const needsAction = mine.filter((k) => ['returned', 'none', 'draft'].includes(statusOf(k)));
-  const submitted = mine.filter((k) => statusOf(k) === 'submitted');
+  // 'programme_approved' belongs here too, not as its own bucket: from the
+  // submitter's own point of view it's still just "awaiting review" — the
+  // Sub-programme's own KPI submission has simply moved from the Programme
+  // Head's desk to CPU's, nothing the submitter can or needs to act on
+  // either way.
+  const submitted = mine.filter((k) => ['submitted', 'programme_approved'].includes(statusOf(k)));
   const approved = mine.filter((k) => statusOf(k) === 'approved');
 
   const contribNeedsAction = contributed.filter((k) => ['returned', 'none', 'draft'].includes(contribStatusOf(k)));

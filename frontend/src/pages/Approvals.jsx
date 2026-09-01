@@ -5,11 +5,29 @@ import PeriodPicker from '../components/PeriodPicker.jsx';
 
 export default function Approvals() {
   const { user, org, kpis, values, contributions, assignments, period } = useApp();
-  const mine = kpis.filter((k) => isApprover(org, user, k));
+  // A Sub-programme's own KPI now has TWO different approvers depending on
+  // stage (Programme Head at 'submitted', CPU at 'programme_approved') — so
+  // "is this KPI mine at all" has to check both stages, not just the one
+  // this role happens to act on right now. Individual/Unit-owned KPIs have
+  // only ever had one approver, so both calls agree and this is a no-op for
+  // them.
+  const mine = kpis.filter((k) => isApprover(org, user, k, 'submitted') || isApprover(org, user, k, 'programme_approved'));
   const statusOf = (k) => valueStatus(values[`${k.id}-${period.year}-${period.month}`]);
 
-  const pending = mine.filter((k) => statusOf(k) === 'submitted');
-  const decided = mine.filter((k) => ['approved', 'returned'].includes(statusOf(k)));
+  // Pending: only the KPIs THIS role is the approver of for the value row's
+  // ACTUAL current stage — a Programme Head sees sub-owned submissions at
+  // 'submitted', never at 'programme_approved' (that one's already moved on
+  // to CPU); CPU sees the reverse.
+  const pending = mine.filter((k) => {
+    const st = statusOf(k);
+    return (st === 'submitted' || st === 'programme_approved') && isApprover(org, user, k, st);
+  });
+  // A Programme Head's own past decision also includes having forwarded a
+  // submission on to CPU — that's not "not yet submitted" or "still
+  // pending my review", it's genuinely decided from their seat, even though
+  // the KPI as a whole isn't fully approved yet.
+  const decidedStatuses = user.role === 'programme' ? ['approved', 'returned', 'programme_approved'] : ['approved', 'returned'];
+  const decided = mine.filter((k) => decidedStatuses.includes(statusOf(k)));
   const notStarted = mine.filter((k) => ['none', 'draft'].includes(statusOf(k)));
 
   // A Unit Head's OWN review queue, one tier below the `mine` section above:

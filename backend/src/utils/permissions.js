@@ -18,6 +18,14 @@ const PERMISSIONS = [
   { key: 'add_individual', label: 'Add an Individual (within own scope)', group: 'Framework' },
   { key: 'manage_framework', label: 'Propose structural changes', group: 'Framework' },
   { key: 'submit_annual_plan', label: 'Compile & submit the university annual plan', group: 'Framework' },
+  // The University Council's own authority: the one gate the compiled
+  // Annual Plan (and the structure it's built from — every Programme's
+  // compiled position beneath it) must pass before it's official for the
+  // cycle — see routes/plans.js's POST /university/approve|return. Kept as
+  // a real, revocable permission (not a hardcoded role check) so ICT admin
+  // can extend or narrow exactly who sits on Council the same way every
+  // other authority in this app works.
+  { key: 'validate_annual_plan', label: 'Validate & approve the University Annual Plan (University Council)', group: 'Governance' },
   { key: 'manage_settings', label: 'Manage RAG thresholds & cutoffs', group: 'Admin' },
   { key: 'manage_users', label: 'Grant & revoke permissions', group: 'Admin' },
   { key: 'view_reports', label: 'View Reports', group: 'Visibility' },
@@ -56,7 +64,20 @@ const DEFAULT_PERMS_BY_ROLE = {
   // Sub-programme under them has been approved (see routes/plans.js's
   // isProgrammeHeadOwner). 'data_entry' is what gates that write, the same
   // permission every other tier's plan-entry route already requires.
-  programme: ['data_entry', 'view_overview', 'view_framework', 'view_reports'],
+  // 'approve_own_tier' is the SAME permission Sub Reps/Unit Heads already
+  // hold, now also granted here: a Sub-programme's own KPI performance
+  // submission (owner_type = 'sub') stops at the Programme Head first for
+  // review before it ever reaches CPU — see routes/kpis.js's isApprover
+  // and the two-stage 'submitted' -> 'programme_approved' -> 'approved'
+  // flow on kpi_values.status.
+  programme: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework', 'view_reports'],
+  // University Council: the final sign-off tier above CPU's own compiled
+  // submission — read-only everywhere else in the app (no data_entry, no
+  // approve_own_tier — Council doesn't run any tier's day-to-day KPI
+  // cascade), but the one account type that can actually validate/approve
+  // or return the University Annual Plan once CPU has submitted it. See
+  // routes/plans.js.
+  council: ['view_reports', 'view_overview', 'view_framework', 'validate_annual_plan'],
 };
 
 module.exports = { PERMISSIONS, DEFAULT_PERMS_BY_ROLE };

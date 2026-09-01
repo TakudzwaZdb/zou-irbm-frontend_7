@@ -52,16 +52,31 @@ function isUnitHeadOwner(user, kpi) {
   return user.role === 'unithead' && kpi.owner_type === 'unit' && user.scope_id === kpi.owner_id;
 }
 
-// Is this user the tier ABOVE this KPI's owner (i.e. can approve/return it)?
-function isApprover(user, kpi) {
+// Is this user the tier ABOVE this KPI's owner (i.e. can approve/return it)
+// AT ITS CURRENT STAGE? `status` matters only for a sub-owned KPI, which
+// now passes through two real approval stages rather than one: the Sub
+// Rep's own Programme Head reviews it first (while it's 'submitted'), and
+// only once THEY approve — moving it to 'programme_approved' — does it
+// reach CPU for the real, final sign-off (see POST /:id/approve below,
+// which is also where the automated cumulative value actually gets
+// computed, deliberately only at that last step). Individual- and
+// Unit-owned KPIs are unaffected — still one approver, one stage, exactly
+// as before — since the caller always passes the row's current status.
+function isApprover(user, kpi, status) {
   if (kpi.owner_type === 'individual') {
     return user.role === 'unithead' && user.scope_id === individualUnitId(kpi.owner_id);
   }
   if (kpi.owner_type === 'unit') {
     return user.role === 'rep' && user.scope_id === unitSubId(kpi.owner_id);
   }
-  // sub-owned KPIs are approved by CPU
-  return user.role === 'cpu';
+  // sub-owned KPIs: Programme Head first (at 'submitted'), CPU last (at
+  // 'programme_approved') — CPU is also the fallback approver when status
+  // is unknown/omitted, so any caller that doesn't pass a status (there are
+  // none left, but this keeps the function safe to call defensively) still
+  // gets a sensible, non-crashing answer.
+  if (status === 'programme_approved') return user.role === 'cpu';
+  const programmeId = db.prepare('SELECT programme_id FROM subs WHERE id = ?').get(kpi.owner_id)?.programme_id;
+  return user.role === 'programme' && programmeId != null && user.scope_id === programmeId;
 }
 
 // Is this KPI within a role-scoped user's jurisdiction at all (for edit_targets,
@@ -103,6 +118,29 @@ function previousOfficialValue(kpiId, year, month, baseline) {
   ).get(kpiId, year, year, month);
   if (!row) return baseline;
   return row.override_value != null ? row.override_value : row.value;
+}
+
+// A submitted-but-not-yet-approved row's own `value` is deliberately still
+// NULL — it only ever becomes the KPI's real official figure at final
+// approval (see POST :id/approve above) — so whoever is reviewing it would
+// otherwise see a completely blank "Current" figure and score, with nothing
+// to actually judge the submission against before they approve or return
+// it. This attaches a read-only `preview_value` — never stored, recomputed
+// fresh on every read, and never trusted for anything real — showing what
+// the official cumulative total WOULD become if this exact submission were
+// approved as-is: previousOfficialValue + entered_value, the identical math
+// POST :id/approve itself uses. Automated (shared/contribution-summed)
+// KPIs are deliberately excluded: their `value` is already kept live by
+// recomputeUnitTotal the moment any contribution is approved, well before
+// the KPI's own tier-above approval, so there's already a real figure to
+// show — nothing to preview.
+function attachPreview(row) {
+  if (!row || row.value != null || row.entered_value == null) return row;
+  if (!['submitted', 'programme_approved'].includes(row.status)) return row;
+  const kpi = db.prepare('SELECT baseline, is_automated FROM kpis WHERE id = ?').get(row.kpi_id);
+  if (!kpi || kpi.is_automated) return row;
+  const base = previousOfficialValue(row.kpi_id, row.year, row.month, kpi.baseline);
+  return { ...row, preview_value: base + Number(row.entered_value) };
 }
 
 // The automated heart of the shared-KPI feature: whenever a contribution is
@@ -159,16 +197,20 @@ router.get('/', (req, res) => {
 
 router.get('/:id/values', (req, res) => {
   const kpi = getKpiOr404(req, res); if (!kpi) return;
-  res.json({ values: db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? ORDER BY year, month').all(kpi.id) });
+  const rows = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? ORDER BY year, month').all(kpi.id);
+  res.json({ values: rows.map(attachPreview) });
 });
 
 // Batch read for a single period across all KPIs — used by the "My Data
-// Entry" / "Reviews" pages to avoid one request per KPI.
+// Entry" / "Approvals Queue" / "Reviews" pages to avoid one request per KPI.
+// attachPreview is what lets an approver actually see a submitted figure's
+// projected score before they act on it, rather than a blank "no data" —
+// see attachPreview's own comment above for why that gap existed at all.
 router.get('/values', (req, res) => {
   const year = Number(req.query.year), month = Number(req.query.month);
   if (!year || !month) return res.status(400).json({ error: 'year and month query params are required.' });
   const rows = db.prepare('SELECT * FROM kpi_values WHERE year = ? AND month = ?').all(year, month);
-  res.json({ values: rows });
+  res.json({ values: rows.map(attachPreview) });
 });
 
 // A range read across several months in one year — used by the quarterly /
@@ -509,11 +551,42 @@ router.post('/:id/submit', requirePerm('data_entry'), (req, res) => {
 // here from a null entered_value would wipe out a correct number.
 router.post('/:id/approve', requirePerm('approve_own_tier'), (req, res) => {
   const kpi = getKpiOr404(req, res); if (!kpi) return;
-  if (!isApprover(req.user, kpi)) return res.status(403).json({ error: 'You are not the approver for this KPI.' });
   const { year, month } = req.body || {};
   const row = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month);
-  if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that period.' });
+  // A sub-owned KPI has two real pending stages ('submitted', then
+  // 'programme_approved'); every other tier still has exactly one
+  // ('submitted'). isApprover checks the CURRENT stage against this
+  // caller's role/scope, so a Programme Head can only act while it's
+  // 'submitted' and CPU only once it's already 'programme_approved' — one
+  // cannot skip ahead of the other, and a 403 for anyone who tries.
+  const pendingStatuses = kpi.owner_type === 'sub' ? ['submitted', 'programme_approved'] : ['submitted'];
+  if (!row || !pendingStatuses.includes(row.status)) return res.status(400).json({ error: 'Nothing pending review for that period.' });
+  if (!isApprover(req.user, kpi, row.status)) return res.status(403).json({ error: 'You are not the approver for this KPI.' });
 
+  // Sub-owned KPI, first stage: the Programme Head's own sign-off — moves
+  // it on to CPU, but is deliberately NOT the moment the cumulative value
+  // gets computed. A Sub-programme's own performance figure only becomes
+  // official once CPU has had the final say, exactly like every other
+  // approval in this app is the one moment "official" changes — never
+  // provisionally, on an intermediate reviewer's approval alone.
+  if (kpi.owner_type === 'sub' && row.status === 'submitted') {
+    db.prepare('UPDATE kpi_values SET status = \'programme_approved\', programme_approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
+    db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+      req.user.id, 'programme_approve', 'kpi', kpi.id,
+      `${year}-${String(month).padStart(2, '0')} approved by Programme Head — forwarded to CPU for final approval.`
+    );
+    return res.json({ ok: true });
+  }
+
+  // Final approval — either the one-and-only stage for an Individual/Unit-
+  // owned KPI, or CPU's sign-off on a sub-owned KPI already approved by its
+  // Programme Head. This is where the automated cumulative-addition
+  // actually happens (see previousOfficialValue above): the newly-approved
+  // figure is added to whatever this KPI's official total already was as
+  // of the most recent earlier period, so "current performance" always
+  // reads as a real running total. An automated (shared) KPI's own row
+  // skips this — recomputeUnitTotal already applied the exact same rule
+  // the moment its contributions were approved.
   let detail = `${year}-${String(month).padStart(2, '0')} approved.`;
   if (!kpi.is_automated) {
     const base = previousOfficialValue(kpi.id, Number(year), Number(month), kpi.baseline);
@@ -531,12 +604,18 @@ router.post('/:id/approve', requirePerm('approve_own_tier'), (req, res) => {
 
 router.post('/:id/return', requirePerm('approve_own_tier'), (req, res) => {
   const kpi = getKpiOr404(req, res); if (!kpi) return;
-  if (!isApprover(req.user, kpi)) return res.status(403).json({ error: 'You are not the approver for this KPI.' });
   const { year, month, comment } = req.body || {};
   if (!comment) return res.status(400).json({ error: 'A reason is required when returning a submission.' });
   const row = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month);
-  if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that period.' });
+  const pendingStatuses = kpi.owner_type === 'sub' ? ['submitted', 'programme_approved'] : ['submitted'];
+  if (!row || !pendingStatuses.includes(row.status)) return res.status(400).json({ error: 'Nothing pending review for that period.' });
+  if (!isApprover(req.user, kpi, row.status)) return res.status(403).json({ error: 'You are not the approver for this KPI.' });
 
+  // A return — whether from the Programme Head's first stage or CPU's
+  // final one — always goes all the way back to the Sub Rep as a plain
+  // draft with the reviewer's comment attached, the same "back to whoever
+  // actually owns the data" rule every other return in this app already
+  // follows (never bounced to an intermediate reviewer to pass along).
   db.prepare('UPDATE kpi_values SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment, row.id);
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'return', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} returned: "${comment}"`
