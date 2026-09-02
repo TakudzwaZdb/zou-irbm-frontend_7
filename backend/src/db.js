@@ -17,6 +17,17 @@ fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
 const db = new DatabaseSync(DB_FILE);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
+// WAL mode allows unlimited concurrent readers but still only one writer at
+// a time — without this, a second process (server.js now runs one per CPU
+// core, see its WORKER_COUNT comment) that tries to write while another is
+// mid-transaction gets an immediate SQLITE_BUSY ("database is locked")
+// instead of waiting. This matters even though the primary process runs
+// every migration before any worker is forked: several statements below
+// (the permissions-catalog sync, a few `INSERT OR IGNORE` backfills) are
+// unconditional — they re-run on every process's require('./db'), not just
+// once — so two workers starting near-simultaneously can still collide on a
+// real write. 5s is comfortably longer than any single write here takes.
+db.exec('PRAGMA busy_timeout = 5000');
 
 // better-sqlite3-style transaction helper, since the rest of the codebase
 // (see seed.js) uses `const txn = db.transaction(fn); txn();`.

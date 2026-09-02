@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import {
   subsOfProgramme, unitsOfSub, individualsOfUnit, nodeOwnKpis, nodeRagCls,
-  performanceRollup, defaultNodeForRole, nodeAncestryChain, canDrillToKind,
+  performanceRollup, institutionalRollup, defaultNodeForRole, nodeAncestryChain, canDrillToKind,
 } from '../lib/scope.js';
 
 const RAG_DOT = {
@@ -15,7 +15,7 @@ const RAG_DOT = {
 // their own branch (their Programme → their Sub-programme → …), matching
 // what they're actually allowed to view elsewhere in the app.
 export default function OrgTree({ setRoute, onNavigate }) {
-  const { org, kpis, perfValues, settings, user, selNode, selectNode, hasPerm } = useApp();
+  const { org, kpis, perfValues, settings, user, selNode, selectNode, clearSelNode, hasPerm } = useApp();
   const forced = defaultNodeForRole(user);
   // A global role (forced === null) browsing every Programme side-by-side
   // IS a way to navigate the institution-wide picture, same as the "All
@@ -84,6 +84,18 @@ export default function OrgTree({ setRoute, onNavigate }) {
     if (setRoute) setRoute('overview');
     if (onNavigate) onNavigate();
   }
+  // Pinned above the tree (global roles with the permission only — a
+  // scoped role's `forced` default means they never have an institutional
+  // level to return to in the first place, same gate the "Home" breadcrumb
+  // link and Overview.jsx's own card already use) — a single click back to
+  // "Overall Institutional Performance" that's always in the same place
+  // whether the tree below is fully collapsed or three levels deep, unlike
+  // the breadcrumb, which only exists once you've already drilled in.
+  function goHome() {
+    clearSelNode();
+    if (setRoute) setRoute('overview');
+    if (onNavigate) onNavigate();
+  }
   function ragDot(kind, id) {
     const cls = nodeRagCls(performanceRollup(nodeOwnKpis(org, kpis, kind, id), perfValues, settings), settings);
     return <span className={`w-1.5 h-1.5 rounded-full flex-none ${RAG_DOT[cls]}`} />;
@@ -126,8 +138,23 @@ export default function OrgTree({ setRoute, onNavigate }) {
     );
   }
 
+  const showHome = !forced && canViewInstitutional;
+  const homeSelected = showHome && !selNode;
+  const homeRagCls = showHome ? nodeRagCls(institutionalRollup(org, kpis, perfValues, settings).performance, settings) : null;
+
   return (
     <div className="flex flex-col gap-0.5">
+      {showHome && (
+        <div
+          onClick={goHome}
+          className={`flex items-center gap-1.5 py-1.5 px-1.5 rounded-md text-[12.3px] cursor-pointer mb-1 pb-2 border-b border-line ${homeSelected ? 'bg-accent-50 text-accent-600 font-semibold' : 'text-ink-secondary hover:bg-sunken'}`}
+          style={{ paddingLeft: '6px' }}
+        >
+          <span className="w-3 flex-none" />
+          <span className={`w-1.5 h-1.5 rounded-full flex-none ${RAG_DOT[homeRagCls]}`} />
+          <span className="truncate">All Programmes</span>
+        </div>
+      )}
       {programmes.map((p) => {
         const pKey = `p:${p.id}`;
         const pOpen = isOpen(pKey);

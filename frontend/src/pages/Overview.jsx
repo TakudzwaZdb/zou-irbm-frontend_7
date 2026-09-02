@@ -293,14 +293,25 @@ function NodeView({ node, onHome, onSelect }) {
 
   return (
     <div>
+      {/* Every crumb except the current page is a real link back to that
+          level — including "All Programmes" itself, which is the one
+          people actually reach for when they mean "take me back to Overall
+          Institutional Performance" (it's the literal name of that view).
+          It used to render as plain, identical-looking text next to the
+          working "Home" button — same grey, same position — so it looked
+          clickable but silently did nothing, which is exactly what made the
+          institutional rollup feel like it had vanished for good rather
+          than one click away. Mid-chain ancestors (a Sub-programme, a Unit)
+          are now real links too, via the same onSelect this page already
+          passes down for every other click-to-drill-in card. */}
       <div className="flex items-center gap-1.5 flex-wrap text-[11.5px] text-ink-muted mb-2">
         <button className="hover:text-accent-500 hover:underline" onClick={onHome}>Home</button>
         <span>/</span>
-        <span>All Programmes</span>
+        <button className="hover:text-accent-500 hover:underline" onClick={onHome}>All Programmes</button>
         {chain.slice(0, -1).map((c) => (
           <span key={`${c.kind}-${c.id}`} className="flex items-center gap-1.5">
             <span>/</span>
-            <span>{c.name}</span>
+            <button className="hover:text-accent-500 hover:underline" onClick={() => onSelect(c.kind, c.id)}>{c.name}</button>
           </span>
         ))}
         {chain.length > 0 && <span className="flex items-center gap-1.5"><span>/</span><b className="text-ink-secondary">{chain[chain.length - 1].name}</b></span>}

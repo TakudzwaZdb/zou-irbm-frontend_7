@@ -1164,6 +1164,21 @@ that distinction matters):
   divides its base limit (8 per 10 minutes) by that count so the
   cluster-wide total stays close to the original intent instead of
   silently becoming 8-per-worker.
+- A second correctness detail the cluster change exposed on a real
+  restart: `db.js` has a handful of unconditional write statements (the
+  permissions-catalog sync, a few `INSERT OR IGNORE` backfills) that
+  re-run on every process's own `require('./db')`, not just once in the
+  primary. With two worker processes starting within milliseconds of each
+  other, WAL mode's "one writer at a time" rule could make the second
+  worker's write collide with the first's — and with no
+  `PRAGMA busy_timeout` set, `node:sqlite` threw `SQLITE_BUSY` ("database
+  is locked") immediately instead of waiting. Node's `cluster` module
+  auto-restarted the crashed worker, so the app still ended up healthy,
+  but a crash-and-restart on every boot isn't acceptable — fixed by
+  setting `PRAGMA busy_timeout = 5000` in `db.js`, so a worker now waits
+  up to 5s for the other's write to finish instead of failing outright.
+  Verified live: both workers now start cleanly with no crash/restart in
+  the log.
 
 ## API reference (summary)
 
@@ -1177,7 +1192,13 @@ All endpoints are under `/api`. Authenticated endpoints require an
   (any signed-in user — bumps `token_version`, invalidating every
   outstanding token for the account, including the one used to call it),
   `PUT|DELETE /api/auth/me/avatar`
-  (any signed-in user, own profile photo — a `data:` URL, capped size)
+  (any signed-in user, own profile photo — a `data:` URL, capped size),
+  `GET /api/auth/ict-admins` (deliberately unauthenticated — reachable from
+  the sign-in screen's "Forgot your password?" panel before anyone has a
+  token; returns only name/title/email for `ictadmin` accounts, the real,
+  live contacts who can actually reset a password — there is no email/SMS
+  delivery behind this app, so this replaces a fake "we'll send you a
+  link" form rather than faking one)
 - `GET /api/org` (now also returns `executiveOwner: { id, name, title } | null`
   — the single account, if any, currently designated Executive Owner),
   `POST /api/org/units` (requires `manage_org_units`),

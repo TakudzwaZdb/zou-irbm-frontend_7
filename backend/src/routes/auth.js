@@ -160,4 +160,21 @@ router.delete('/me/avatar', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// The real, honest answer to "forgot password" on the sign-in screen —
+// deliberately NOT a fake "enter your email, we'll send a link" form: this
+// app has no email/SMS delivery behind it (same reasoning as the admin-
+// assisted reset itself, see routes/users.js's POST /:id/reset-password),
+// and a form that pretends to send a reset email nobody receives would be
+// worse than no form at all. Instead, this tells whoever's locked out
+// exactly who can actually help, with real, live contact details — never a
+// hardcoded name that could go stale the day ICT staff changes.
+// Deliberately unauthenticated (that's the entire point — reachable before
+// signing in) and deliberately narrow: only name/title/email for the
+// ictadmin role, the same fields already visible to any signed-in account
+// via GET /api/messages/directory, just reachable one step earlier.
+router.get('/ict-admins', (req, res) => {
+  const admins = db.prepare("SELECT name, title, email FROM users WHERE role = 'ictadmin' ORDER BY name").all();
+  res.json({ admins });
+});
+
 module.exports = router;
