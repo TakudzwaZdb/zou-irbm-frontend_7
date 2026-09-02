@@ -120,8 +120,37 @@ export default function Profile() {
       </div>
 
       <ChangePasswordCard />
+      <SignOutEverywhereCard />
 
       {viewingPhoto && <PhotoLightbox src={user.avatar} name={user.name} onClose={() => setViewingPhoto(false)} />}
+    </div>
+  );
+}
+
+// Real session revocation for an otherwise-stateless token (see
+// SECURITY_REVIEW.md's finding #6 / routes/auth.js's /logout-everywhere) —
+// the actual answer to "I think I left myself signed in somewhere" or "my
+// laptop was stolen", not just changing the password for next time.
+function SignOutEverywhereCard() {
+  const { logoutEverywhere } = useApp();
+  const [busy, setBusy] = useState(false);
+
+  async function go() {
+    setBusy(true);
+    try { await logoutEverywhere(); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="card mt-5">
+      <h2 className="font-display font-bold text-[14.5px] mb-1">Sign out everywhere</h2>
+      <p className="text-[11.8px] text-ink-secondary mb-3">
+        Left yourself signed in on a shared or lost device? This immediately ends every session for your account,
+        including this one — you'll need to sign in again right after.
+      </p>
+      <button className="btn btn-sm btn-danger" disabled={busy} onClick={go}>
+        {busy ? 'Signing out…' : 'Sign out of every session'}
+      </button>
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useApp } from './context/AppContext.jsx';
 import { currentNav } from './lib/nav.js';
 import Login from './pages/Login.jsx';
+import ForcedPasswordChange from './pages/ForcedPasswordChange.jsx';
 import Layout from './components/Layout.jsx';
 import Overview from './pages/Overview.jsx';
 import Entry from './pages/Entry.jsx';
@@ -49,6 +50,11 @@ export default function App() {
     return <div className="min-h-dvh flex items-center justify-center text-ink-muted text-sm">Loading…</div>;
   }
   if (!user) return <Login />;
+  // A real server-side gate (see middleware/auth.js's requireAuth), not
+  // just a UI nicety — every other route already 403s for this account
+  // until this clears, so rendering anything else here would just be a
+  // Layout full of screens that can't actually load their own data.
+  if (user.must_change_password) return <ForcedPasswordChange />;
 
   // 'profile' (My Profile — reached from the header, see Layout.jsx) is a
   // self-service page open to every account regardless of permissions.

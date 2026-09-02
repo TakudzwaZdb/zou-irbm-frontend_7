@@ -1,7 +1,15 @@
 const jwt = require('jsonwebtoken');
 const db = require('../db');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-do-not-use-in-production';
+// No fallback to a shared, publicly-documented placeholder here on purpose
+// (see SECURITY_REVIEW.md's finding #2 — the old 'dev-secret-do-not-use-in-
+// production' fallback is exactly the kind of value everyone reading this
+// source can guess). A missing JWT_SECRET now fails loudly at startup
+// instead of silently signing every token with a value anyone can forge.
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET is not set. Set a long random value in backend/.env before starting the server (see .env.example).');
+}
 
 function getUserPermissions(userId) {
   return db
@@ -11,11 +19,19 @@ function getUserPermissions(userId) {
 }
 
 function loadUser(userId) {
-  const user = db.prepare('SELECT id, name, title, email, role, scope_type, scope_id, avatar, overview_limit, is_executive_owner FROM users WHERE id = ?').get(userId);
+  const user = db.prepare('SELECT id, name, title, email, role, scope_type, scope_id, avatar, overview_limit, is_executive_owner, must_change_password FROM users WHERE id = ?').get(userId);
   if (!user) return null;
+  user.must_change_password = !!user.must_change_password;
   user.permissions = getUserPermissions(user.id);
   return user;
 }
+
+// Routes still reachable while an account has must_change_password set —
+// enough to see who you are and set a real password, nothing else. Every
+// other route behind requireAuth (which is nearly all of them) 403s until
+// that's done, so this is a real, server-enforced gate, not just a
+// frontend redirect someone could skip by calling the API directly.
+const PASSWORD_CHANGE_EXEMPT_PATHS = new Set(['/api/auth/me', '/api/auth/change-password']);
 
 // Requires a valid bearer token; attaches req.user (with fresh permissions
 // pulled from the DB on every request — never cached in the token).
@@ -29,9 +45,23 @@ function requireAuth(req, res, next) {
   } catch (e) {
     return res.status(401).json({ error: 'Invalid or expired token.' });
   }
+  // Real revocation for an otherwise-stateless token: the token's own
+  // token_version (baked in at sign-in — see routes/auth.js's /login) must
+  // still match the account's current one. A password change, an admin
+  // password reset, or "sign out everywhere" bumps the column and every
+  // token minted before that bump stops working immediately, rather than
+  // staying valid for up to the remaining 12h of its natural expiry.
+  const versionRow = db.prepare('SELECT token_version FROM users WHERE id = ?').get(payload.sub);
+  if (!versionRow) return res.status(401).json({ error: 'Account no longer exists.' });
+  if (Number(payload.tv || 0) !== Number(versionRow.token_version || 0)) {
+    return res.status(401).json({ error: 'This session was signed out. Please sign in again.' });
+  }
   const user = loadUser(payload.sub);
   if (!user) return res.status(401).json({ error: 'Account no longer exists.' });
   req.user = user;
+  if (user.must_change_password && !PASSWORD_CHANGE_EXEMPT_PATHS.has(req.originalUrl.split('?')[0])) {
+    return res.status(403).json({ error: 'You must change your password before continuing.', code: 'PASSWORD_CHANGE_REQUIRED' });
+  }
   next();
 }
 

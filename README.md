@@ -767,6 +767,65 @@ while still talking to the same real backend over the same REST API.
   real information under every bar rather than faint chrome — the KPI name,
   who owns it, and what tier that owner is are now three visually distinct
   lines instead of one that stands out and two that blend together.
+- **"Overall Institutional Performance" is now the average of the 3
+  Programmes' own averages, not a flat average across every KPI**: the
+  headline Avg. progress/Avg. variance figures on Overview's "All
+  Programmes" root previously came from `performanceRollup`/`varianceRollup`
+  run flat across every KPI in the system regardless of which Programme it
+  belonged to — which meant whichever Programme happened to have the most
+  KPIs silently dominated the institutional figure. `lib/scope.js`'s new
+  `institutionalRollup(org, kpis, valuesByKpiId, settings)` instead computes
+  each Programme's own rollup (the exact same `performanceRollup`/
+  `varianceRollup` that Programme's own Overview card already uses, via
+  `nodeOwnKpis`'s full cascade) and averages THOSE — one Programme, one
+  vote — excluding a Programme with genuinely nothing scored yet rather than
+  dragging the institutional figure toward zero, the same "no data never
+  scores as 0" rule a single KPI already follows. The RAG counts and
+  variance-chart bars stay real, flat totals across every KPI org-wide —
+  only the two headline averages changed. `AppraisalCard` (shared by every
+  Overview node) now accepts an optional pre-computed `rollup`, used only by
+  "All Programmes"; every Programme/Sub-programme/Unit/Individual's own card
+  is unaffected, since a flat average of that one node's own cascade was
+  already the honest figure for it. Verified with demo data spread
+  unevenly across Programmes (one Programme scored at 100%, another at 0%,
+  a third with several mid-range KPIs) and confirmed the new institutional
+  average lands on the mean of the three Programmes' own percentages, not
+  the KPI-count-weighted figure the old flat calculation would have shown.
+- **Overall Institutional Performance now requires a real, admin-granted
+  permission to view or navigate to at all**: previously any account with
+  one of four hardcoded roles (exec/cpu/ictadmin/council) automatically saw
+  and could navigate the university-wide "All Programmes" rollup — no
+  permission gated it, unlike Overview/Framework/Reports which already
+  worked as real per-user permissions ICT admin could grant or revoke. A
+  new `view_institutional_performance` permission
+  (`utils/permissions.js`) now gates it the same way: seeded by default to
+  those four roles (preserving today's access as the starting point, via an
+  idempotent backfill in `db.js` for databases that predate this
+  permission — including inserting the new permission into the
+  `permissions` catalog table itself, a real foreign key
+  `user_permissions.permission_key` references), but genuinely revocable
+  per person from the existing Permissions & User Directory page, exactly
+  like every other permission there — no new UI needed, since that page is
+  already driven generically off the permission catalog. `pages/Overview.jsx`
+  shows a clear "restricted — ask your ICT System Administrator" card in
+  place of the aggregate for anyone missing it, and `components/OrgTree.jsx`
+  (the sidebar's clickable, multi-Programme tree — a second way to browse
+  the institution-wide picture) is gated identically rather than left as a
+  back door around the same restriction. A scoped role (Sub-programme
+  Rep/Unit Head/Individual/Programme Head) is unaffected either way — they
+  already never reached "All Programmes" before this, since their own place
+  in the structure was always their forced default. As with Overview/
+  Framework's existing visibility permissions, this gates the FRONTEND
+  navigation and display, matching this app's established pattern for
+  visibility permissions — `GET /kpis`/`GET /org` themselves return the
+  full organisation to any authenticated user exactly as they always have,
+  the same honest scope every other visibility permission in this codebase
+  already operates within. Verified by revoking the permission from a live
+  CPU account: the aggregate card and sidebar tree both switched to the
+  restricted message with zero console errors, then regranting restored
+  full access immediately (permissions are re-checked live, not cached to
+  login) — plus a role-by-role sweep of every page for all eight account
+  types with zero console errors.
 
 ## What's simplified versus the original prototype
 
@@ -976,25 +1035,148 @@ then sign in as `f.museta@zou.ac.zw` (University Council) and approve it
 ## Before using this for anything real
 
 This is a demonstration/reference implementation, not a production
-deployment. Before putting it in front of real ZOU staff or data:
+deployment. A security review of this codebase (see
+`SECURITY_REVIEW.md`) found and fixed several real issues — what's below
+reflects the current, post-fix state.
 
-- Replace every seeded account and the shared demo password with real
-  individual credentials (and consider adding password-reset and
-  multi-factor authentication).
-- Set a long, random `JWT_SECRET` in `.env` — never use the default.
-- Put it behind HTTPS, on real hosting, with a real backup strategy for
+Already addressed:
+
+- **No more shared, predictable account password.** Every new Unit Head or
+  Individual account (`POST /api/org/units`, `POST /api/org/individuals`)
+  and every ICT-admin password reset (`POST /api/users/:id/reset-password`)
+  now gets a real, cryptographically random one-time password
+  (`utils/password.js`) and is flagged `must_change_password` — the account
+  can sign in and see its own identity, but every other route 403s
+  (`code: 'PASSWORD_CHANGE_REQUIRED'`) until it sets a real password of its
+  own (see `pages/ForcedPasswordChange.jsx`). The seeded demo accounts keep
+  their openly-documented shared password (`Zou@2026`, shown right on the
+  sign-in screen) — deliberately: it's how you explore this build, not a
+  production credential, and forcing every demo persona to rotate it on
+  first login would defeat that purpose.
+- **`JWT_SECRET` has no fallback anymore.** `middleware/auth.js` throws on
+  startup if it's unset rather than silently signing tokens with the old
+  `dev-secret-do-not-use-in-production` placeholder — a value anyone who's
+  read this source could forge. Set a real one in `.env` (see
+  `.env.example`) before starting the server.
+- **Real, server-side session revocation.** Every user row now carries a
+  `token_version`; each JWT embeds the value it was issued against
+  (`routes/auth.js`'s `signToken`), and `requireAuth` rejects a token whose
+  embedded version no longer matches. A password change, an admin password
+  reset, or the self-service "Sign out everywhere" button (My Profile →
+  `POST /api/auth/logout-everywhere`) bumps it, instantly invalidating every
+  other outstanding token for that account instead of waiting out its
+  natural 12h expiry.
+- **`POST /api/auth/login` is rate-limited** — 8 attempts per 10 minutes per
+  IP (`express-rate-limit`, see `routes/auth.js`) — so the account-password
+  fix above can't be undone by unlimited guessing.
+- **`helmet()` on every response** (`server.js`) — a real
+  Content-Security-Policy, `X-Frame-Options`, `X-Content-Type-Options`, etc.
+  The one thing this actually required changing was moving `index.html`'s
+  small inline theme-preference script out to `public/theme-init.js`, so
+  `script-src` could stay at helmet's default `'self'` with no
+  `'unsafe-inline'` exception carved out for it.
+- **`cors()` no longer sends `Access-Control-Allow-Origin: *` by default.**
+  This app is always same-origin in real use (Express serves the built
+  frontend itself; Vite's dev server proxies `/api` rather than calling it
+  cross-origin), so CORS is now off unless `CORS_ORIGIN` is explicitly set
+  in `.env` to a real allowlist for a separately-hosted frontend.
+- `PATCH /api/settings` now rejects any key outside the known settings list
+  instead of writing whatever the request body contains into the table.
+- `PUT /api/kpis/:id/value` and `PUT /api/kpis/:id/contribution` now reject
+  a non-numeric `value` instead of silently storing it.
+
+Still genuinely open (by design, or deferred — see `SECURITY_REVIEW.md` for
+the full reasoning on each):
+
+- Every `GET` endpoint (`/api/kpis`, `/api/org`, `/api/plans`,
+  `/api/compliance`, …) is authenticated but not scope-filtered
+  server-side — any signed-in account can read data the frontend would
+  never show them by navigating there directly (e.g. via the browser's dev
+  tools or `curl`). The frontend narrows what it *shows* per role/scope;
+  the API itself doesn't. Fixing this properly means threading the same
+  `isOwner`/`inJurisdiction`/scope-chain checks the mutating routes already
+  use through every read endpoint too — a real, deliberately separate
+  follow-up given how many routes and roles it touches.
+- Put this behind HTTPS, on real hosting, with a real backup strategy for
   the SQLite file (or migrate to a managed database).
+- Consider multi-factor authentication.
 - Have ZOU's IT/security team review authentication, data-retention, and
   access-control requirements before go-live.
+
+## Performance & caching
+
+`server.js` was single-process and uncompressed until this pass. Real,
+measured changes, verified live against the running server (independent
+concurrent processes, not one bottlenecked test client sharing this
+sandbox's own 2 CPU cores — see the session's own load-test notes for why
+that distinction matters):
+
+- **Every CPU core, not just one.** `server.js` now forks one worker
+  process per core (Node's `cluster` module) instead of running as a single
+  process — override with `WEB_CONCURRENCY` in `.env` (`1` for simpler
+  local debugging). Every schema migration in `db.js` runs exactly once, in
+  the primary process, *before* any worker is forked — SQLite's WAL mode
+  (already enabled) is explicitly designed for what happens after that:
+  several processes, one file, one writer at a time, unlimited concurrent
+  readers. Verified live: 200 real concurrent connections to an
+  authenticated data endpoint (`GET /api/kpis/values`) all succeeded with a
+  median response time of ~8ms and a 95th-percentile of ~29ms, spread
+  across both worker processes (confirmed via each response's own
+  `worker` field on `GET /api/health`).
+- **Real HTTP compression** (`compression` middleware) on every response —
+  API JSON and the static frontend build alike. Measured directly: the
+  frontend's ~1.16MB JS bundle transfers as ~350KB over the wire, about a
+  70% reduction.
+- **The frontend's built JS/CSS get cached for real, safely.** Vite bakes a
+  content hash into every built filename (`index-RrOGiTXd.js` — a code
+  change always produces a different URL), so `server.js` now serves those
+  specific files with `Cache-Control: public, max-age=31536000, immutable`
+  — a repeat visitor's browser never has to ask the server about them
+  again. Everything else served from the same folder — `index.html`
+  itself, and the unhashed files copied verbatim from `frontend/public/`
+  (the ZOU logo images, `theme-init.js`) — deliberately stays on Express's
+  conservative `max-age=0` default instead, so an update to any of those is
+  never stuck behind a stale year-long cache. Verified live via response
+  headers on each file type.
+- **Three missing indexes added**, `CREATE INDEX IF NOT EXISTS` in `db.js`:
+  `kpi_values(year, month)` and `kpi_contributions(year, month)` — the
+  batch "everything for this one period" reads every data-entry/approvals/
+  reviews screen fires, which filter on columns that weren't the leading
+  column of any existing unique constraint — and
+  `message_recipients(recipient_id)` for the inbox view. Invisible at this
+  app's current size (a few dozen KPIs, a few dozen recorded values — raw
+  query time was already sub-millisecond) but a real, compounding saving
+  once years of monthly history accumulate.
+- **API responses are deliberately NOT cached.** This was a real decision,
+  not an oversight: `requireAuth` already re-reads a user's permissions
+  from the database on every request specifically so a revoked permission
+  takes effect immediately rather than "eventually" (see
+  `SECURITY_REVIEW.md`'s finding #6 area) — caching KPI values, approval
+  status, or RAG/compliance state would work directly against that same
+  guarantee, in a tool people use to make real institutional decisions.
+  Given how small and fast the actual queries already are, the honest
+  trade wasn't close.
+- One correctness detail worth knowing: `routes/auth.js`'s login rate
+  limiter (`SECURITY_REVIEW.md`'s finding #3) keeps its counter in memory,
+  per-process. With multiple worker processes now round-robining
+  connections, that counter is no longer truly global — `server.js` passes
+  the resolved worker count down via `WEB_CONCURRENCY`, and the limiter
+  divides its base limit (8 per 10 minutes) by that count so the
+  cluster-wide total stays close to the original intent instead of
+  silently becoming 8-per-worker.
 
 ## API reference (summary)
 
 All endpoints are under `/api`. Authenticated endpoints require an
 `Authorization: Bearer <token>` header from `POST /api/auth/login`.
 
-- `POST /api/auth/login`, `GET /api/auth/me`,
+- `POST /api/auth/login` (rate-limited, 8/10min per IP), `GET /api/auth/me`,
   `POST /api/auth/change-password` (any signed-in user, own account,
-  requires their current password), `PUT|DELETE /api/auth/me/avatar`
+  requires their current password — also clears `must_change_password` and
+  returns a freshly-signed token), `POST /api/auth/logout-everywhere`
+  (any signed-in user — bumps `token_version`, invalidating every
+  outstanding token for the account, including the one used to call it),
+  `PUT|DELETE /api/auth/me/avatar`
   (any signed-in user, own profile photo — a `data:` URL, capped size)
 - `GET /api/org` (now also returns `executiveOwner: { id, name, title } | null`
   — the single account, if any, currently designated Executive Owner),

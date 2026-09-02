@@ -291,6 +291,9 @@ router.put('/:id/contribution', requirePerm('data_entry'), (req, res) => {
   if (!isAssignedIndividual(req.user, kpi)) return res.status(403).json({ error: 'You are not assigned to contribute to this KPI.' });
   const { year, month, value } = req.body || {};
   if (!year || !month) return res.status(400).json({ error: 'year and month are required.' });
+  if (value != null && !Number.isFinite(Number(value))) {
+    return res.status(400).json({ error: 'value must be a number.' });
+  }
 
   const existing = db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND individual_id = ? AND year = ? AND month = ?')
     .get(kpi.id, req.user.scope_id, year, month);
@@ -499,6 +502,13 @@ router.put('/:id/value', requirePerm('data_entry'), (req, res) => {
   if (!isOwner(req.user, kpi)) return res.status(403).json({ error: 'You can only enter data for KPIs you own.' });
   const { year, month, value } = req.body || {};
   if (!year || !month) return res.status(400).json({ error: 'year and month are required.' });
+  // A cleared/blank entry (still drafting) is fine — anything actually
+  // supplied must be a real finite number, not a string, array, object, or
+  // NaN/Infinity smuggled through as JSON, since this becomes a real figure
+  // in every RAG/variance/rollup calculation that reads it.
+  if (value != null && !Number.isFinite(Number(value))) {
+    return res.status(400).json({ error: 'value must be a number.' });
+  }
 
   const existing = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month);
   const wasApproved = existing && existing.status === 'approved';

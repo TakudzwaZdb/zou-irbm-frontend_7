@@ -4,6 +4,7 @@ const db = require('../db');
 const { requireAuth, requirePerm, requireAnyPerm } = require('../middleware/auth');
 const { uniqueEmailFor } = require('../utils/email');
 const { DEFAULT_PERMS_BY_ROLE } = require('../utils/permissions');
+const { generateTempPassword } = require('../utils/password');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -41,9 +42,15 @@ router.post('/units', requirePerm('manage_org_units'), (req, res) => {
   if (!sub) return res.status(404).json({ error: 'Sub-programme not found.' });
 
   const email = uniqueEmailFor(head);
-  const passwordHash = bcrypt.hashSync(process.env.SEED_PASSWORD || 'Zou@2026', 10);
+  // A real random one-time password, never a shared/guessable default (see
+  // SECURITY_REVIEW.md's finding #1) — shown once in this response for
+  // whoever is provisioning the account to hand off, and must_change_password
+  // below means it's only ever good for one sign-in before the new Unit Head
+  // sets their own real password.
+  const tempPassword = generateTempPassword();
+  const passwordHash = bcrypt.hashSync(tempPassword, 10);
   const headUserId = db
-    .prepare('INSERT INTO users (name, title, email, password_hash, role, scope_type, scope_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .prepare('INSERT INTO users (name, title, email, password_hash, role, scope_type, scope_id, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, 1)')
     .run(head, `Unit Head — ${name}`, email, passwordHash, 'unithead', 'unit', null).lastInsertRowid;
 
   const unitId = db
@@ -60,7 +67,7 @@ router.post('/units', requirePerm('manage_org_units'), (req, res) => {
 
   res.status(201).json({
     unit: db.prepare('SELECT * FROM units WHERE id = ?').get(unitId),
-    headAccount: { email, note: `Demo password: ${process.env.SEED_PASSWORD || 'Zou@2026'}` },
+    headAccount: { email, note: `Temporary password: ${tempPassword} — they must set their own at first sign-in.` },
   });
 });
 
@@ -89,9 +96,10 @@ router.post('/individuals', requireAnyPerm('manage_org_units', 'add_individual')
   }
 
   const email = uniqueEmailFor(name);
-  const passwordHash = bcrypt.hashSync(process.env.SEED_PASSWORD || 'Zou@2026', 10);
+  const tempPassword = generateTempPassword();
+  const passwordHash = bcrypt.hashSync(tempPassword, 10);
   const userId = db
-    .prepare('INSERT INTO users (name, title, email, password_hash, role, scope_type, scope_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .prepare('INSERT INTO users (name, title, email, password_hash, role, scope_type, scope_id, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, 1)')
     .run(name, roleTitle, email, passwordHash, 'individual', 'individual', null).lastInsertRowid;
 
   const individualId = db
@@ -108,7 +116,7 @@ router.post('/individuals', requireAnyPerm('manage_org_units', 'add_individual')
 
   res.status(201).json({
     individual: db.prepare('SELECT * FROM individuals WHERE id = ?').get(individualId),
-    account: { email, note: `Demo password: ${process.env.SEED_PASSWORD || 'Zou@2026'}` },
+    account: { email, note: `Temporary password: ${tempPassword} — they must set their own at first sign-in.` },
   });
 });
 

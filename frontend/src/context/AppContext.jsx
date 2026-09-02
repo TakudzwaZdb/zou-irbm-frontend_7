@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { api, setToken, setUnauthorizedHandler } from '../lib/api.js';
+import { api, setToken, setUnauthorizedHandler, setPasswordChangeRequiredHandler } from '../lib/api.js';
 import { currentPeriod, canDrillToKind } from '../lib/scope.js';
 import { defaultIdx, rangeFor, latestInRange } from '../lib/period.js';
 import { playTone } from '../lib/sound.js';
@@ -89,6 +89,13 @@ export function AppProvider({ children }) {
   }, []);
 
   useEffect(() => { setUnauthorizedHandler(logout); }, [logout]);
+  // Defense-in-depth mirror of the same must_change_password check
+  // login/boot already do before ever calling loadCore (see below) — if
+  // some other request ever reaches the API first and gets the server's
+  // 403, just re-sync `user` from /me (exempt from the gate) so App.jsx's
+  // must_change_password check renders the forced screen instead of
+  // whatever silently failed.
+  useEffect(() => { setPasswordChangeRequiredHandler(() => { api('/auth/me').then((r) => setUser(r.user)).catch(() => {}); }); }, []);
 
   const loadValuesForPeriod = useCallback(async (p) => {
     const r = await api(`/kpis/values?year=${p.year}&month=${p.month}`);
@@ -214,23 +221,48 @@ export function AppProvider({ children }) {
     loadContributionsForPeriod(p);
   }, [loadValuesForPeriod, loadContributionsForPeriod]);
 
+  // Stores a fresh token + user from /login or /change-password, and — the
+  // one branch point both share — only loads the rest of the app's data if
+  // this account is actually clear to use it. An account still on a
+  // temporary password (see SECURITY_REVIEW.md's finding #1) gets nothing
+  // beyond `user` itself: App.jsx renders the forced change-password screen
+  // instead of Layout the moment it sees user.must_change_password, and
+  // every other API route would 403 anyway (see middleware/auth.js's
+  // requireAuth) — this just avoids firing those doomed requests at all.
+  const applyAuthResult = useCallback(async (r) => {
+    tokenRef.current = r.token;
+    setToken(r.token);
+    localStorage.setItem('zou_token', r.token);
+    setUser(r.user);
+    if (!r.user.must_change_password) {
+      await loadCore(currentPeriod());
+    }
+  }, [loadCore]);
+
   const login = useCallback(async (email, password) => {
     setLoginError(null);
     try {
       const r = await api('/auth/login', { method: 'POST', body: { email, password } });
-      tokenRef.current = r.token;
-      setToken(r.token);
-      localStorage.setItem('zou_token', r.token);
-      setUser(r.user);
-      await loadCore(currentPeriod());
+      await applyAuthResult(r);
     } catch (err) {
       setLoginError(err.message || 'Login failed.');
     }
-  }, [loadCore]);
+  }, [applyAuthResult]);
+
+  // Called once the forced change-password screen's own submit succeeds —
+  // the backend returns a freshly-signed token (the old one's token_version
+  // is now stale — see routes/auth.js's /change-password) plus the updated
+  // user with must_change_password cleared, so this is the same
+  // apply-then-load-core transition login uses, just entered from a
+  // different screen.
+  const completePasswordChange = useCallback(async (r) => {
+    await applyAuthResult(r);
+  }, [applyAuthResult]);
 
   const refreshUser = useCallback(async () => {
     const r = await api('/auth/me');
     setUser(r.user);
+    return r.user;
   }, []);
 
   useEffect(() => {
@@ -238,8 +270,10 @@ export function AppProvider({ children }) {
       if (!tokenRef.current) { setBooting(false); return; }
       setToken(tokenRef.current);
       try {
-        await refreshUser();
-        await loadCore(currentPeriod());
+        const u = await refreshUser();
+        if (!u.must_change_password) {
+          await loadCore(currentPeriod());
+        }
       } catch (_) {
         logout();
       } finally {
@@ -256,8 +290,16 @@ export function AppProvider({ children }) {
     setAssignments(r.assignments);
   }, []);
 
+  // "Sign out everywhere" — see routes/auth.js's /logout-everywhere. Bumps
+  // the account's token_version server-side, which invalidates THIS
+  // session's own token too (it's included), so the local cleanup below
+  // mirrors logout() exactly rather than trying to keep this tab alive.
+  const logoutEverywhere = useCallback(async () => {
+    try { await api('/auth/logout-everywhere', { method: 'POST' }); } finally { logout(); }
+  }, [logout]);
+
   const value = {
-    booting, user, loginError, login, logout, hasPerm, refreshUser,
+    booting, user, loginError, login, logout, logoutEverywhere, completePasswordChange, hasPerm, refreshUser,
     org, kpis, settings, values, period, changePeriod,
     assignments, reloadAssignments,
     templates, reloadTemplates,

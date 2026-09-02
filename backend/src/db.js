@@ -509,4 +509,82 @@ db.exec(`
   SELECT id, 'approve_own_tier' FROM users WHERE role = 'programme'
 `);
 
+// Keep the `permissions` catalog table in sync with utils/permissions.js's
+// PERMISSIONS list. seed.js only ever inserts these once, at seed time — a
+// database seeded before a new permission was added to that list has no row
+// for it at all, and `user_permissions.permission_key` is a real foreign
+// key against this table, so granting that permission to anyone (by a
+// backfill below, or by ICT admin in Settings) would fail outright without
+// this. Idempotent (INSERT OR IGNORE on the `key` primary key).
+{
+  const { PERMISSIONS } = require('./utils/permissions');
+  const insertPerm = db.prepare('INSERT OR IGNORE INTO permissions (key, label, group_name) VALUES (?, ?, ?)');
+  PERMISSIONS.forEach((p) => insertPerm.run(p.key, p.label, p.group));
+}
+
+// Backfill: grant the new 'view_institutional_performance' permission to
+// every already-seeded account whose role automatically had unconditional
+// access to the university-wide "Overall Institutional Performance" view
+// before this permission existed (exec/cpu/ictadmin/council — see
+// pages/Overview.jsx / components/OrgTree.jsx and DEFAULT_PERMS_BY_ROLE).
+// Without this, every existing account in those four roles would suddenly
+// lose access to a view they always had the instant this feature ships,
+// rather than ICT admin making a deliberate choice to keep or revoke it —
+// this backfill preserves today's real access as the starting point for
+// that choice, exactly like the approve_own_tier backfill above.
+db.exec(`
+  INSERT OR IGNORE INTO user_permissions (user_id, permission_key)
+  SELECT id, 'view_institutional_performance' FROM users WHERE role IN ('exec', 'cpu', 'ictadmin', 'council')
+`);
+
+// Migration: real, server-enforced session revocation for an otherwise
+// stateless JWT (see SECURITY_REVIEW.md's finding #6). Every token minted at
+// login carries the account's token_version at that moment (see routes/
+// auth.js's /login); middleware/auth.js's requireAuth rejects any token
+// whose embedded version no longer matches this column. Bumping it —
+// on a password change, an admin-driven password reset, or the self-service
+// "sign out everywhere" action — instantly invalidates every token issued
+// before that bump, without waiting out its 12h expiry.
+const usersColumnsForSecurity = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+if (!usersColumnsForSecurity.includes('token_version')) {
+  db.exec('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0');
+}
+
+// Migration: forces a real password change before an account can do
+// anything else (see SECURITY_REVIEW.md's finding #1 — no more accounts
+// left indefinitely on a shared, predictable password). Set to 1 whenever
+// ICT admin provisions a new Unit Head / Individual account or resets
+// someone's password (see routes/org.js, routes/users.js's reset-password),
+// each of which now generates a real random temporary password rather than
+// a shared default. requireAuth (middleware/auth.js) blocks every route
+// except GET /api/auth/me and POST /api/auth/change-password while this is
+// set, so it's a real gate, not just a frontend nudge. Existing seeded demo
+// accounts are deliberately left at the default 0 — the seeded password is
+// openly documented on the sign-in screen for evaluating this build, not a
+// production credential (see README's "What's simplified" section).
+if (!usersColumnsForSecurity.includes('must_change_password')) {
+  db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
+}
+
+// Indexes: every PRIMARY KEY and UNIQUE constraint above is already
+// auto-indexed by SQLite, but three real queries filter on columns that
+// aren't the LEADING column of any of those, so they fall back to a full
+// table scan — invisible at this app's current size (a few dozen KPIs, a
+// few dozen recorded values) but a real, growing cost as months/years of
+// history accumulate. CREATE INDEX IF NOT EXISTS is naturally idempotent,
+// unlike the ALTER TABLE ADD COLUMN migrations above, so no existence
+// check is needed first.
+//
+// GET /api/kpis/values and GET /api/kpis/contributions (routes/kpis.js) —
+// the batch "everything for this one period" reads every data-entry/
+// approvals/reviews screen uses — filter kpi_values/kpi_contributions by
+// (year, month) alone; the tables' own UNIQUE constraints lead with
+// kpi_id/individual_id instead, so neither covers this lookup.
+db.exec('CREATE INDEX IF NOT EXISTS idx_kpi_values_period ON kpi_values(year, month)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_kpi_contributions_period ON kpi_contributions(year, month)');
+// GET /api/messages's inbox view (routes/messages.js) filters
+// message_recipients by recipient_id alone; its own UNIQUE constraint
+// leads with message_id instead, so this one's uncovered the same way.
+db.exec('CREATE INDEX IF NOT EXISTS idx_message_recipients_recipient ON message_recipients(recipient_id)');
+
 module.exports = db;

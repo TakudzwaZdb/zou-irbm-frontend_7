@@ -38,20 +38,30 @@ const PERMISSIONS = [
   // Reports/Audit/Settings already work.
   { key: 'view_overview', label: 'View Overview page', group: 'Visibility' },
   { key: 'view_framework', label: 'View Framework page', group: 'Visibility' },
+  // The university-wide "Overall Institutional Performance" rollup (the
+  // root of Overview's drill-down, above every Programme) used to be
+  // automatically visible to whoever held one of four hardcoded roles
+  // (exec/cpu/ictadmin/council) — no permission gated it at all, unlike
+  // Overview/Framework above. It's now a real, revocable permission of its
+  // own: ICT admin decides who can see and navigate to the institution-wide
+  // aggregate, the same way every other visibility permission here already
+  // works, rather than it being an automatic consequence of a person's
+  // role. See pages/Overview.jsx and components/OrgTree.jsx.
+  { key: 'view_institutional_performance', label: 'View Overall Institutional Performance (All Programmes)', group: 'Visibility' },
 ];
 
 // Role -> default permission set, used only at seed time. Permissions live
 // per-user in the database from then on, not hardcoded to role at request time.
 const DEFAULT_PERMS_BY_ROLE = {
-  exec: ['view_reports', 'view_audit', 'view_overview', 'view_framework'],
-  cpu: ['approve_own_tier', 'manage_settings', 'create_kpi', 'edit_targets', 'manage_org_units', 'manage_framework', 'submit_annual_plan', 'view_reports', 'view_audit', 'view_overview', 'view_framework'],
+  exec: ['view_reports', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
+  cpu: ['approve_own_tier', 'manage_settings', 'create_kpi', 'edit_targets', 'manage_org_units', 'manage_framework', 'submit_annual_plan', 'view_reports', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
   // ICT System Administrators manage the organisational structure (units,
   // departments, faculties, regions, and individuals), the KPI catalogue
   // itself (creating new KPIs, not just editing targets on existing ones),
   // and overrides, by default, in addition to their exclusive
   // permission-management role — they don't have to grant these to
   // themselves first.
-  ictadmin: ['manage_users', 'manage_org_units', 'create_kpi', 'edit_targets', 'apply_override', 'view_audit', 'view_overview', 'view_framework'],
+  ictadmin: ['manage_users', 'manage_org_units', 'create_kpi', 'edit_targets', 'apply_override', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
   rep: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
   unithead: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
   individual: ['data_entry', 'view_overview', 'view_framework'],
@@ -77,7 +87,7 @@ const DEFAULT_PERMS_BY_ROLE = {
   // cascade), but the one account type that can actually validate/approve
   // or return the University Annual Plan once CPU has submitted it. See
   // routes/plans.js.
-  council: ['view_reports', 'view_overview', 'view_framework', 'validate_annual_plan'],
+  council: ['view_reports', 'view_overview', 'view_framework', 'validate_annual_plan', 'view_institutional_performance'],
 };
 
 module.exports = { PERMISSIONS, DEFAULT_PERMS_BY_ROLE };

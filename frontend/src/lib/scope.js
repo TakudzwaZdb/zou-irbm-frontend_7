@@ -480,6 +480,52 @@ export function varianceRollup(kpiList, valuesByKpiId, settings) {
   return { items, avgVariance, avgExpectedPct, attentionCount };
 }
 
+// "Overall Institutional Performance" is the average of the Programmes'
+// OWN averages — never a flat average across every individual KPI in the
+// system, which would silently let whichever Programme happens to have the
+// most KPIs dominate the institutional figure. Each Programme's own
+// avgPct/avgVariance (the exact same performanceRollup/varianceRollup every
+// Programme's own Overview card already computes, via nodeOwnKpis's full
+// Programme -> Sub-programme -> Unit -> Individual cascade) is given equal
+// weight, one Programme, one vote, then averaged across however many
+// Programmes actually have at least one scored KPI — a Programme with
+// genuinely nothing scored yet is excluded rather than dragging the
+// institutional figure toward zero, the same "no data never scores as 0"
+// principle performanceRollup already applies to a single KPI with no
+// value. The RAG counts and variance-chart items stay real, flat totals
+// across every KPI org-wide (see below) — only the two headline AVERAGES
+// change; "14 KPIs off track" should still mean 14 actual KPIs, never
+// something scaled by how many Programmes there are.
+export function institutionalRollup(org, kpis, valuesByKpiId, settings) {
+  const perProgramme = org.programmes.map((p) => {
+    const list = nodeOwnKpis(org, kpis, 'programme', p.id);
+    return {
+      programme: p,
+      performance: performanceRollup(list, valuesByKpiId, settings),
+      variance: varianceRollup(list, valuesByKpiId, settings),
+    };
+  });
+  const withPerf = perProgramme.filter((r) => r.performance.avgPct != null);
+  const avgPct = withPerf.length ? Math.round(withPerf.reduce((sum, r) => sum + r.performance.avgPct, 0) / withPerf.length) : null;
+  const withVar = perProgramme.filter((r) => r.variance.avgVariance != null);
+  const avgVariance = withVar.length ? Math.round(withVar.reduce((sum, r) => sum + r.variance.avgVariance, 0) / withVar.length) : null;
+  const withExpected = perProgramme.filter((r) => r.variance.avgExpectedPct != null);
+  const avgExpectedPct = withExpected.length ? Math.round(withExpected.reduce((sum, r) => sum + r.variance.avgExpectedPct, 0) / withExpected.length) : null;
+  const counts = { green: 0, amber: 0, red: 0, none: 0 };
+  perProgramme.forEach((r) => {
+    const c = r.performance.counts;
+    counts.green += c.green; counts.amber += c.amber; counts.red += c.red; counts.none += c.none;
+  });
+  const count = perProgramme.reduce((sum, r) => sum + r.performance.count, 0);
+  const items = perProgramme.flatMap((r) => r.variance.items);
+  const attentionCount = perProgramme.reduce((sum, r) => sum + r.variance.attentionCount, 0);
+  return {
+    performance: { count, avgPct, counts },
+    variance: { items, avgVariance, avgExpectedPct, attentionCount },
+    perProgramme,
+  };
+}
+
 export function initialsOf(name) {
   const parts = String(name || '').replace(/^(Mr|Mrs|Ms|Dr|Prof|Eng)\.?\s+/i, '').trim().split(/\s+/);
   const letters = parts.map((p) => p[0]).filter(Boolean);

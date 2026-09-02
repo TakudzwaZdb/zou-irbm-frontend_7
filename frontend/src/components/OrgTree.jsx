@@ -15,8 +15,16 @@ const RAG_DOT = {
 // their own branch (their Programme → their Sub-programme → …), matching
 // what they're actually allowed to view elsewhere in the app.
 export default function OrgTree({ setRoute, onNavigate }) {
-  const { org, kpis, perfValues, settings, user, selNode, selectNode } = useApp();
+  const { org, kpis, perfValues, settings, user, selNode, selectNode, hasPerm } = useApp();
   const forced = defaultNodeForRole(user);
+  // A global role (forced === null) browsing every Programme side-by-side
+  // IS a way to navigate the institution-wide picture, same as the "All
+  // Programmes" aggregate on Overview itself — so it's gated behind the
+  // exact same permission (see utils/permissions.js's
+  // view_institutional_performance), not left open as a back door around
+  // that gate. A scoped role is unaffected: `forced` already restricts them
+  // to their own branch regardless of this permission.
+  const canViewInstitutional = hasPerm('view_institutional_performance');
   const effectiveNode = selNode || forced;
 
   // Whichever node is currently showing on Overview — wherever it came
@@ -50,10 +58,10 @@ export default function OrgTree({ setRoute, onNavigate }) {
   const ownUnitId = ownChain?.find((c) => c.kind === 'unit')?.id;
 
   const programmes = useMemo(() => {
-    if (!forced) return org.programmes;
+    if (!forced) return canViewInstitutional ? org.programmes : [];
     return org.programmes.filter((p) => p.id === ownProgrammeId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [org, forced, ownProgrammeId]);
+  }, [org, forced, ownProgrammeId, canViewInstitutional]);
 
   function visibleSubs(programmeId) {
     const subs = subsOfProgramme(org, programmeId);
@@ -107,6 +115,14 @@ export default function OrgTree({ setRoute, onNavigate }) {
         <span className="truncate">{label}</span>
         {restricted && <span className="flex-none text-[10px]">🔒</span>}
       </div>
+    );
+  }
+
+  if (!forced && !canViewInstitutional) {
+    return (
+      <p className="text-[11.3px] text-ink-muted px-1.5 leading-snug">
+        Restricted — ask your ICT System Administrator for the "View Overall Institutional Performance" permission.
+      </p>
     );
   }
 

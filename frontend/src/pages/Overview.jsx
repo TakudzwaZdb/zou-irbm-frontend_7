@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import {
-  relevantKpis, computeRag, canEnterData, canContribute, performanceRollup, varianceRollup, VARIANCE_ATTENTION_THRESHOLD, valueStatus, scopeBreadcrumb, MONTHS,
+  relevantKpis, computeRag, canEnterData, canContribute, performanceRollup, varianceRollup, institutionalRollup, VARIANCE_ATTENTION_THRESHOLD, valueStatus, scopeBreadcrumb, MONTHS,
   byId, subsOfProgramme, unitsOfSub, individualsOfUnit, nodeOwnKpis, nodeAncestryChain, defaultNodeForRole, canDrillToKind, ownerName, ownerKindLabel,
 } from '../lib/scope.js';
 import { labelFor } from '../lib/period.js';
@@ -15,8 +15,17 @@ import PeriodTypePicker from '../components/PeriodTypePicker.jsx';
 const KIND_LABEL = { programme: 'Programme', sub: 'Sub-programme', unit: 'Unit', individual: 'Individual' };
 
 export default function Overview() {
-  const { user, org, kpis, values, contributions, settings, period, assignments, selNode, selectNode, clearSelNode } = useApp();
+  const { user, org, kpis, values, contributions, settings, period, assignments, selNode, selectNode, clearSelNode, hasPerm } = useApp();
   const isGlobal = ['cpu', 'exec', 'ictadmin', 'council'].includes(user.role);
+  // The university-wide "All Programmes" rollup is no longer an automatic
+  // consequence of holding one of the four "global" roles above — it's now
+  // a real, revocable permission ICT admin grants/revokes per person (see
+  // utils/permissions.js's view_institutional_performance), the same as
+  // every other visibility permission in this app. A global role with the
+  // permission revoked falls through to InstitutionalAccessRestricted below
+  // instead of the aggregate; a scoped role is unaffected either way, since
+  // `forced` already keeps them on their own place in the structure.
+  const canViewInstitutional = hasPerm('view_institutional_performance');
 
   // The node the drill-down is actually showing: whatever's explicitly
   // selected (clicked in the sidebar tree or a card below), falling back to
@@ -60,7 +69,28 @@ export default function Overview() {
 
       {effectiveNode
         ? <NodeView node={effectiveNode} onHome={clearSelNode} onSelect={selectNode} />
-        : <AllProgrammesView onSelect={selectNode} />}
+        : canViewInstitutional
+          ? <AllProgrammesView onSelect={selectNode} />
+          : <InstitutionalAccessRestricted />}
+    </div>
+  );
+}
+
+// Shown in place of the "Overall Institutional Performance" rollup for a
+// global-role account (cpu/exec/ictadmin/council — the only roles that ever
+// land here at all, since a scoped role's own `forced` default keeps them
+// on their own place in the structure) that hasn't been granted
+// view_institutional_performance. Explains the restriction rather than
+// silently showing nothing, and names exactly who can lift it.
+function InstitutionalAccessRestricted() {
+  return (
+    <div className="card text-center py-14">
+      <p className="text-[15px] font-bold mb-1.5">Overall Institutional Performance is restricted</p>
+      <p className="text-[13px] text-ink-secondary max-w-[48ch] mx-auto">
+        Viewing and navigating the university-wide performance rollup across all Programmes requires the
+        "View Overall Institutional Performance" permission. Ask your ICT System Administrator to grant it
+        if you need access.
+      </p>
     </div>
   );
 }
@@ -77,12 +107,22 @@ export default function Overview() {
 // sidebar tree's RAG dots). Nothing here is simulated — it's the exact
 // same real kpi_values rows the monthly view reads, just aggregated by a
 // wider date range.
-function AppraisalCard({ kpiList, heading }) {
+// `rollup` — when passed ({ performance, variance }, see lib/scope.js's
+// institutionalRollup) — is used exactly as-is instead of computing a flat
+// average from `kpiList`. Only "All Programmes" passes this: the
+// institution-wide headline figures are the average of the Programmes' OWN
+// averages (one Programme, one vote), never a flat average across every
+// individual KPI, which would silently let whichever Programme has the
+// most KPIs dominate the number. Every other caller (a single Programme/
+// Sub-programme/Unit/Individual's own card) is unaffected — a flat average
+// of that one node's own cascade is already the correct, honest figure for
+// it, so it keeps computing straight from kpiList exactly as before.
+function AppraisalCard({ kpiList, heading, rollup, avgOfProgrammes = false }) {
   const { org, settings, perfPeriod, perfValues } = useApp();
-  if (kpiList.length === 0) return null;
-  const appraisal = performanceRollup(kpiList, perfValues, settings);
+  if (rollup ? rollup.performance.count === 0 : kpiList.length === 0) return null;
+  const appraisal = rollup ? rollup.performance : performanceRollup(kpiList, perfValues, settings);
   const label = labelFor(perfPeriod.type, perfPeriod.year, perfPeriod.idx, MONTHS);
-  const variance = varianceRollup(kpiList, perfValues, settings);
+  const variance = rollup ? rollup.variance : varianceRollup(kpiList, perfValues, settings);
   // Every KPI with a value gets its own bar here — never cut short by
   // chart width — labeled with both its own name AND who owns it (see
   // ownerName), since "Digital Theses Uploaded" means something different
@@ -126,7 +166,10 @@ function AppraisalCard({ kpiList, heading }) {
         </div>
       </div>
       <p className="text-[11.3px] text-ink-muted mt-2 mb-4">
-        Automated from {appraisal.count} KPI{appraisal.count > 1 ? 's' : ''} — data entry stays monthly, this is
+        {avgOfProgrammes
+          ? `Avg. progress and variance above are the average of each of the ${rollup.perProgramme.length} Programmes' own averages — one Programme, one vote — not a flat average across all ${appraisal.count} KPIs, which would let whichever Programme has the most KPIs dominate the figure. `
+          : `Automated from ${appraisal.count} KPI${appraisal.count > 1 ? 's' : ''} — `}
+        data entry stays monthly, this is
         just a rollup lens: switch Monthly/Quarterly/Bi-annual/Annual above and it recomputes from the real
         submitted values, live. Variance compares each KPI's actual progress to the pace expected as of the
         month its own latest value was recorded in{variance.avgExpectedPct != null ? ` (avg. ${variance.avgExpectedPct}% of the way there)` : ''} —
@@ -162,14 +205,11 @@ function AllProgrammesView({ onSelect }) {
     counts[valueStatus(v)]++;
     ragCounts[computeRag(k, v, settings).cls.replace('chip-rag-', '')]++;
   });
-  // "All Programmes" is the university-wide root of the same cascade every
-  // other node uses (see lib/scope.js's nodeOwnKpis) — every KPI in the
-  // system belongs to exactly one Programme's subtree, so this is simply
-  // every KPI there is. This is also, genuinely, "overall institutional
-  // performance" — not a separately computed figure, the exact same live
-  // rollup every Programme/Sub-programme/Unit card below already uses, just
-  // read at the top of the whole tree instead of one branch of it.
-  const appraisalKpis = kpis;
+  // "Overall Institutional Performance" is the average of the org's 3
+  // Programmes' own averages (one Programme, one vote) — see
+  // lib/scope.js's institutionalRollup — never a flat average across every
+  // individual KPI regardless of which Programme it belongs to.
+  const institutional = institutionalRollup(org, kpis, perfValues, settings);
   const owner = org.executiveOwner;
 
   return (
@@ -180,7 +220,7 @@ function AllProgrammesView({ onSelect }) {
           institutional performance against the Plan — the appraisal below, aggregated across every Programme.
         </div>
       )}
-      <AppraisalCard kpiList={appraisalKpis} heading="Overall Institutional Performance — All Programmes" />
+      <AppraisalCard rollup={institutional} avgOfProgrammes heading="Overall Institutional Performance — All Programmes" />
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5 mb-6">
         <Stat label="KPIs in view" value={list.length} />

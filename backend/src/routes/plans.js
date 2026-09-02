@@ -21,7 +21,18 @@ function getRow(cycleYear, ownerType, ownerId) {
   return db.prepare('SELECT * FROM plan_proposals WHERE cycle_year = ? AND owner_type = ? AND owner_id = ?').get(cycleYear, ownerType, ownerId);
 }
 
+// Every call site below passes a fixed object literal (e.g. { narrative,
+// budget, status }) — never req.body directly — so `fields`'s keys are
+// never attacker-controlled today. Still, since those keys become raw SQL
+// column names a few lines down (Object.keys(fields).map(k => `${k} = ?`)),
+// this whitelist is what keeps that true even if a future call site is
+// ever careless enough to pass request data straight through (see
+// SECURITY_REVIEW.md's SQL-injection note on this function).
+const UPSERT_DRAFT_ALLOWED_FIELDS = new Set(['narrative', 'budget', 'status']);
+
 function upsertDraft(cycleYear, ownerType, ownerId, fields) {
+  const badKeys = Object.keys(fields).filter((k) => !UPSERT_DRAFT_ALLOWED_FIELDS.has(k));
+  if (badKeys.length) throw new Error(`upsertDraft: unexpected field(s): ${badKeys.join(', ')}`);
   const existing = getRow(cycleYear, ownerType, ownerId);
   if (existing) {
     const sets = Object.keys(fields).map((k) => `${k} = ?`).join(', ');

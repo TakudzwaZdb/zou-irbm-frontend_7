@@ -1,9 +1,9 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { PERMISSIONS } = require('../utils/permissions');
+const { generateTempPassword } = require('../utils/password');
 
 const router = express.Router();
 
@@ -76,23 +76,32 @@ router.patch('/:id/profile', (req, res) => {
 // they forget" for an internal tool with no email/SMS delivery service
 // standing behind it. Rather than fake a "check your email" flow with
 // nowhere for the email to actually go, ICT admin sets (or generates) a new
-// password immediately, exactly like the demo-password note already shown
-// when a new Unit Head/Individual account is provisioned elsewhere in this
-// app. The new password is only ever returned once, here, to the admin who
-// just set it — never stored or logged in plain text.
+// password immediately, exactly like the temporary-password note already
+// shown when a new Unit Head/Individual account is provisioned elsewhere in
+// this app. The new password is only ever returned once, here, to the admin
+// who just set it — never stored or logged in plain text.
+//
+// Always marks the account must_change_password (see SECURITY_REVIEW.md's
+// finding #1): whatever password ICT admin just set — a real word they
+// spoke over the phone, or a generated one — is by definition known to a
+// second person, so the account is required to set its own real password at
+// next sign-in before it can do anything else. Also bumps token_version, so
+// a reset done because an account may be compromised actually signs that
+// account out of every session it currently holds, not just changes what a
+// future login would need.
 router.post('/:id/reset-password', (req, res) => {
   const { id } = req.params;
   const { newPassword } = req.body || {};
   const target = db.prepare('SELECT id, name FROM users WHERE id = ?').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
 
-  const chosen = (newPassword && String(newPassword).trim()) || crypto.randomBytes(9).toString('base64url');
+  const chosen = (newPassword && String(newPassword).trim()) || generateTempPassword();
   if (chosen.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
 
   const hash = bcrypt.hashSync(chosen, 10);
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, id);
+  db.prepare('UPDATE users SET password_hash = ?, must_change_password = 1, token_version = token_version + 1 WHERE id = ?').run(hash, id);
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'reset_password', 'user', id, `Password reset for ${target.name} by ICT admin.`
+    req.user.id, 'reset_password', 'user', id, `Password reset for ${target.name} by ICT admin (must change it at next sign-in).`
   );
   res.json({ newPassword: chosen });
 });

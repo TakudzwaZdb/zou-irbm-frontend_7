@@ -8,20 +8,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script>
-  // Applied before first paint so an explicit light/dark choice never
-  // flashes the wrong theme for a moment while React boots. 'system'
-  // (the default, nothing stored) leaves no attribute — index.css's
-  // prefers-color-scheme media query then decides.
-  (function () {
-    try {
-      var t = localStorage.getItem('zou-theme');
-      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
-    } catch (e) {}
-  })();
-</script>
-  <script type="module" crossorigin src="/assets/index-7zjxO6Ag.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-Bb3RJTBH.css">
+<script src="/theme-init.js"></script>
+  <script type="module" crossorigin src="/assets/index-RrOGiTXd.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-DT71Q3Yi.css">
 </head>
 <body>
 <div id="root"></div>
