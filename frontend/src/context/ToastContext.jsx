@@ -15,10 +15,16 @@ export function ToastProvider({ children }) {
   return (
     <ToastContext.Provider value={toast}>
       {children}
+      {/* A screen reader announces each toast as it's added — role="alert" for
+          an error (assertive, interrupts) vs. role="status" for a plain
+          confirmation (polite, waits its turn) — the same distinction the
+          toast's own red/dark styling already makes visually. */}
       <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2">
         {toasts.map((t) => (
           <div
             key={t.id}
+            role={t.kind === 'err' ? 'alert' : 'status'}
+            aria-live={t.kind === 'err' ? 'assertive' : 'polite'}
             className={`max-w-xs rounded-lg px-4 py-2.5 text-[12.5px] shadow-lg ${
               t.kind === 'err' ? 'bg-critical text-white' : 'bg-ink text-page'
             }`}

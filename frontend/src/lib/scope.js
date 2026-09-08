@@ -21,20 +21,16 @@ export function isOwner(user, kpi) {
   if (kpi.owner_type === 'unit') return user.role === 'unithead' && user.scope_id === kpi.owner_id;
   return user.role === 'individual' && user.scope_id === kpi.owner_id;
 }
-// Mirrors backend/src/routes/kpis.js's isApprover exactly, including its
-// `status` param: a Sub-programme's own KPI submission (owner_type = 'sub')
-// now passes through TWO different approvers depending on which stage it's
-// at — the Programme Head first (while status is 'submitted'), then CPU for
-// final sign-off (once status is 'programme_approved'). `status` is
-// optional: pass it whenever you're asking "am I the approver of THIS
-// specific value row right now" (Approvals.jsx's pending bucket, alerts);
-// leave it out only when asking "could my role ever be an approver of this
-// KPI at all, at either stage" (see Approvals.jsx's `mine`, which calls this
-// twice — once per stage — to build that broader set).
-export function isApprover(org, user, kpi, status) {
+// Mirrors backend/src/routes/kpis.js's isApprover exactly: single-stage,
+// one real approver per tier — Individual-owned by its Unit Head,
+// Unit-owned by its Sub-programme Rep, and Sub-owned by that
+// Sub-programme's own Programme Head, final, with no further CPU stage.
+// (A sub-owned KPI used to pass through a second CPU sign-off stage after
+// the Programme Head, gated on a now-retired `status === 'programme_approved'`
+// check here; that's been removed by deliberate request.)
+export function isApprover(org, user, kpi) {
   if (kpi.owner_type === 'individual') return user.role === 'unithead' && user.scope_id === individualUnitId(org, kpi.owner_id);
   if (kpi.owner_type === 'unit') return user.role === 'rep' && user.scope_id === unitSubId(org, kpi.owner_id);
-  if (status === 'programme_approved') return user.role === 'cpu';
   const programmeId = byId(org.subs, kpi.owner_id)?.programme_id;
   return user.role === 'programme' && programmeId != null && user.scope_id === programmeId;
 }

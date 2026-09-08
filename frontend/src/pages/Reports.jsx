@@ -1,6 +1,4 @@
 import { Fragment, useEffect, useState } from 'react';
-import { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { useApp } from '../context/AppContext.jsx';
 import { api } from '../lib/api.js';
 import { nodeOwnKpis, performanceRollup, varianceRollup, ownerName, VARIANCE_ATTENTION_THRESHOLD, VARIANCE_AHEAD_THRESHOLD, valueStatus, MONTHS } from '../lib/scope.js';
@@ -16,6 +14,13 @@ const FLOW_STYLE = { submit: 'bg-accent-50 text-accent-600', approve: 'bg-good-s
 
 export default function Reports() {
   const { org, kpis, values, period, settings, perfPeriod, perfValues, hasPerm } = useApp();
+  // jsPDF + jspdf-autotable are a genuinely heavy pair (see the "before"
+  // bundle stats in README) that only this button ever needs — every other
+  // role/page was paying for them in the main bundle on every load whether
+  // they ever opened Reports or not. Dynamic import() pulls them into their
+  // own chunk that only downloads the first time someone actually clicks
+  // Download PDF, so the busy state below just covers that one-time fetch.
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   // An automated appraisal result at every institutional tier — Unit/
   // Department/Faculty/Region, Sub-programme, and Programme — computed live
@@ -107,7 +112,16 @@ export default function Reports() {
   // Bi-annual/Annual) is currently selected above — never a second
   // computation of its own that could quietly drift from the live view, and
   // never dependent on a person remembering to "print to PDF" themselves.
-  function downloadPdf() {
+  async function downloadPdf() {
+    setPdfBusy(true);
+    let jsPDF, autoTable;
+    try {
+      [{ jsPDF }, { default: autoTable }] = await Promise.all([import('jspdf'), import('jspdf-autotable')]);
+    } catch {
+      setPdfBusy(false);
+      window.alert('Could not load the PDF generator. Check your connection and try again.');
+      return;
+    }
     const doc = new jsPDF({ unit: 'pt', format: 'a4' });
     const marginX = 40;
     const pageBottom = 780;
@@ -209,6 +223,7 @@ export default function Reports() {
     }
 
     doc.save(`zou-performance-report-${periodLabel.replace(/\s+/g, '-')}.pdf`);
+    setPdfBusy(false);
   }
 
   return (
@@ -221,7 +236,7 @@ export default function Reports() {
         <div className="no-print flex gap-2 flex-wrap items-center">
           <PeriodTypePicker />
           <button className="btn btn-sm" onClick={downloadCsv}>Download CSV</button>
-          <button className="btn btn-sm btn-primary" onClick={downloadPdf}>Download PDF</button>
+          <button className="btn btn-sm btn-primary" disabled={pdfBusy} onClick={downloadPdf}>{pdfBusy ? 'Preparing…' : 'Download PDF'}</button>
           <button className="btn btn-sm" onClick={() => window.print()}>Print report</button>
         </div>
       </div>

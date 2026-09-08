@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
@@ -183,6 +183,18 @@ function ComposeModal({ onClose, onSent }) {
   const toast = useToast();
   const [directory, setDirectory] = useState(null);
   const [q, setQ] = useState('');
+  const searchRef = useRef(null);
+
+  // Escape closes it (the same expectation PhotoLightbox's own dialog
+  // sets), and focus moves to the recipient search the moment it opens so
+  // a keyboard/screen-reader user lands inside the dialog immediately
+  // rather than staying on whatever "New message" button they just pressed.
+  useEffect(() => {
+    function onKey(e) { if (e.key === 'Escape') onClose(); }
+    window.addEventListener('keydown', onKey);
+    searchRef.current?.focus();
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   // Same local-only safety net as KPI data entry (see lib/autosave.js) —
   // composing a message can easily run to a few paragraphs, exactly the
@@ -238,11 +250,11 @@ function ComposeModal({ onClose, onSent }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30" onClick={onClose} role="dialog" aria-modal="true" aria-label="New message">
       <div className="w-full max-w-lg max-h-[85vh] flex flex-col rounded-xl bg-surface border border-line shadow-lg" onClick={(e) => e.stopPropagation()}>
         <div className="px-4 py-3 border-b border-line flex items-center justify-between flex-none">
           <h2 className="font-display font-bold text-[14.5px]">New message</h2>
-          <button className="text-ink-muted hover:text-ink" onClick={onClose}>✕</button>
+          <button className="text-ink-muted hover:text-ink" onClick={onClose} aria-label="Close">✕</button>
         </div>
         <div className="p-4 space-y-3 overflow-y-auto">
           {hasSavedDraft && (
@@ -252,16 +264,16 @@ function ComposeModal({ onClose, onSent }) {
           )}
           <div className="space-y-1">
             <label className="field-label">To</label>
-            <input className="field-input mb-1.5" placeholder="Search name, email, role…" value={q} onChange={(e) => setQ(e.target.value)} />
+            <input ref={searchRef} className="field-input mb-1.5" placeholder="Search name, email, role…" aria-label="Search recipients" value={q} onChange={(e) => setQ(e.target.value)} />
             {selected.length > 0 && (
               <div className="flex flex-wrap gap-1 mb-1.5">
                 {selected.map((id) => {
                   const u = directory?.find((x) => x.id === id);
                   if (!u) return null;
                   return (
-                    <span key={id} className="chip chip-tag cursor-pointer" onClick={() => toggle(id)}>
+                    <button key={id} type="button" className="chip chip-tag cursor-pointer" onClick={() => toggle(id)} aria-label={`Remove ${u.name} from recipients`}>
                       {u.name} ✕
-                    </span>
+                    </button>
                   );
                 })}
               </div>

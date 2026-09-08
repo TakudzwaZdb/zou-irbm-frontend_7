@@ -18,7 +18,7 @@ export default function ThemeToggle() {
       onClick={onClick}
       className="flex items-center justify-center w-8 h-8 rounded-lg border border-line text-[14px] text-ink-secondary hover:bg-sunken flex-none"
       title={`${meta.label} — click to change`}
-      aria-label={meta.label}
+      aria-label={`Change theme (currently ${meta.label.toLowerCase()})`}
     >
       {meta.icon}
     </button>

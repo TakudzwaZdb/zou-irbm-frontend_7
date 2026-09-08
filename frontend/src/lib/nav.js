@@ -3,6 +3,32 @@ export const NAV_ITEMS = {
   entry: { label: 'My Data Entry', icon: '✎', perm: 'data_entry' },
   approvals: { label: 'Approvals Queue', icon: '✓', perm: 'approve_own_tier' },
   framework: { label: 'Framework', icon: '▦', perm: 'view_framework' },
+  // Two admin pages split out of Framework's old create/edit/delete forms
+  // (see pages/KpiManagement.jsx, OrgStructure.jsx) — each gated by an
+  // array of permissions (see currentNav below): visible to whoever holds
+  // ANY one of them, since a permission in this app can be granted to a
+  // single account independent of role (e.g. `edit_targets` or
+  // `add_individual` handed to just one person), not only to its default
+  // holders (cpu/ictadmin). Organisation Maintenance used to be two separate
+  // pages (Organisation Structure + People & Roles), each showing its own
+  // full copy of the org tree — merged into one page/one nav entry so
+  // every structural and personnel change (create/delete Programmes/Subs/
+  // Units, add/edit/remove Individuals, change an account's role) happens
+  // on the one platform, not a repeated tree display across pages.
+  kpiManagement: { label: 'KPI Management', icon: '🎯', perm: ['create_kpi', 'edit_targets'] },
+  // Organisation Setup (create a Programme/Sub-programme/Unit, update an
+  // existing one's own name/head, add an Individual) and Organisation
+  // Maintenance (remove/restore, edit/role-change an existing Individual)
+  // are two distinct nav entries for what used to be one page mixing create,
+  // update, remove, and restore in a single scroll — same "any one of
+  // these" permission-array gating as every other admin page here.
+  // create_org_units/edit_org_units are the narrower, independently-
+  // grantable siblings of manage_org_units (see utils/permissions.js on the
+  // backend) — either one alone is enough to reach this page (its own
+  // Create/Update navigation then further narrows what a holder of just one
+  // of them can actually do — see OrganisationBuilder.jsx).
+  orgBuilder: { label: 'Organisation Setup', icon: '🏗', perm: ['manage_org_units', 'create_org_units', 'edit_org_units', 'add_individual'] },
+  orgStructure: { label: 'Organisation Maintenance', icon: '🏛', perm: ['manage_org_units', 'add_individual'] },
   planning: { label: 'Annual Plan & Budget', icon: '🧾' },
   compliance: { label: 'Compliance & Escalations', icon: '⏱' },
   reports: { label: 'Reports', icon: '▤', perm: 'view_reports' },
@@ -49,17 +75,33 @@ export const NAV_ITEMS = {
 // Budget, see routes/plans.js's isProgrammeHeadOwner. No "My Data Entry" —
 // a Programme never owns a KPI directly, so there's nothing at their own
 // tier to fill in.
+// kpiManagement/orgBuilder/orgStructure are added to exactly the role lists
+// whose DEFAULT permission set (utils/permissions.js, backend) can hold
+// create_kpi/edit_targets/manage_org_units/add_individual, plus
+// rep/unithead for orgBuilder/orgStructure specifically — add_individual is
+// designed to be grantable to a Sub Rep or Unit Head for their own scope
+// (see its comment in OrganisationBuilder.jsx's AddIndividualForm), so
+// their nav needs the key present for that grant to ever become reachable.
+// orgBuilder is always placed immediately before orgStructure — build it,
+// then maintain it — wherever both appear. Same convention every other
+// permissioned nav key here already follows (e.g. 'settings' only in cpu's
+// list) — perm-gating inside currentNav is the second filter, not the only
+// one.
 export const ROLE_NAV_KEYS = {
   exec: ['overview', 'framework', 'planning', 'compliance', 'reports', 'messages'],
   individual: ['entry', 'overview', 'framework', 'messages'],
-  unithead: ['entry', 'approvals', 'overview', 'framework', 'planning', 'messages'],
-  rep: ['entry', 'approvals', 'overview', 'framework', 'planning', 'messages'],
-  cpu: ['overview', 'approvals', 'framework', 'planning', 'compliance', 'reports', 'audit', 'settings', 'messages'],
-  ictadmin: ['overview', 'framework', 'users', 'audit', 'messages'],
-  // 'approvals' added: a Sub-programme's own KPI submission now stops at
-  // its Programme Head first (see lib/scope.js's isApprover / routes/kpis.js)
-  // before ever reaching CPU, so Programme Head needs a real Approvals Queue
-  // of their own now, not just read-only oversight.
+  unithead: ['entry', 'approvals', 'overview', 'framework', 'orgBuilder', 'orgStructure', 'planning', 'messages'],
+  rep: ['entry', 'approvals', 'overview', 'framework', 'orgBuilder', 'orgStructure', 'planning', 'messages'],
+  cpu: ['overview', 'approvals', 'framework', 'kpiManagement', 'orgBuilder', 'orgStructure', 'planning', 'compliance', 'reports', 'audit', 'settings', 'messages'],
+  // ICT System Administrator keeps 'framework' — the org chart read-only,
+  // same as every other role — alongside the pages that act on the org
+  // (KPI Management / Organisation Setup / Organisation Maintenance).
+  ictadmin: ['overview', 'framework', 'kpiManagement', 'orgBuilder', 'orgStructure', 'users', 'audit', 'messages'],
+  // 'approvals' added: a Sub-programme's own KPI submission is approved by
+  // its own Programme Head, finally (see lib/scope.js's isApprover /
+  // routes/kpis.js) — CPU has no role in this cascade — so Programme Head
+  // needs a real Approvals Queue of their own now, not just read-only
+  // oversight.
   programme: ['overview', 'approvals', 'framework', 'planning', 'reports', 'messages'],
   // University Council: read-only oversight (Overview/Framework/Reports,
   // same as every other role) plus the one real action that's theirs —
@@ -73,6 +115,11 @@ export function currentNav(user, hasPerm) {
   const keys = ROLE_NAV_KEYS[user.role] || ['overview'];
   return keys.filter((k) => {
     const item = NAV_ITEMS[k];
-    return !item.perm || hasPerm(item.perm);
+    if (!item.perm) return true;
+    // item.perm can be a single key (existing usage) or an array — an array
+    // means "any one of these", since some pages (the new admin pages
+    // above) make sense to reach on either a broad permission or a
+    // narrower, independently-grantable sibling of it.
+    return Array.isArray(item.perm) ? item.perm.some(hasPerm) : hasPerm(item.perm);
   });
 }

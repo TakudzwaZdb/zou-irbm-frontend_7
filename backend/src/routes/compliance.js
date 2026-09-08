@@ -12,6 +12,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
+const { isGlobalReader, canReadSub, canReadKpi } = require('../utils/scope');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -60,12 +61,21 @@ router.get('/', (req, res) => {
   const monthEnd = new Date(Date.UTC(year, month, 0, 23, 59, 59));
   const dueDate = new Date(monthEnd.getTime() + settings.lateCutoffSub * 86400000);
 
+  // Only exec/cpu ever navigate here (see lib/nav.js's ROLE_NAV_KEYS — the
+  // two roles who actually act on an escalation), and both are global
+  // readers already, so this changes nothing either of them could already
+  // see. It closes the same direct-API gap as kpis.js/plans.js for anyone
+  // else calling this endpoint straight: a Sub Rep/Unit Head/Programme
+  // Head/Individual gets their own branch's compliance picture, never
+  // another's (see utils/scope.js).
+  const seesWholeOrg = isGlobalReader(req.user);
   const subs = db.prepare(
-    `SELECT s.id, s.name, p.name AS programme_name FROM subs s JOIN programmes p ON p.id = s.programme_id ORDER BY p.id, s.id`
-  ).all();
+    `SELECT s.id, s.name, p.name AS programme_name FROM subs s JOIN programmes p ON p.id = s.programme_id
+     WHERE s.deleted_at IS NULL AND p.deleted_at IS NULL ORDER BY p.id, s.id`
+  ).all().filter((sub) => seesWholeOrg || canReadSub(req.user, sub.id));
 
   const subRows = subs.map((sub) => {
-    const kpis = db.prepare("SELECT id FROM kpis WHERE owner_type = 'sub' AND owner_id = ?").all(sub.id);
+    const kpis = db.prepare("SELECT id FROM kpis WHERE owner_type = 'sub' AND owner_id = ? AND deleted_at IS NULL").all(sub.id);
     let lateBy = 0;
     let hasKpis = kpis.length > 0;
     kpis.forEach((k) => {
@@ -91,7 +101,8 @@ router.get('/', (req, res) => {
   // ---- 2. Red-KPI performance escalation — consecutive Red reporting periods.
   // Individual-tier KPIs are personal targets, not institutionally escalated
   // (matches how they're excluded from every roll-up elsewhere in the app).
-  const kpis = db.prepare("SELECT * FROM kpis WHERE owner_type != 'individual' ORDER BY id").all();
+  const kpis = db.prepare("SELECT * FROM kpis WHERE owner_type != 'individual' AND deleted_at IS NULL ORDER BY id").all()
+    .filter((kpi) => seesWholeOrg || canReadKpi(req.user, kpi));
   const redKpis = [];
   kpis.forEach((kpi) => {
     const history = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? ORDER BY year DESC, month DESC').all(kpi.id);

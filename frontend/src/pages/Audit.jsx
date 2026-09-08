@@ -1,19 +1,50 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 
+const PAGE_SIZE = 200;
+
+// Real pagination (see backend/src/routes/audit.js) — the log only grows,
+// so a fixed "first N rows, forever" cap meant anything older eventually
+// became permanently unreachable from this page. Loads one page at a time
+// and appends as the person asks for more, rather than trying to fetch
+// the whole (ever-growing) history up front.
 export default function Audit() {
   const [entries, setEntries] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [cursor, setCursor] = useState(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    api('/audit?limit=300').then((r) => setEntries(r.entries)).catch(() => setEntries([]));
+    api(`/audit?limit=${PAGE_SIZE}`)
+      .then((r) => { setEntries(r.entries); setHasMore(r.hasMore); setCursor(r.nextCursor); })
+      .catch((err) => { setEntries([]); setError(err.message); });
   }, []);
+
+  async function loadMore() {
+    if (!cursor) return;
+    setLoadingMore(true);
+    try {
+      const r = await api(`/audit?limit=${PAGE_SIZE}&before=${cursor}`);
+      setEntries((prev) => [...prev, ...r.entries]);
+      setHasMore(r.hasMore);
+      setCursor(r.nextCursor);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   return (
     <div>
       <div className="mb-5">
         <h1 className="text-xl font-bold mb-0.5">Audit Log</h1>
-        <p className="text-[13px] text-ink-secondary">Most recent {entries ? entries.length : '…'} actions across the system.</p>
+        <p className="text-[13px] text-ink-secondary">
+          {entries ? `${entries.length} action${entries.length === 1 ? '' : 's'} loaded, most recent first.` : 'Loading…'}
+        </p>
       </div>
+      {error && <div className="mb-3 rounded-lg bg-critical-soft text-critical text-[12px] px-3 py-2">{error}</div>}
       <div className="rounded-xl border border-line bg-surface overflow-x-auto max-h-[62vh] overflow-y-auto">
         <table className="w-full text-[12.6px] min-w-[640px]">
           <thead className="sticky top-0">
@@ -34,6 +65,13 @@ export default function Audit() {
           </tbody>
         </table>
       </div>
+      {hasMore && (
+        <div className="mt-3 flex justify-center">
+          <button className="btn btn-sm" disabled={loadingMore} onClick={loadMore}>
+            {loadingMore ? 'Loading…' : 'Load more'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

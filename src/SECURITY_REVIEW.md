@@ -1,13 +1,11 @@
 # ZOU IRBM Strategic Plan Monitor — Security Review
 
-Date: 2026-09-01 (updated 2026-09-05 — finding #4, GET endpoints not
-scope-filtered server-side, is now fixed too, alongside findings #1, #2, #3,
-#5, #6, and the settings/KPI-value input-validation notes below; see each
-finding for what changed and where. Optional TOTP-based MFA and a real,
-verified SQLite backup script have also since been added — see "Low /
-hardening notes" and README.md's "Backing up the database" section.
-README.md's "Before using this for anything real" section has the same
-top-level list in one place.)
+Date: 2026-09-01 (updated same day — findings #1, #2, #3, #5, #6, and the
+settings/KPI-value input-validation notes below are now fixed; see each
+finding for what changed and where. README.md's "Before using this for
+anything real" section has the same list in one place. Finding #4 — GET
+endpoints not scope-filtered server-side — remains open by deliberate
+choice; see that finding.)
 Scope: full source review of `backend/src` (Express + `node:sqlite`) and `frontend/src` (React), plus `npm audit` on both packages. This is a manual code review, not a penetration test — it covers what's in the codebase, not runtime/deployment hardening (TLS termination, firewall, hosting config), which is outside this review's reach.
 
 Findings are ordered by severity. Each one names the exact file/line, explains the real-world impact, and suggests a fix.
@@ -57,23 +55,10 @@ The deployed `.env` still has `JWT_SECRET=change-this-to-a-long-random-string-in
 ### 3. No rate limiting or lockout on login — FIXED
 **File:** `backend/src/routes/auth.js:11` (`POST /login`)
 
-**Fixed:** `POST /api/auth/login` is now behind `express-rate-limit`, two
-limiters at once rather than one. The first version of this fix was IP-only
-(8 attempts/10min per IP) and had a real side effect, confirmed live in this
-session's own testing: everyone behind the same NAT gateway or campus proxy
-shares one apparent IP, so one person mistyping their own password
-repeatedly locked out every other account attempting to sign in from that
-same network — a second, unrelated, correctly-typed login got a 429 purely
-for sharing an IP with an earlier account's failed attempts. Now:
-`accountLoginLimiter` throttles repeated guesses against ONE account (8
-attempts/3min, keyed on the email being attempted, from any IP) without
-touching anyone else on the same network; `ipLoginLimiter` is the backstop
-(30/3min per IP) that still catches someone spraying guesses across many
-different accounts from one source, which a purely per-account limiter
-would never trip. Verified live: an account correctly gets locked out at
-its 9th rapid attempt while a different account from the same IP signs in
-normally right after; spraying 20+ distinct emails from one IP still trips
-the IP-wide backstop.
+**Fixed:** `POST /api/auth/login` is now behind `express-rate-limit` — 8
+attempts per 10 minutes per IP, returning a clear 429 once exceeded.
+Verified live: the 9th rapid attempt in this session's own testing was
+correctly rejected.
 
 `POST /api/auth/login` has no attempt throttling, no CAPTCHA, and no account lockout — nothing in `server.js` applies rate limiting to any route (`express-rate-limit` isn't even a dependency). An attacker can attempt unlimited password guesses per account, per second, bounded only by network throughput. This is what turns finding #1's shared default password into a practical attack rather than a theoretical one.
 
@@ -83,31 +68,14 @@ the IP-wide backstop.
 
 ## Medium
 
-### 4. Read endpoints are authenticated but not authorized — any signed-in account can read the whole university's data — FIXED
+### 4. Read endpoints are authenticated but not authorized — any signed-in account can read the whole university's data
 **Files:** `backend/src/routes/kpis.js:194,198,209,220,230,281`, `org.js:15`, `plans.js` (GET `/`), `compliance.js:53`, `kpiTemplates.js:29`
 
-**Fixed:** a new `backend/src/utils/scope.js` adds read-visibility
-predicates (`isGlobalReader`, `canReadKpi`, `canReadSub`, `canReadUnit`,
-`canReadProgramme`) alongside — deliberately kept separate from — the
-existing write-authorization helpers (`isOwner`, `isApprover`,
-`inJurisdiction`, etc.). `kpis.js` (`GET /`, `/:id/values`, `/values`,
-`/values-range`, `/assignments`, `/contributions`), `plans.js` (`GET /`),
-and `compliance.js` (`GET /`) now filter every row through the relevant
-predicate before it reaches the response, instead of returning the
-unfiltered table. A global oversight role (CPU, ICT Admin, Executive,
-Council) still sees everything, unchanged. One deliberate exception:
-`plans.js` treats the `individual` role the same as a global reader for
-this one endpoint, matching `pages/Planning.jsx`'s existing read-only
-institutional-plan view for individuals — narrowing it there would have
-broken a screen that was already correctly showing the whole plan by
-design, not by oversight. Verified with a dedicated automated test file
-(`backend/test/scope-filtering.test.js`) that logs in as each scoped role
-and confirms both that out-of-scope data is now rejected/absent and that
-global roles see no regression.
+Every `GET` in these files sits behind `requireAuth` only — no `requirePerm`/role/scope check. So `GET /api/kpis`, `GET /api/kpis/values`, `GET /api/kpis/contributions`, `GET /api/org`, `GET /api/plans`, and `GET /api/compliance` all return **every KPI, every value, every contribution, the full org tree, and the full budget/compliance picture, system-wide**, to any authenticated user regardless of role or scope. The frontend narrows what it *shows* per role (an Individual's UI only browses their own branch), and the "view_overview" / "view_framework" / newly-added "view_institutional_performance" permissions gate *navigation*, but none of it is enforced server-side — a scoped user (e.g. an Individual or Unit Head) can call these endpoints directly (browser devtools, curl with their own real token) and get data far outside what the UI ever shows them: other units' and other Programmes' KPI figures, other people's submitted explanations, and the full budget roll-up.
 
-Every `GET` in these files used to sit behind `requireAuth` only — no `requirePerm`/role/scope check. So `GET /api/kpis`, `GET /api/kpis/values`, `GET /api/kpis/contributions`, `GET /api/org`, `GET /api/plans`, and `GET /api/compliance` all returned **every KPI, every value, every contribution, the full org tree, and the full budget/compliance picture, system-wide**, to any authenticated user regardless of role or scope. The frontend narrowed what it *shows* per role (an Individual's UI only browses their own branch), and the "view_overview" / "view_framework" / "view_institutional_performance" permissions gated *navigation*, but none of it was enforced server-side — a scoped user (e.g. an Individual or Unit Head) could call these endpoints directly (browser devtools, curl with their own real token) and get data far outside what the UI ever showed them: other units' and other Programmes' KPI figures, other people's submitted explanations, and the full budget roll-up.
+This is a real, working codebase, and the code comments show it's a deliberate, acknowledged simplification ("the frontend narrows what it SHOWS... a larger deployment would filter server-side too" — `org.js:11-14`), not an oversight nobody noticed. I'm flagging it because "acceptable for a reference build" and "acceptable once this is used with real staff performance data" are different bars, and worth a conscious decision rather than an inherited default.
 
-This was a real, working codebase, and the code comments showed it was a deliberate, acknowledged simplification ("the frontend narrows what it SHOWS... a larger deployment would filter server-side too" — `org.js:11-14`), not an oversight nobody noticed. It was flagged because "acceptable for a reference build" and "acceptable once this is used with real staff performance data" are different bars, and worth a conscious decision rather than an inherited default — the decision made was to fix it.
+**Fix (if this app is going into real use):** add scope filtering to these GET handlers — reuse the same `isOwner`/`inJurisdiction`/scope-chain helpers already written for the mutating routes (`kpis.js`'s `inJurisdiction`, `kpiSubId`, etc.) to filter the SQL by the caller's role/scope, the same way the write endpoints already do.
 
 ### 5. Permissive CORS with no security headers — FIXED
 **File:** `backend/src/server.js:18`
@@ -153,37 +121,6 @@ Tokens are stateless, 12-hour bearer tokens with no server-side session/allow-li
 - **`PUT /api/kpis/:id/value`** (`kpis.js:497-518`) and **`PUT /api/kpis/:id/contribution`** stored `value`/`entered_value` with no type or bounds validation. **FIXED** — both now reject a non-`null` value that isn't a finite number.
 - **Frontend dependency: `vite`/`esbuild` (dev-server only) — 1 high, 1 moderate advisory** (`npm audit` on `frontend/`): the known esbuild dev-server CORS issue (GHSA-67mh-4wv8-2f99), fixed only by a breaking `vite@8` upgrade. This only matters when running `vite dev` (`npm run dev`); the shipped production build (`frontend/dist`, served statically by Express in `server.js`) is unaffected. Backend dependencies: `npm audit` reports **0** known vulnerabilities.
 - **Admin-set passwords accepted without a strength check beyond length** (`users.js:83-98`, `org.js`'s provisioning routes): only a `length >= 8` floor. Not unusual for an internal tool, but worth pairing with the forced-rotation fix in finding #1 rather than leaving it as the only bar.
-- **No multi-factor authentication — FIXED.** Optional TOTP-based MFA
-  (RFC 6238, self-contained on `node:crypto`, no new dependency) is now
-  available per account: enroll from My Profile (`POST /api/auth/mfa/setup`
-  → scan the QR/`otpauth://` URI in an authenticator app →
-  `POST /api/auth/mfa/enable` with a real 6-digit code), after which login
-  requires a second step (`POST /api/auth/mfa/verify`) before a real session
-  token is issued — a short-lived, purpose-limited "MFA ticket" JWT
-  (`mfaPending: true`, 5-minute expiry) is all a partially-authenticated
-  request can obtain in between, and `requireAuth` explicitly rejects one of
-  those if it's ever presented as a bearer token. Ten single-use, bcrypt-hashed
-  recovery codes are issued at enrollment (shown once) for a lost-device
-  case; ICT Admin also has an admin-assisted disable
-  (`POST /api/users/:id/mfa/disable`) for when a user has lost both their
-  device and their codes, logged to the audit trail either way. This remains
-  opt-in, not enforced org-wide — deciding to mandate it for some or all
-  roles is a policy call for ZOU, not a code change.
-- **No real backup strategy for the SQLite file — FIXED.** `backend/src/backup.js`
-  (`npm run backup`) uses SQLite's own `VACUUM INTO` to take a complete,
-  consistent snapshot of the live database while the server keeps running
-  and taking writes — not a plain file copy, which would be unsafe against
-  a WAL-mode database (see README.md's "Backing up the database" for why).
-  Every backup is verified with `PRAGMA integrity_check` immediately after
-  it's written, and old backups beyond a configurable retention count are
-  pruned automatically. Covered by a dedicated automated test
-  (`backend/test/backup.test.js`) that backs up a live, actively-written
-  test database and confirms the snapshot is complete and independently
-  valid. Scheduling it (cron, a systemd timer, a hosting platform's
-  scheduled jobs) and shipping the resulting files off-box are operational
-  steps for whoever hosts this, documented in the same README section —
-  outside what a script running on the same disk it's backing up can
-  guarantee on its own.
 
 ---
 
@@ -210,12 +147,6 @@ If this is heading toward real deployment with real staff data:
 3. ~~Add login rate limiting (#3)~~ — done. These three together were the chain that mattered most.
 4. ~~`helmet()` + real CORS origin (#5) and a token-revocation path (#6)~~ — done.
 5. ~~Settings-key whitelist, KPI-value bounds validation, `upsertDraft` field whitelist~~ — done.
-6. ~~Server-side read scoping across `/api/kpis`, `/api/org`, `/api/plans`, `/api/compliance` (#4)~~ — done, re-tested across all 8 roles.
-7. ~~Optional MFA and a real, verified SQLite backup script~~ — done; see "Low / hardening notes" above.
+6. **Still open, on purpose:** decide whether finding #4 (server-side read scoping across `/api/kpis`, `/api/org`, `/api/plans`, `/api/compliance`) is acceptable for how this will actually be used, and filter those GET endpoints if not. This is the one remaining item and it's a real, separate piece of work — touches most read routes, needs re-testing across all 8 roles.
 
-What's left is genuinely outside what source code alone can fix: put this
-behind HTTPS on real hosting (with backups, per above, shipped off that
-same box on a real schedule), and have ZOU's IT/security team formally sign
-off on authentication, data-retention, and access-control requirements
-before go-live. See README.md's "Before using this for anything real" for
-the same short list.
+Everything remaining in "Low / hardening notes" (MFA, HTTPS/hosting, a real backup strategy for the SQLite file, a formal IT/security sign-off) is worth doing but isn't urgent and is outside what source-code changes alone can fix.

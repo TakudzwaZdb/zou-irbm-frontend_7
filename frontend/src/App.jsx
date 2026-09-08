@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { useApp } from './context/AppContext.jsx';
 import { currentNav } from './lib/nav.js';
 import Login from './pages/Login.jsx';
@@ -8,20 +8,33 @@ import Overview from './pages/Overview.jsx';
 import Entry from './pages/Entry.jsx';
 import Approvals from './pages/Approvals.jsx';
 import Framework from './pages/Framework.jsx';
-import Planning from './pages/Planning.jsx';
+import KpiManagement from './pages/KpiManagement.jsx';
+import OrganisationBuilder from './pages/OrganisationBuilder.jsx';
+import OrgStructure from './pages/OrgStructure.jsx';
 import Compliance from './pages/Compliance.jsx';
-import Reports from './pages/Reports.jsx';
 import Audit from './pages/Audit.jsx';
 import Settings from './pages/Settings.jsx';
 import Users from './pages/Users.jsx';
 import Profile from './pages/Profile.jsx';
 import Messages from './pages/Messages.jsx';
 
+// Reports and Planning are the two pages that pull in jsPDF/jspdf-autotable
+// (now themselves dynamically imported only when their Download PDF button
+// is actually clicked — see each page's own downloadPdf), so lazy-loading
+// the PAGE component too means neither page's own code, let alone the PDF
+// libraries, is fetched at all until someone with them in their nav
+// actually opens one — every other role/page pays nothing for either.
+const Planning = lazy(() => import('./pages/Planning.jsx'));
+const Reports = lazy(() => import('./pages/Reports.jsx'));
+
 const PAGES = {
   overview: Overview,
   entry: Entry,
   approvals: Approvals,
   framework: Framework,
+  kpiManagement: KpiManagement,
+  orgBuilder: OrganisationBuilder,
+  orgStructure: OrgStructure,
   planning: Planning,
   compliance: Compliance,
   reports: Reports,
@@ -65,7 +78,9 @@ export default function App() {
   const Page = PAGES[safeRoute] || Overview;
   return (
     <Layout route={safeRoute} setRoute={setRoute}>
-      <Page />
+      <Suspense fallback={<div className="text-ink-muted text-[13px]">Loading…</div>}>
+        <Page />
+      </Suspense>
     </Layout>
   );
 }

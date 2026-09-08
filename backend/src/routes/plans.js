@@ -10,6 +10,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requirePerm, requireAnyPerm } = require('../middleware/auth');
+const { isGlobalReader, canReadUnit, canReadSub, canReadProgramme } = require('../utils/scope');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -61,11 +62,11 @@ router.get('/', (req, res) => {
   const cycleYear = Number(req.query.year);
   if (!cycleYear) return res.status(400).json({ error: 'year query param is required.' });
 
-  const units = db.prepare('SELECT id, sub_id, name FROM units ORDER BY id').all().map((u) => ({
+  const units = db.prepare('SELECT id, sub_id, name FROM units WHERE deleted_at IS NULL ORDER BY id').all().map((u) => ({
     ...u, proposal: getRow(cycleYear, 'unit', u.id) || null,
   }));
 
-  const subs = db.prepare('SELECT id, programme_id, name FROM subs ORDER BY id').all().map((s) => {
+  const subs = db.prepare('SELECT id, programme_id, name FROM subs WHERE deleted_at IS NULL ORDER BY id').all().map((s) => {
     const myUnits = units.filter((u) => u.sub_id === s.id);
     const approvedBudget = myUnits.reduce((sum, u) => sum + (u.proposal?.status === 'approved' ? Number(u.proposal.budget || 0) : 0), 0);
     const provisionalBudget = myUnits.reduce((sum, u) => sum + (u.proposal && u.proposal.status !== 'draft' ? Number(u.proposal.budget || 0) : 0), 0);
@@ -75,7 +76,7 @@ router.get('/', (req, res) => {
     };
   });
 
-  const programmes = db.prepare('SELECT id, name FROM programmes ORDER BY id').all().map((p) => {
+  const programmes = db.prepare('SELECT id, name FROM programmes WHERE deleted_at IS NULL ORDER BY id').all().map((p) => {
     const mySubs = subs.filter((s) => s.programme_id === p.id);
     const approvedBudget = mySubs.reduce((sum, s) => sum + s.approvedBudget, 0);
     const provisionalBudget = mySubs.reduce((sum, s) => sum + s.provisionalBudget, 0);
@@ -85,11 +86,27 @@ router.get('/', (req, res) => {
     };
   });
 
+  // Every budget/count above is computed from the FULL org tree first — a
+  // Unit's own approvedBudget and a Sub/Programme's roll-up must stay
+  // genuinely complete regardless of who's asking. Only the ARRAYS handed
+  // back to the client are narrowed here, same read-visibility boundary as
+  // kpis.js/compliance.js (see utils/scope.js) — except an Individual keeps
+  // the full institutional compilation here, same as exec/ictadmin/cpu/
+  // council already did and pages/Planning.jsx's ReadOnlyPanel already shows
+  // them: nothing anyone could already reach through the app changes, only
+  // a Unit Head/Sub Rep/Programme Head's direct-API reach into a different
+  // branch — one their own panel never requested in the first place — is
+  // now actually blocked server-side too.
+  const seesWholePlan = isGlobalReader(req.user) || req.user.role === 'individual';
+  const visibleUnits = seesWholePlan ? units : units.filter((u) => canReadUnit(req.user, u.id));
+  const visibleSubs = seesWholePlan ? subs : subs.filter((s) => canReadSub(req.user, s.id));
+  const visibleProgrammes = seesWholePlan ? programmes : programmes.filter((p) => canReadProgramme(req.user, p.id));
+
   const universityApprovedBudget = programmes.reduce((sum, p) => sum + p.approvedBudget, 0);
   const universityProvisionalBudget = programmes.reduce((sum, p) => sum + p.provisionalBudget, 0);
 
   res.json({
-    cycleYear, units, subs, programmes,
+    cycleYear, units: visibleUnits, subs: visibleSubs, programmes: visibleProgrammes,
     university: {
       approvedBudget: universityApprovedBudget, provisionalBudget: universityProvisionalBudget,
       proposal: getRow(cycleYear, 'university', null) || null,
@@ -113,6 +130,7 @@ router.post('/units/:unitId/submit', requirePerm('data_entry'), (req, res) => {
   const unitId = Number(req.params.unitId);
   if (!isUnitOwner(req.user, unitId)) return res.status(403).json({ error: 'You can only submit your own unit\'s plan proposal.' });
   const { cycleYear } = req.body || {};
+  if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
   const row = getRow(cycleYear, 'unit', unitId);
   if (!row || row.budget == null) return res.status(400).json({ error: 'Enter a narrative and budget before submitting.' });
   db.prepare('UPDATE plan_proposals SET status = \'submitted\', submitted_at = datetime(\'now\'), return_comment = NULL WHERE id = ?').run(row.id);
@@ -126,6 +144,7 @@ router.post('/units/:unitId/approve', requirePerm('approve_own_tier'), (req, res
   const unitId = Number(req.params.unitId);
   if (!isSubOwner(req.user, unitSubId(unitId))) return res.status(403).json({ error: 'You are not the approver for this unit.' });
   const { cycleYear } = req.body || {};
+  if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
   const row = getRow(cycleYear, 'unit', unitId);
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that cycle.' });
   db.prepare('UPDATE plan_proposals SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
@@ -140,6 +159,7 @@ router.post('/units/:unitId/return', requirePerm('approve_own_tier'), (req, res)
   if (!isSubOwner(req.user, unitSubId(unitId))) return res.status(403).json({ error: 'You are not the approver for this unit.' });
   const { cycleYear, comment } = req.body || {};
   if (!comment) return res.status(400).json({ error: 'A reason is required when returning a proposal.' });
+  if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
   const row = getRow(cycleYear, 'unit', unitId);
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that cycle.' });
   db.prepare('UPDATE plan_proposals SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment, row.id);
@@ -150,14 +170,16 @@ router.post('/units/:unitId/return', requirePerm('approve_own_tier'), (req, res)
 });
 
 // ---- Sub-programme tier: narrative only — its budget is always the sum of
-// its units above, never entered here — submitted by the Rep, approved by CPU
+// its units above, never entered here — submitted by the Rep, approved only
+// by that Sub-programme's own Programme Head (see POST /subs/:subId/approve
+// below) — CPU has no direct approval authority at this tier.
 router.put('/subs/:subId', requirePerm('data_entry'), (req, res) => {
   const subId = Number(req.params.subId);
   if (!isSubOwner(req.user, subId)) return res.status(403).json({ error: 'You can only edit your own sub-programme\'s plan proposal.' });
   const { cycleYear, narrative } = req.body || {};
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
   const existing = getRow(cycleYear, 'sub', subId);
-  if (existing && existing.status !== 'draft') return res.status(400).json({ error: 'This proposal is locked while submitted or approved — ask CPU to return it first.' });
+  if (existing && existing.status !== 'draft') return res.status(400).json({ error: 'This proposal is locked while submitted or approved — ask your Programme Head to return it first.' });
   const row = upsertDraft(cycleYear, 'sub', subId, { narrative: narrative || null, status: 'draft' });
   res.json({ proposal: row });
 });
@@ -166,6 +188,7 @@ router.post('/subs/:subId/submit', requirePerm('data_entry'), (req, res) => {
   const subId = Number(req.params.subId);
   if (!isSubOwner(req.user, subId)) return res.status(403).json({ error: 'You can only submit your own sub-programme\'s plan proposal.' });
   const { cycleYear } = req.body || {};
+  if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
   const row = getRow(cycleYear, 'sub', subId);
   if (!row || !row.narrative) return res.status(400).json({ error: 'Enter a planning narrative before submitting.' });
   db.prepare('UPDATE plan_proposals SET status = \'submitted\', submitted_at = datetime(\'now\'), return_comment = NULL WHERE id = ?').run(row.id);
@@ -175,15 +198,22 @@ router.post('/subs/:subId/submit', requirePerm('data_entry'), (req, res) => {
   res.json({ ok: true });
 });
 
-router.post('/subs/:subId/approve', requireAnyPerm('approve_own_tier', 'data_entry'), (req, res) => {
+router.post('/subs/:subId/approve', requirePerm('approve_own_tier'), (req, res) => {
   const subId = Number(req.params.subId);
-  // Approved either by CPU (org-wide oversight, unchanged) or by the
-  // Programme Head who owns the Programme this Sub-programme sits under —
-  // a real, scope-checked authority, not a role label alone.
-  if (req.user.role !== 'cpu' && !isProgrammeHeadOwner(req.user, subProgrammeId(subId))) {
-    return res.status(403).json({ error: 'Only CPU or your Programme Head approves Sub-programme plan proposals.' });
+  // Approval authority here belongs to the Programme Head who owns the
+  // Programme this Sub-programme sits under — a real, scope-checked check,
+  // not a role label alone — and to nobody else, CPU included. CPU used to
+  // stand in as an always-eligible alternate approver at this tier (the
+  // same historical-stand-in reasoning the Programme tier below still uses,
+  // back when there was no separate Programme Head login); that carve-out
+  // is deliberately removed here so a Sub-programme's plan proposal can
+  // only ever be approved by its own Programme Head, never bypassed by
+  // CPU's org-wide oversight permission.
+  if (!isProgrammeHeadOwner(req.user, subProgrammeId(subId))) {
+    return res.status(403).json({ error: 'Only this Sub-programme\'s own Programme Head approves its plan proposal.' });
   }
   const { cycleYear } = req.body || {};
+  if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
   const row = getRow(cycleYear, 'sub', subId);
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that cycle.' });
   db.prepare('UPDATE plan_proposals SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
@@ -193,13 +223,16 @@ router.post('/subs/:subId/approve', requireAnyPerm('approve_own_tier', 'data_ent
   res.json({ ok: true });
 });
 
-router.post('/subs/:subId/return', requireAnyPerm('approve_own_tier', 'data_entry'), (req, res) => {
+router.post('/subs/:subId/return', requirePerm('approve_own_tier'), (req, res) => {
   const subId = Number(req.params.subId);
-  if (req.user.role !== 'cpu' && !isProgrammeHeadOwner(req.user, subProgrammeId(subId))) {
-    return res.status(403).json({ error: 'Only CPU or your Programme Head returns Sub-programme plan proposals.' });
+  // Same restriction as the approve route above: only this Sub-programme's
+  // own Programme Head, not CPU.
+  if (!isProgrammeHeadOwner(req.user, subProgrammeId(subId))) {
+    return res.status(403).json({ error: 'Only this Sub-programme\'s own Programme Head returns its plan proposal.' });
   }
   const { cycleYear, comment } = req.body || {};
   if (!comment) return res.status(400).json({ error: 'A reason is required when returning a proposal.' });
+  if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
   const row = getRow(cycleYear, 'sub', subId);
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that cycle.' });
   db.prepare('UPDATE plan_proposals SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment, row.id);
@@ -232,6 +265,7 @@ router.post('/programmes/:programmeId/submit', requireAnyPerm('approve_own_tier'
     return res.status(403).json({ error: 'Only CPU or this Programme\'s own Programme Head submits its plan.' });
   }
   const { cycleYear } = req.body || {};
+  if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
   const row = getRow(cycleYear, 'programme', programmeId);
   if (!row || !row.narrative) return res.status(400).json({ error: 'Enter a planning narrative before submitting.' });
   db.prepare('UPDATE plan_proposals SET status = \'submitted\', submitted_at = datetime(\'now\') WHERE id = ?').run(row.id);
@@ -294,6 +328,7 @@ router.post('/university/approve', requirePerm('validate_annual_plan'), (req, re
 router.post('/university/return', requirePerm('validate_annual_plan'), (req, res) => {
   const { cycleYear, comment } = req.body || {};
   if (!comment || !comment.trim()) return res.status(400).json({ error: 'A reason is required when returning the plan.' });
+  if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
   const row = getRow(cycleYear, 'university', null);
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending the University Council\'s review for that cycle.' });
   db.prepare('UPDATE plan_proposals SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment.trim(), row.id);

@@ -28,76 +28,6 @@ while still talking to the same real backend over the same REST API.
 - **Audit trail**: every permission change, org-structure change, KPI
   creation/edit, and data-entry/submit/approve/return/override action is
   written to an `audit_log` table with who did what and when.
-- **Soft-delete & traceability, across every removal in the app, and every
-  removal is confirmed before it happens**: "removing" a Programme,
-  Sub-programme, Unit, Individual, KPI, KPI template, KPI assignment, or user
-  account is a stamp (`deleted_at`, nullable — NULL means active), never a
-  real SQL `DELETE`. A `deleted_at IS NULL` filter on every query that lists
-  "the current/active" structure — the org tree, KPI lists and ownership
-  lookups, the User Directory, Plans, Compliance & Escalations, the KPI
-  template pool, who's assigned to a shared KPI — is what makes a removed
-  item disappear from every active view at once, while the row itself, its
-  full performance history (`kpi_values`), and its audit trail stay exactly
-  as they were: nothing about who owned what or what was ever recorded
-  against them is destroyed. Removal still cascades the same way it always
-  did (removing a Programme takes every Sub-programme/Unit/Individual
-  beneath it, every KPI any of them own, and every login account that only
-  exists because of them, with it — see `routes/org.js`'s
-  `cascadeSoftDeleteProgramme/Sub/Unit/Individual`), just as a stamp instead
-  of a destructive delete, so it's fully reversible: a `POST .../restore`
-  route for each of Programmes, Sub-programmes, Units, Individuals, KPIs and
-  KPI templates (`routes/kpis.js` / `routes/kpiTemplates.js`), a KPI
-  assignment (re-assigning the same person restores their original row
-  rather than inserting a duplicate — the `UNIQUE(kpi_id, individual_id)`
-  constraint on `kpi_assignments` means it has to), and user accounts
-  (`routes/users.js`) clears the stamp on the row (and, for the cascading
-  ones, everything structurally beneath it) in one transaction. Every one of
-  those `GET /removed` routes now backs a real, reachable **"Recently
-  Removed"** panel with a one-click Restore per row — Organisation & People
-  for Programmes/Subs/Units/Individuals, a new panel on KPI Management for
-  KPIs and templates, and a new one on Permissions &amp; User Directory for
-  accounts removed directly from there. The KPI Management and Permissions
-  panels are new this round — `GET /api/kpis/removed` and
-  `POST /api/kpis/:id/restore` already existed and worked correctly, but
-  had no frontend anywhere at all, so "recoverable" was only true in the
-  database, not reachable by an actual user without calling the API by
-  hand; `GET /api/users/removed` didn't exist until now either. A
-  deactivated login is blocked from signing in (`routes/auth.js`'s
-  `POST /login`) and, just as importantly, a token issued *before* the
-  account was deactivated stops working on its very next request
-  (`middleware/auth.js`'s `requireAuth`) rather than staying valid for the
-  rest of its natural expiry — restoring the account immediately lets both
-  sign-in and any still-open session work again. And separately from all of
-  the above: every single removal in the UI — Programmes/Subs/Units/
-  Individuals, a KPI, a KPI template, an account, a message, clearing a
-  manual override, unassigning someone from a shared KPI, even removing
-  your own profile photo — now asks for confirmation first with
-  `window.confirm`, describing exactly what's about to happen and, for
-  anything soft-deleted, saying plainly that it's recoverable rather than
-  destructive. Two of those confirmations used to say **"This cannot be
-  undone"** for actions that were already genuinely reversible (deleting a
-  KPI, removing a user account) — leftover wording from before soft-delete
-  landed, contradicting what the backend actually did; both are corrected
-  now.
-- **Manual overrides are soft-deleted too, down to the individual field
-  pair**: clearing a manual override on an automated KPI used to really
-  erase the override value and the reason someone typed for it — the one
-  place left in this app where a genuine, user-entered figure was destroyed
-  outright with no way back. `kpi_values` now carries a shadow
-  (`override_cleared_value` / `override_cleared_note` / `override_cleared_at`)
-  that "Clear override" (`DELETE /api/kpis/:id/override`) fills in from the
-  live fields before nulling them, and a new
-  `POST /api/kpis/:id/override/restore` copies them straight back — the
-  same shadow-and-restore shape every other deletion in this app uses, just
-  scoped to one field pair on an existing row instead of a whole entity,
-  since there's no separate row here to stamp `deleted_at` on. The shadow is
-  retired the moment a genuinely new override is applied over it (a fresh
-  value supersedes stale "undo" history, the same as everywhere else), and
-  restore requires a clean slate — no live override already in place —
-  so it can never silently clobber one applied since the clear. Both
-  `KpiCard.jsx` and `ApprovalsTable.jsx` show a "Restore override (value)"
-  button the moment there's something to restore, right next to where
-  "Clear override" was clicked.
 - **Data refresh**: every action you take (saving a value, submitting,
   approving, returning, an override) reloads its own data immediately
   afterwards, so what you just did is reflected right away. There's also
@@ -212,35 +142,28 @@ while still talking to the same real backend over the same REST API.
   comment. The Sub-programme's own budget is never typed in separately —
   it's always the live sum of its units' requests — and once approved, the
   Rep submits their own sub-level narrative up for approval. At the
-  Programme tier, a real **Programme Head** account (see below) — and
-  only that Programme's own Programme Head, not CPU — approves or returns
-  each of their own Sub-programmes' plans, then compiles/submits their own
-  Programme's narrative (its budget is, again, always the derived sum of
-  its sub-programmes). CPU alone compiles and submits the single
-  University Annual Plan for the cycle, gated by `submit_annual_plan`.
-- **Programme Head — a real account tier, and the sole approver of its own
-  Sub-programmes' plans, not a CPU stand-in**: one Programme Head account
-  per Programme (`role: "programme"`, scoped to that Programme's id), with
-  genuine, server-checked authority — never a role label alone. On
-  Overview, they land straight on their own Programme and can drill into
-  every Sub-programme beneath it (and everything under those), read-only,
-  the same drill-down every other role uses — but never another
-  Programme's. On Annual Plan & Budget, they approve/return their own
-  Sub-programmes' plan proposals and compile/submit their own Programme's
-  plan — `POST /api/plans/subs/:id/approve` and the Programme-tier routes
-  check `role === 'programme' && scope_id === <that Programme's id>`
-  server-side, not just role, so a Programme Head can't act on another
-  Programme's plan even by calling the API directly (verified with a real
-  403). CPU deliberately has **no** alternate path into this one approval:
-  `approve_own_tier` sits in CPU's permission set for other tiers, but
-  `POST /api/plans/subs/:id/approve|return` checks `isProgrammeHeadOwner`
-  and nothing else — CPU calling either route directly gets the same 403
-  a Programme Head from a different Programme would (also verified live).
-  The CPU-facing Annual Plan & Budget screen shows each Sub-programme's
-  status for oversight but renders no Approve/Return controls on it — only
-  the Programme Head who owns that Sub-programme's Programme sees those.
-  ICT admin can promote any existing account to Programme Head from the
-  Permissions page, choosing which Programme it's scoped to.
+  Programme tier, a real **Programme Head** account (see below) approves
+  or returns each of their own Sub-programmes' plans and compiles/submits
+  their own Programme's narrative (its budget is, again, always the
+  derived sum of its sub-programmes) — CPU can still do the same for any
+  Programme, as org-wide oversight, but it's no longer standing in for a
+  role that doesn't otherwise exist. CPU alone compiles and submits the
+  single University Annual Plan for the cycle, gated by `submit_annual_plan`.
+- **Programme Head — a real account tier, not a CPU stand-in**: one
+  Programme Head account per Programme (`role: "programme"`, scoped to
+  that Programme's id), with genuine, server-checked authority — never a
+  role label alone. On Overview, they land straight on their own
+  Programme and can drill into every Sub-programme beneath it (and
+  everything under those), read-only, the same drill-down every other
+  role uses — but never another Programme's. On Annual Plan & Budget,
+  they approve/return their own Sub-programmes' plan proposals and
+  compile/submit their own Programme's plan — `POST /api/plans/subs/:id/approve`
+  and the Programme-tier routes check `role === 'programme' && scope_id
+  === <that Programme's id>` server-side, not just role, so a Programme
+  Head can't act on another Programme's plan even by calling the API
+  directly (verified with a real 403). ICT admin can promote any existing
+  account to Programme Head from the Permissions page, choosing which
+  Programme it's scoped to.
 - **University Council — a real approval gate on the Annual Plan, not just
   CPU's word for it**: a new `council` role (permission `validate_annual_plan`,
   its own permission group "Governance") sits above CPU on the University
@@ -412,23 +335,6 @@ while still talking to the same real backend over the same REST API.
   can add someone into their own unit and nowhere else, a Sub Rep into any
   unit within their own sub-programme and nowhere else — verified with a
   real 403 when either tries to add outside their scope.
-- **Finer-grained org-structure permissions — `create_org_units` and
-  `edit_org_units`**: the broad `manage_org_units` grant used to be the only
-  way to reach Organisation Builder's create/update forms at all (removal
-  and restore still work this way — see below for why). Two new,
-  independently-grantable permissions narrow that down the same way
-  `edit_targets` already narrows `create_kpi`: `create_org_units` lets ICT
-  admin hand someone the ability to build new Programmes/Sub-programmes/
-  Units without also letting them touch or remove anything that already
-  exists; `edit_org_units` lets someone correct an existing entity's own
-  name/head/kind without letting them create new ones or remove anything.
-  Neither grants remove/restore — that authority deliberately stays behind
-  `manage_org_units` alone, since undoing a removal should require the same
-  authority that could remove it. Both are genuine, server-enforced gates on
-  every POST/PATCH route under `/api/org` (`requireAnyPerm`, not a frontend-
-  only check) — verified live with a real 403 hitting the wrong route from
-  an account holding only one of the two, and a real 200/201 on the route
-  each permission is actually meant to unlock.
 - **Profile photos**: every user can upload, replace, or remove their own
   photo from the new "My Profile" page (reachable from the header, or the
   sidebar on mobile). The image is resized and re-compressed to a small
@@ -733,38 +639,6 @@ while still talking to the same real backend over the same REST API.
   with a skipped month in between, a Dec→Jan year-boundary rollover, and
   the shared-KPI contribution path (70→74→80) — all producing the correct
   automatic total with zero manual arithmetic.
-- **Cumulative values now cascade forward automatically — a real,
-  previously-confirmed correctness bug, now fixed**: amending and
-  re-approving an already-approved period correctly recomputed *that*
-  period's own total, but every LATER period that had already built its own
-  approved total on top of the old figure silently kept it — reproduced live
-  during a correctness audit (Jan 100→300, re-approved; Feb stayed frozen at
-  the old 150 instead of becoming 350). `cascadeRecomputeForward()` in
-  `routes/kpis.js` closes this: whenever a period's own effective value
-  changes — final approval of a directly-entered KPI, `recomputeUnitTotal`
-  reacting to a contribution being approved/amended/returned, or an override
-  being applied/cleared/restored (which changes what `previousOfficialValue`
-  resolves to for everyone after it, since an override always wins over the
-  plain `value`) — it walks every later period forward in chronological
-  order and rebuilds each one from the same rule that produced it
-  originally: the now-correct `previousOfficialValue` plus that period's own
-  already-recorded contribution (`entered_value` for a directly-entered KPI,
-  a fresh sum of that period's own approved contributions for an automated
-  one — never read back from a total that might itself have been stale). A
-  period is only touched if its recomputed total actually differs, and each
-  correction is written to `audit_log` as a `cascade_recompute` entry naming
-  the old and new figure, so a downstream number that moves without anyone
-  directly touching that period is still fully traceable. An
-  already-approved directly-entered period's `status` is deliberately never
-  reverted by this walk — the figure is corrected in place, not silently
-  un-approved out from under whoever signed off on it — while a period still
-  mid-amendment (value present but no longer `'approved'`) is skipped, since
-  its own upcoming re-approval will call `previousOfficialValue` itself and
-  pick up the right base automatically. Verified live end-to-end: a
-  two-hop chain (amending Jan cascaded correctly through both Feb and March)
-  and the shared/contribution-based Unit path (amending an individual's
-  approved Jan contribution correctly cascaded the Unit's own Feb total),
-  both cleaned up afterward with zero trace left in the database.
 - **A read notification only ever quiets the bell, never hides the duty
   it's about**: opening the Alerts bell now clears its red unread-count
   badge (tracked per-account in the browser via `lib/seenAlerts.js`,
@@ -778,60 +652,78 @@ while still talking to the same real backend over the same REST API.
   feature elsewhere in this app — a personal display preference is allowed
   to quiet an attention cue, never to make a real accountability item
   invisible.
-- **A Sub-programme's own KPI performance submission is approved once,
-  finally, by its own Programme Head — CPU has no role in this cascade at
-  all.** This tier briefly went through a two-stage design (Sub Rep submits
-  → Programme Head reviews → CPU gives the real final sign-off); that's
-  been reverted by deliberate request back to the same single-stage shape
-  every other tier already has — Individual-owned by its Unit Head,
-  Unit-owned by its Sub-programme Rep, Sub-owned by its own Programme Head,
-  one real approver, straight from `'submitted'` to `'approved'`. The
-  automated cumulative-value computation (`previousOfficialValue +
-  entered_value`, see above) now happens immediately at the Programme
-  Head's own approval — the moment it does, the newly-approved figure is a
-  real, non-null `kpi_values.value`, which is the only thing
-  `computeRag`/`performanceRollup` on the frontend ever check to decide
-  whether a KPI counts toward its Programme's own performance rollup: a
-  Programme Head's approval of a sub-owned KPI now contributes to that
-  Programme's rollup right away, with no separate CPU step needed to
-  "activate" it. A return always resets the submission all the way back to
-  a plain `'draft'` with the reviewer's comment attached, matching how
-  every other return in this app already works.
-  - **Server-enforced**: `routes/kpis.js`'s `isApprover(user, kpi)` is
-    single-stage for every owner type, `POST /:id/approve` and
-    `POST /:id/return` both gate on `status === 'submitted'` only (no
-    intermediate status), and CPU gets a real 403 attempting to act on a
-    sub-owned KPI submission — there's no code path left that grants it
-    one. The `'programme_approved'` status value and its
-    `programme_approved_at` timestamp column stay in `kpi_values`' schema
-    for backward compatibility with old audit history (no new row is ever
-    written into it again), and a one-time idempotent migration in `db.js`
-    auto-finalizes any row still sitting at that now-retired status to
-    `'approved'` — computing its official cumulative value the same way a
-    normal approval would — so a database that was live during the
-    two-stage window never has a submission stuck half-approved and
-    invisible to its Programme's own rollup.
-  - **Frontend**: `lib/scope.js`'s `isApprover` mirrors the backend's
-    single-stage signature exactly (the `status` parameter is gone);
-    Programme Head keeps their Approvals Queue nav item (`lib/nav.js`) —
-    now their one true decision, not a stage that gets forwarded on
-    (`pages/Approvals.jsx`); My Data Entry's "awaiting review" bucket, the
-    Alerts bell's pending-review alert (`lib/alerts.js`), and every
-    `STATUS_LABEL`/locked-field check across `components/KpiCard.jsx`,
-    `ApprovalsTable.jsx`, and `DataEntryTable.jsx` all dropped their
-    `'programme_approved'` branch back to the plain
-    submitted/approved/returned/draft set every other tier already used.
-  - **Verified**: a submit → Programme Head approve run via direct API
-    calls confirming the cumulative value is computed immediately at that
-    one approval and CPU gets a real 403 attempting to act on it at all; a
-    regression check confirming Individual- and Unit-owned KPIs are
-    unaffected; and a full browser walk-through (Sub Rep submits →
-    Programme Head's Approvals Queue shows and approves it, status becomes
-    `'approved'` with a real cumulative figure, no intermediate chip
-    anywhere → the newly-approved figure shows up in that Programme's own
-    performance rollup on Overview immediately, with CPU having no
-    approve/return affordance for it at all), plus a role-by-role sweep of
-    every page for all eight account types with zero console errors.
+- **A Sub-programme's own KPI performance submission now goes through its
+  Programme Head before CPU, not straight to CPU**: previously every
+  sub-owned KPI (`kpis.owner_type = 'sub'`) had exactly one approver — CPU
+  — the same single-stage shape as every other tier. It's now a genuine
+  two-stage review: the Sub Rep submits (`status: 'submitted'`), their own
+  Programme Head reviews it first, and approving moves it to a new
+  intermediate status, `'programme_approved'`, and forwards it on to CPU
+  for the real final sign-off (`status: 'approved'`) — CPU is blocked with
+  a 403 from acting on it at the first stage, and the Programme Head is
+  equally blocked from acting on it once it's already moved past them.
+  Individual- and Unit-owned KPIs are completely unaffected — still their
+  original single approver, one stage, exactly as before. The automated
+  cumulative-value computation (`previousOfficialValue + entered_value`,
+  see above) deliberately still only ever happens at the one true final
+  approval — CPU's — never at the Programme Head's intermediate sign-off,
+  so a KPI's official running total is never provisional. A return, at
+  either stage, always resets the submission all the way back to a plain
+  `'draft'` with the reviewer's comment attached — it never bounces
+  sideways to the other reviewer to pass along, matching how every other
+  return in this app already works.
+  - **Server-enforced**: `kpi_values.status`'s CHECK constraint was widened
+    (SQLite requires the create-table-and-copy migration technique used
+    elsewhere in this codebase, since a CHECK can't be altered in place —
+    see `db.js`, detected idempotently off the table's own stored schema
+    text) to allow `'programme_approved'` alongside the existing
+    draft/submitted/approved values, with a new `programme_approved_at`
+    timestamp column alongside the existing `submitted_at`/`approved_at`.
+    `routes/kpis.js`'s `isApprover(user, kpi, status)` now takes the row's
+    current status as a real parameter — for a sub-owned KPI it resolves to
+    the Programme Head while status is `'submitted'`, or CPU once it's
+    `'programme_approved'` — and both `POST /:id/approve` and
+    `POST /:id/return` check the row's actual current status against this
+    before allowing the action, so nobody can skip ahead or act out of turn
+    by calling the API directly regardless of what the UI shows them.
+    `programme`'s default permission set gained `approve_own_tier` (already
+    held by Sub Reps/Unit Heads) — and, since permissions are granted
+    per-user only once at seed time rather than re-derived from the role at
+    request time, a one-time idempotent backfill in `db.js` grants it
+    directly to every already-seeded Programme Head account too, so this
+    works immediately on a database that predates the feature, not only on
+    a freshly reseeded one.
+  - **Frontend**: `lib/scope.js`'s `isApprover` mirrors the backend exactly,
+    including the `status` parameter; Programme Head gained a real
+    Approvals Queue nav item (`lib/nav.js`) now that they hold
+    `approve_own_tier`, which correctly buckets a sub-owned KPI as pending
+    only while it's actually at the stage they can act on, and files a
+    forwarded-to-CPU item under "Decided this period" rather than either
+    losing track of it or leaving it stuck looking "pending" forever
+    (`pages/Approvals.jsx`). The submitter's own My Data Entry groups
+    `'programme_approved'` together with `'submitted'` under "awaiting
+    review" (`pages/Entry.jsx`) — from the Sub Rep's own point of view it's
+    still just waiting on someone else, whichever of the two reviewers that
+    currently is. `components/KpiCard.jsx` locks the entry field through
+    both pending stages and shows a distinct "Approved by Programme — with
+    CPU" chip (new `.chip-st-programme_approved` style) so the two stages
+    read as visibly different, without borrowing the "done" green already
+    reserved for a true final approval. The pending-review item in the
+    Alerts bell (`lib/alerts.js`) now correctly reaches whichever of the two
+    reviewers actually owns the current stage.
+  - **Verified**: a full submit → Programme Head approve → CPU approve run
+    via direct API calls, confirming CPU is 403'd at the first stage and
+    the Programme Head is 403'd once it's moved past them, that the
+    cumulative value is computed only at CPU's final approval (not the
+    Programme Head's), and the return path resets all the way back to
+    draft at both stages, with a resubmit-and-retry run through the whole
+    cycle a second time; a regression check confirming Individual- and
+    Unit-owned KPIs still run their original single-stage approval
+    completely unchanged; and a full browser walk-through (Sub Rep submits
+    → Programme Head's Approvals Queue shows and approves it → CPU's own
+    Approvals Queue shows it with the new status chip and gives final
+    approval), plus a role-by-role sweep of every page for all eight
+    account types with zero console errors.
 - **An approver can now actually see what they're approving**: a
   submitted-but-not-yet-approved KPI's own `value` is deliberately still
   NULL until the moment it's approved (see above) — which previously meant
@@ -934,359 +826,6 @@ while still talking to the same real backend over the same REST API.
   full access immediately (permissions are re-checked live, not cached to
   login) — plus a role-by-role sweep of every page for all eight account
   types with zero console errors.
-- **Local draft-recovery autosave now waits for a pause in typing instead of
-  writing on every keystroke.** `KpiCard`/`ContributionCard`'s "actual value"
-  and "notes" fields used to call `writeDraft` (the `localStorage` mirror
-  that recovers an unsaved figure after a crashed tab or a lost connection —
-  never a save to the server; see `lib/autosave.js`) synchronously in every
-  `onChange`. A new `debounce(fn, delay=500)` helper wraps it instead, so the
-  on-screen field still updates instantly via React state on every keystroke
-  — nothing about typing itself changed — but the localStorage write only
-  actually happens ~500ms after the last keystroke ("on release" rather than
-  mid-type), cutting a burst of redundant writes down to one per pause.
-- **"My Data Entry" is now one table per section instead of one card per
-  KPI**, with a real Save/Submit flow that covers everything selected in a
-  single action rather than one round-trip per KPI. The new
-  `components/DataEntryTable.jsx` lists every KPI in "Needs your action" as
-  a row — checkbox, name/owner/type, status, baseline, target, current,
-  an editable "this period's actual" figure, score (RAG), pace-vs-target
-  flag, and an editable notes field, i.e. everything the old per-KPI card
-  showed, now as columns on one row — with a real bulk save via `PUT
-  /api/kpis/bulk-value` and a combined save-and-submit via `POST
-  /api/kpis/bulk-submit` (see the API reference below), plus a
-  per-row `PUT .../explanation` for any changed notes (there's no bulk-note
-  endpoint yet — same server-side validation either way). A newly-created or
-  newly-picked-up KPI appears in the table automatically and pre-selected
-  the moment it lands in the shared app context, no separate step to add it
-  — the table renders directly off the same live KPI list every other page
-  reads, and a `knownIdsRef`-based effect adds only genuinely new ids to the
-  selection so it never silently re-selects a KPI someone deliberately
-  unchecked earlier in the same session. The "Submitted — awaiting review"
-  and "Approved this period" sections reuse the exact same table
-  (`interactive={false}`) so the whole page now reads as one consistent
-  table-based layout instead of switching between cards and lists. A shared
-  Unit KPI's "actual" cell is shown as a read-only, computed-from-the-team
-  figure rather than an input, matching how it already worked on the old
-  card. Rebuilding this also surfaced a real regression risk before it
-  shipped: `AssignmentManager` (a Unit Head's "assign this KPI to a team
-  member" control) previously only existed inside the old per-KPI card, so
-  removing that card would have quietly removed the only way to reach it.
-  It's now exported from `KpiCard.jsx` and reused as an inline expandable
-  "Manage team" row in the new table. Verified live end to end (Playwright,
-  as a Unit Head): typed a value and a note, "Save selected" persisted both
-  and showed a real confirmation toast, "Save & submit selected" moved the
-  KPI to "Submitted" and re-rendered it in the read-only section with the
-  same figures, "Manage team" correctly expanded the real assignment panel,
-  and zero console/page errors throughout.
-- **Admin KPI/org-structure/people management split into dedicated pages,
-  out of what used to be one long Framework.jsx scroll.** Framework now
-  shows exactly what its nav entry has always promised — the read-only org
-  chart plus the structural-change proposal log, visible to every
-  signed-in account — and nothing else; every create/update/remove/restore
-  action that used to live there moved out, each to the page where it
-  structurally belongs (KPI catalogue vs. building the org structure vs.
-  maintaining/retiring it — see Organisation Builder and Organisation &
-  People below), reachable from the sidebar by whoever actually holds the
-  relevant permission (`lib/nav.js`'s `currentNav` accepts an array of
-  permissions per nav item — "any one of these" — since some of these, like
-  `edit_targets`/`add_individual`, are real, independently-grantable
-  permissions a specific person can hold without holding the broader one):
-  - **KPI Management** (`pages/KpiManagement.jsx`) — create a KPI, manage the
-    "KPIs for individuals" template pool, and edit or delete an existing
-    KPI's definition/targets. Same forms, same endpoints, same permission
-    split (`create_kpi` full edit vs. the narrower `edit_targets`) as
-    before — just its own page now.
-  - **Organisation Builder** (`pages/OrganisationBuilder.jsx`) — the BUILD
-    half of admin org management, on its own dedicated page, deliberately
-    separate from removal/maintenance below: create a Programme,
-    Sub-programme, or Unit/Department/Faculty/Region; correct an existing
-    one's own name/head (and a Unit's Kind) without deleting and recreating
-    the whole thing; and add a new Individual under a Unit. These used to
-    be four bare creation forms bolted onto the bottom of the org-management
-    page, in whatever order they happened to be added, with no way to
-    correct a typo afterward. The page went through an intermediate shape —
-    four numbered sections each showing its Create and Update form side by
-    side, all visible at once — before landing on its current, simpler
-    design: a top-level **Create / Update** switch, then a second row of
-    pills for which entity (Programme, Sub-programme, Unit/Department/
-    Faculty/Region, and — Create only — Individual), with exactly **one
-    form visible at a time**. Both rows reuse the sidebar nav's own
-    active/inactive pill styling, so the in-page navigation reads as an
-    extension of the app's own nav rather than a new pattern. Each mode and
-    each entity option only appears at all if the signed-in account
-    actually holds a permission it would succeed against — nobody is ever
-    shown a switch that would just 403 — and if someone holds neither
-    switch's permission at all, the page shows a plain explanation of which
-    permission to ask for instead of an empty page. `POST /api/org/programmes`
-    and `POST /api/org/subs` provision a genuine Programme Head /
-    Sub-programme Rep account exactly like every other creation route in
-    this app; the matching `PATCH /api/org/programmes/:id` / `subs/:id` /
-    `units/:id` keep that same account's own `users.name`/`title` in sync
-    with whatever the Update form just saved, the same sync
-    `PATCH /api/org/individuals/:id` already did, so "who's signed in" and
-    "who the org chart says leads this" never drift apart. The Unit "Kind"
-    field (and a Sub-programme's "what its Units are called" field) is an
-    explicit dropdown (Unit / Department / Faculty / Region / Regional
-    Campus / Other…) instead of a blank free-text box defaulting to "Unit".
-    Real, independently-grantable permissions gate the two switches — two
-    of them new this round, narrower siblings of the existing
-    `manage_org_units` (see "Finer-grained org-structure permissions"
-    below): `create_org_units` alone reaches the Create tab's
-    Programme/Sub/Unit forms, `edit_org_units` alone reaches the entire
-    Update tab, and `add_individual` alone reaches the Create tab's
-    Individual form (scoped to the holder's own unit/sub-programme, same as
-    before, unless they also hold `manage_org_units`); `manage_org_units`
-    alone still reaches everything. Verified live: an ICT admin
-    (`manage_org_units`) sees both tabs and all entity pills with zero
-    console errors switching between every combination; an account holding
-    only the new `create_org_units` sees just the Create tab (Programme /
-    Sub-programme / Unit pills, no Individual, no Update tab at all — the
-    mode switch itself doesn't render when there's only one reachable mode)
-    and a direct `PATCH`/`DELETE` against the API from that same account's
-    token comes back a real 403, confirming the tab gating isn't cosmetic;
-    an account holding only the new `edit_org_units` lands straight on the
-    Update tab pre-populated with the entity's current values, a real
-    Update-a-Programme round trip through it persists correctly end to end,
-    and a direct `POST`/`DELETE` from that account's token also 403s; a
-    Unit Head/Sub Rep holding only the pre-existing `add_individual`
-    permission still sees just the Individuals option, scoped to their own
-    unit(s); and a full Create Programme → Create Sub → Create Unit → Add
-    Individual chain through the new navigation, followed by a real cascade
-    remove of that same Programme from Organisation & People, leaves
-    nothing behind in any active view or dropdown — zero console errors
-    throughout.
-  - **Organisation & People** (`pages/OrgStructure.jsx`) — the MAINTAIN
-    half: removing a Programme, Sub-programme, or Unit (and restoring one
-    from "Recently Removed"), plus editing, removing, or role-changing an
-    existing Individual. This page is options only, not a tree — it went
-    through several earlier shapes (a full "Organisation Structure" tree
-    page and a separate "People & Roles" tree page, then one page sharing a
-    merged tree, then one page mixing create/update/remove/restore for four
-    entity types) before landing here: the org chart itself is
-    Framework.jsx's job alone, and creating/updating now lives on
-    Organisation Builder above, so a `manage_org_units` holder gets four
-    independent "pick from a dropdown, then act" panels — Remove a
-    Programme / Remove a Sub-programme / Remove a Unit (each its own
-    select-plus-delete-button card), Manage individuals (pick a Unit from a
-    dropdown, then edit/remove/role-change whoever's in it), and Recently
-    Removed — with no tree rendered on this page at all. Each dropdown
-    auto-corrects to a still-existing entry the moment its own selection is
-    removed, rather than pointing at something that no longer exists. A
-    Unit Head/Sub Rep who holds only the narrower `add_individual`
-    permission (not `manage_org_units`) still gets the same compact,
-    scoped-to-their-own-unit(s) edit-only view this page has always given
-    them — never a tree, never the whole org, and (since adding moved to
-    Organisation Builder) never a create button either.
-    **Removing anything here is a real, reversible change, never data loss**
-    (see the "Soft-delete & traceability" bullet below for the full
-    architecture) — every DELETE cascades exactly the way it used to (a
-    removed Programme takes every Sub-programme, Unit, and Individual
-    beneath it, every KPI any of them own, and every login account that
-    only exists because of them, out of active use, atomically, inside one
-    transaction, with zero orphaned rows or foreign-key errors), except now
-    nothing is actually destroyed: every one of those rows is stamped
-    `deleted_at`, not deleted, and a **"Recently Removed"** panel right on
-    this page (backed by `GET /api/org/removed`) lists everything currently
-    removed with a one-click **Restore** per row (`POST
-    /api/org/{programmes,subs,units,individuals}/:id/restore`) that clears
-    the stamp on it and everything structurally beneath it in one
-    transaction — values, assignments, KPI history, and the login account
-    all come back exactly as they were. The confirmation dialogs and toasts
-    say this explicitly now, instead of the old (and, once this landed,
-    inaccurate) "this cannot be undone". An ICT System Administrator keeps
-    **Framework** in their nav (`lib/nav.js`'s `ROLE_NAV_KEYS.ictadmin`) —
-    the read-only org chart, the same page every other role sees, so they
-    can browse the whole structure at a glance without hopping between the
-    scoped dropdowns on KPI Management / Organisation Builder / Organisation
-    & People to find what they're looking for — alongside the three pages
-    that actually act on the org. (An earlier round of this app briefly
-    removed Framework from ICT admin's nav on the reasoning that they "act
-    on the org rather than browse it"; it's back, since acting on something
-    doesn't remove the need to see the whole of it first.) Verified live:
-    an ICT admin's sidebar confirmed to have "Framework" alongside both
-    "Organisation Builder" and "Organisation & People"; a real cascade
-    create through Organisation Builder (Programme → Sub → Unit →
-    Individual) followed by a cascade remove of that same Programme from
-    Organisation & People, confirmed gone from every active view and every
-    dropdown across both pages afterward; and a CPU account (who also has
-    Framework) getting the identical pages — zero console errors
-    throughout.
-- **Approvals Queue rebuilt as tables, same pattern as My Data Entry's
-  DataEntryTable.** The old one-KpiCard-per-KPI layout is now
-  `components/ApprovalsTable.jsx`: every figure a reviewer used to hunt for
-  in a tall card — baseline, target, current, what was actually submitted,
-  score, and a new dedicated pace-vs-target column — is a table column
-  instead, with Approve/Return reached via the row itself and a "Review ▾"
-  toggle that expands a detail row (the submitter's full note, the return
-  reason textarea, manual-override controls, and a shared KPI's team
-  breakdown) rather than always occupying screen space. The Unit Head's own
-  team-contributions queue gets its own compact `TeamApprovalsTable` variant
-  (no top-level Approve/Return there — only per-contributor decisions, via
-  the same `ContributorsBreakdown` `KpiCard.jsx` already used, now exported
-  for reuse). Return feedback — previously an inline colored box on every
-  returned KPI's own card — is now pulled into its own dedicated
-  `FeedbackTable`, hidden by default behind a "Return feedback (N) — show"
-  toggle, so the main table stays scannable and the actual comment text is
-  still one click away rather than gone; this needed a real fix along the
-  way, since `return_comment` lives on a value row whose RAW `status`
-  column is still `'draft'` (only DERIVED as "Returned" by
-  `lib/scope.js`'s `valueStatus` — the raw `'draft'` is what lets the
-  submitter edit and resubmit it), so a first pass checking the raw column
-  directly silently matched nothing; fixed to check `valueStatus(valueRow)`
-  like the rest of the app already does. Verified live end to end: a real
-  submission through the interactive table (Approve outright; separately,
-  Return with a reason via the expanded row), the read-only "Decided this
-  period"/"Not yet submitted" table variants, and the feedback table's
-  hide/show toggle actually hiding and re-revealing the comment text — zero
-  console errors throughout.
-- **Approvals readability fix, hideable Submitted/Approved tables on My
-  Data Entry, and uniform KPI input styling.** A report of "not seeing the
-  approval option" led to an exhaustive re-run of every approver-tier/
-  owner-type combination (two-stage Sub-owned KPI through Rep → Programme
-  Head → CPU; an Individual-owned KPI through their Unit Head;
-  team-contribution review via `TeamApprovalsTable`) — all passed with the
-  Approve button present and working and zero console errors, so nothing
-  was actually broken end to end. The real issue was readability: the
-  Decision (Approve/Return) column sat at the far right of a wide,
-  horizontally-scrolling table, so on a narrower window it could scroll out
-  of view without looking like anything was wrong. Fixed by making that
-  column (and `TeamApprovalsTable`'s equivalent "Review team" column)
-  `position: sticky; right: 0` with a solid background and a divider
-  border, so it now stays on screen regardless of scroll position —
-  verified live at a deliberately narrow 1180px viewport: the Approve
-  button's own bounding box confirmed on-screen with no scroll needed, and
-  a real approval went through from that same narrow view. (Also fixed
-  along the way: the expanded detail row's `colSpan` was one short of the
-  table's real column count — a leftover from before the Decision column
-  existed — which didn't break anything visibly but was wrong regardless.)
-  Separately, "My Data Entry"'s "Submitted — awaiting review" and "Approved
-  this period" sections (and the equivalent contribution sections) are now
-  hideable behind the same "▸ Title (N) — show/hide" toggle pattern
-  `ApprovalsTable.jsx`'s `FeedbackTable` already established, open by
-  default only for "Needs your action" — so a long-running period's settled
-  work doesn't push what still needs doing further down the page. And every
-  inline KPI-value/note/override input across `DataEntryTable.jsx`,
-  `ContributionCard.jsx`, and `ApprovalsTable.jsx`'s override controls now
-  shares the same vertical padding (`py-1.5`, previously an inconsistent
-  mix of `py-1`/default/`py-1.5` across the three files) and matching
-  widths for the same kind of field (an override's value/reason box is now
-  identical wherever it appears); the actual-value inputs also gained a
-  measure-aware placeholder (e.g. "Actual (%)") and a live "X% of target"
-  readout underneath as you type — computed from the KPI's own
-  baseline→target span, so someone entering a figure sees right away
-  whether it's below baseline, on track, or past target, without waiting
-  for Save to recompute the Score column. Verified live: the sticky column
-  at a narrow viewport (above), the collapse/expand toggle on My Data
-  Entry's Approved section, and the live percentage readout appearing and
-  computing correctly while typing — zero console errors across all three.
-- **A full project debug pass — one real crash bug found and fixed, everything
-  else came back clean**: 8 of the 12 Annual Plan submit/approve/return
-  routes in `routes/plans.js` (every Unit/Sub-programme/Programme-tier
-  action, plus `university/return`) were missing the same `cycleYear`
-  presence check their sibling PUT (save-draft) routes already had — a
-  request reaching one of them without a valid `cycleYear` didn't get a
-  clean 400 like everywhere else in this app, it crashed the handler outright
-  with an unhandled `TypeError` ("Provided value cannot be bound to SQLite
-  parameter 1"), returning a raw 500. Fixed by adding the same
-  `if (!cycleYear) return res.status(400)...` guard to all 8. Verified: the
-  old crash now returns a clean 400, and the full four-tier cascade
-  (Unit → Sub-programme → Programme → University, submit and approve/return
-  at every stage) was re-run live end-to-end with correct input and worked
-  throughout. Beyond that one bug, this pass covered: every backend route
-  file re-syntax-checked; every GET endpoint smoke-tested across all eight
-  roles with zero unexpected errors; the full messaging lifecycle
-  (send/read/delete); a clean frontend production build; every nav page
-  clicked through for every role with zero console errors, failed requests,
-  or broken navigation (the one console message that did appear —
-  `net::ERR_CERT_AUTHORITY_INVALID` on the Google Fonts stylesheet — is an
-  artifact of this sandbox's own outbound TLS proxy having no route to
-  fonts.googleapis.com, not an app bug; the font just falls back to the
-  system sans-serif, and a real deployment's browser fetches it normally);
-  the Overview org-tree drill-down and Reports page's period/filter controls
-  exercised directly; and a full SQLite `integrity_check` /
-  `foreign_key_check` pass with zero issues. No other genuine bugs surfaced.
-- **A final hardening & polish round, covering everything the security
-  review had flagged as open plus real operational and accessibility gaps**:
-  server-side scope-filtering on every `GET` endpoint (detailed under
-  "Before using this for anything real" below — a scoped account can no
-  longer read past its own branch by calling the API directly); optional
-  TOTP-based two-factor authentication with recovery codes and
-  admin-assisted reset (same section); real cursor-based pagination on the
-  Audit Log (`GET /api/audit` — `before`/`limit` params, no more hard
-  1,000-row cap, verified live with no gaps or overlaps between pages);
-  frontend code-splitting so the PDF-export libraries (`jspdf`,
-  `jspdf-autotable` — together several hundred KB) and the Reports/Planning
-  pages only load when actually needed, not in everyone's initial bundle
-  (verified via before/after bundle sizes and live network-request tracing);
-  a real, non-mocked automated backend test suite (`backend/test/`, `npm
-  test` — 28 tests, Node's built-in `node:test` driving actual server
-  processes and actual HTTP requests against disposable databases, covering
-  auth/RBAC, soft-delete/restore, the cumulative cascade-recompute fix, plan
-  validation, scope-filtering, and the backup script itself); a real,
-  verified SQLite backup script (`npm run backup`, detailed in "Backing up
-  the database" above); and an accessibility pass covering keyboard
-  operability app-wide (including a full retrofit of the sidebar's
-  Programme-structure tree, previously unusable without a mouse),
-  screen-reader labels on icon-only controls and search inputs, live-region
-  announcements for toasts, proper modal/dialog semantics with focus
-  management and Escape-to-close, and a visible focus ring on every
-  interactive element. One accessibility gap was found and deliberately
-  deferred rather than rushed — see "Before using this for anything real".
-- **The Approvals Queue / My Data Entry tables' "Pace" column now reflects
-  the actual period being reviewed, not a disconnected default**: it was
-  computing variance from `perfValues[kpi.id]` — a KPI's value under
-  whatever period the separate Overview/Reports "performance lens" happened
-  to be set to (see `PeriodTypePicker`/`perfPeriod` in `AppContext.jsx`) —
-  while every other cell in that same table row (score, current figure,
-  status) was already keyed off the real row for the period actually being
-  worked in that table. The two periods rarely line up, so a row could show
-  a genuinely off-track KPI as "On pace" (reading a different, on-track
-  period's figure) or vice versa. Fixed in `ApprovalsTable.jsx` (both the
-  main table and `TeamApprovalsTable`) and `DataEntryTable.jsx`: variance is
-  now computed from `effectiveRow`/`valueRow` — the exact period-specific
-  value row each table already resolves for every other cell — and the
-  column also now correctly distinguishes "no data yet for this period"
-  (shown as "—") from a genuinely on-pace KPI (shown as "On pace"), rather
-  than defaulting every non-attention case to the same static label.
-  `KpiCard.jsx`'s own separate pace badge was deliberately left as-is: it's
-  explicitly the Overview/Reports performance-lens figure by design, not a
-  per-period-review one, so it wasn't part of this bug. Verified live: a
-  KPI whose entered figure is well behind its expected pace for the period
-  actually open in the table now shows a real negative-points figure
-  ("-38pts behind") in that same row, instead of "On pace".
-- **The "Actual vs. expected pace" chart's hover tooltip now always matches
-  the bar actually under the cursor, even when two or more KPIs share the
-  exact same name** (a real scenario — e.g. a duty-KPI template like
-  "Vacuuming" or "Bin collection" assigned to several different people):
-  previously, hovering one bar of a duplicated name could show a
-  *different* bar's owner and figures instead. Root-caused by reading
-  Recharts' own tooltip data-selection code
-  (`combineTooltipPayload.js`): for an axis-shared tooltip, it resolves the
-  hovered bar's *position* correctly, but then looks up that bar's data by
-  searching the chart's data array for the **first** entry whose XAxis
-  `dataKey` **value** matches the hovered category label
-  (`findEntryInArray`) — so once two rows share that value, every bar with
-  that name resolves to the same first match, regardless of which one is
-  actually under the pointer. Fixed in `VarianceChart.jsx` by giving each
-  row a guaranteed-unique `_uid` field (`` `${name}__${index}` ``) and
-  using that as the XAxis's own `dataKey`, while the human-readable name
-  stays a separate field used everywhere a label is actually displayed (the
-  custom two/three-line `OwnerTick`, and the tooltip's own
-  `labelFormatter`) — nothing shown on screen changes, only the internal
-  value Recharts uses to resolve which row was hovered. This is the shared
-  chart component behind both Overview's and Reports' variance charts, so
-  the fix covers both. An earlier attempt at this (forcing the chart to
-  remount via a `key` prop whenever the performance-lens period changed)
-  was tried, confirmed live to NOT fix the actual bug, and has been
-  removed — the real cause was in the tooltip's data lookup, not stale
-  component state. Verified live end-to-end: two real KPIs both named
-  "Vacuuming", owned by two different individuals, were created for the
-  same period specifically to reproduce the reported scenario; hovering
-  each bar in turn now shows that bar's own distinct owner and value with
-  zero cross-contamination, both on first load and after switching the
-  performance-lens period more than once — the exact case that was broken
-  before. The reproduction KPIs were removed afterward, and the full
-  backend test suite (28 tests) still passes.
 
 ## What's simplified versus the original prototype
 
@@ -1300,9 +839,14 @@ sprawling:
   pace-adjusted milestone math.
 - There's no cross-cutting KPI linking (one KPI counted toward two
   Programmes at once).
-- ~~Automated cumulative performance doesn't cascade retroactively~~ — this
-  was a real correctness gap, not a deliberate boundary, and it's now fixed;
-  see "Cumulative values now cascade forward automatically" above.
+- Automated cumulative performance (see "What's real here" above) doesn't
+  cascade retroactively: amending an already-approved period leaves its
+  stored `value` frozen at the old official figure until that period is
+  re-approved, at which point it recomputes from whatever the *current*
+  previous-period total is. Later periods that were already approved off
+  the old figure are not automatically walked forward and recalculated —
+  a deliberate scope boundary, not an oversight, to avoid a single edit
+  silently rewriting a long chain of already-signed-off history.
 - Executive Owner is a display and accountability designation only — it
   marks who the app holds out as accountable for overall institutional
   performance and puts their name on it, but it is not an extra approval
@@ -1435,59 +979,6 @@ Tools/Python installed) that compilation step fails with errors like
 built-in `node:sqlite` module instead, so there is nothing to compile —
 `npm install` only installs plain JavaScript packages.
 
-## Backing up the database
-
-```bash
-cd backend
-npm run backup
-```
-
-Writes a complete, independent snapshot to
-`backend/data/backups/zou-<timestamp>.db` and verifies it immediately after
-(`PRAGMA integrity_check`) before calling the run a success. This is safe to
-run at any time, including while the server is up and being actively used —
-it does not lock out writers, pause the app, or need any coordination with
-`server.js`. It's real online backup, not a suggestion to stop the server
-first: `src/backup.js` uses SQLite's own `VACUUM INTO`, which opens a read
-transaction against the live database and streams a consistent copy to a
-new file. A plain file copy (`cp data/zou.db backup.db`) would not be
-reliable here — the live database runs in WAL mode (see `db.js`), so the
-main `.db` file on disk can be missing recently-committed data still sitting
-in the `-wal` side file at any given instant; `VACUUM INTO` accounts for
-that, `cp` does not.
-
-By default the last 14 backups are kept and older ones are pruned
-automatically on each run (only files this script created, matching
-`zou-*.db` in that directory — nothing else there is ever touched or
-deleted). Override with environment variables in `.env` if needed:
-`BACKUP_DIR` (default `backend/data/backups`), `BACKUP_KEEP` (default `14`,
-set to `0` to keep everything), `DB_FILE` (which live database to back up —
-same variable `server.js` and `seed.js` already use). A specific destination
-path can also be passed directly — `node src/backup.js /path/to/out.db` —
-which skips the automatic pruning, since a one-off destination usually means
-you're managing retention yourself.
-
-**Restoring** is the reverse of taking the backup: stop the server, then
-copy a backup file over the live one —
-
-```bash
-cd backend
-# stop the running server first
-cp data/backups/zou-<timestamp>.db data/zou.db
-rm -f data/zou.db-wal data/zou.db-shm   # stale WAL/shm files from the old db, if present
-npm start
-```
-
-**Scheduling it** — this app has no built-in job scheduler (see "Still
-genuinely open" below), so run it on a real schedule the same way you would
-any other periodic maintenance task on whatever's actually hosting this:
-a cron entry (`0 2 * * * cd /path/to/backend && npm run backup >> /var/log/zou-backup.log 2>&1`
-for a nightly 2am backup), a systemd timer, or your hosting platform's
-scheduled-jobs feature. Whichever you use, also copy the resulting files off
-the same disk/VM on some cadence (object storage, a second machine) — a
-backup that lives next to the database it protects doesn't survive the one
-failure (disk death, VM loss) it most needs to survive.
-
 ## Test credentials — one account per access level
 
 All seeded accounts use the same password:
@@ -1575,19 +1066,9 @@ Already addressed:
   `POST /api/auth/logout-everywhere`) bumps it, instantly invalidating every
   other outstanding token for that account instead of waiting out its
   natural 12h expiry.
-- **`POST /api/auth/login` is rate-limited, two ways at once** — so the
-  account-password fix above can't be undone by unlimited guessing, without
-  the limiter itself becoming a way to lock out people who did nothing
-  wrong. A single IP-keyed limiter (this app's original approach) has a real
-  failure mode: everyone behind the same NAT gateway or campus proxy shares
-  one apparent IP, so one person mistyping their own password repeatedly
-  locked out everyone else on that network — confirmed live in an earlier
-  pass, then fixed. Now: `accountLoginLimiter` throttles repeated guesses
-  against ONE account (8 attempts per 3 minutes, keyed on the email being
-  attempted, from any IP) without touching anyone else's ability to sign in
-  from the same network; `ipLoginLimiter` is the backstop, a much larger cap
-  (30 per 3 minutes per IP) that still catches someone spraying guesses
-  across many different accounts from one source. See `routes/auth.js`.
+- **`POST /api/auth/login` is rate-limited** — 8 attempts per 10 minutes per
+  IP (`express-rate-limit`, see `routes/auth.js`) — so the account-password
+  fix above can't be undone by unlimited guessing.
 - **`helmet()` on every response** (`server.js`) — a real
   Content-Security-Policy, `X-Frame-Options`, `X-Content-Type-Options`, etc.
   The one thing this actually required changing was moving `index.html`'s
@@ -1603,63 +1084,24 @@ Already addressed:
   instead of writing whatever the request body contains into the table.
 - `PUT /api/kpis/:id/value` and `PUT /api/kpis/:id/contribution` now reject
   a non-numeric `value` instead of silently storing it.
-- **Every `GET` endpoint is now scope-filtered server-side, not just
-  hidden by the frontend.** `GET /api/kpis` (and `/:id/values`, `/values`,
-  `/values-range`, `/assignments`, `/contributions`), `GET /api/plans`, and
-  `GET /api/compliance` used to return every KPI/value/contribution, the
-  full org tree, and the full budget/compliance picture, system-wide, to
-  any authenticated user — a scoped account (Individual, Unit Head, Sub
-  Rep) could get data far outside what its own UI ever shows it by calling
-  the API directly. `utils/scope.js` adds read-visibility predicates
-  (`isGlobalReader`, `canReadKpi`, `canReadSub`, `canReadUnit`,
-  `canReadProgramme`) and the three GET handlers above now filter every row
-  through them before it reaches the response. Global oversight roles
-  (CPU/ICT Admin/Executive/Council) are unaffected; verified with an
-  automated test across all 8 roles (`backend/test/scope-filtering.test.js`)
-  that no legitimate access regressed.
-- **Optional two-factor authentication.** Any account can enroll a real,
-  standards-based TOTP authenticator (RFC 6238, `utils/totp.js`, no new
-  dependency — works with Google Authenticator, Authy, etc.) from My
-  Profile; once enabled, login requires the 6-digit code (or a one-time
-  recovery code) before a real session is issued. ICT Admin can also
-  disable a lost account's MFA. See `SECURITY_REVIEW.md`'s "Low /
-  hardening notes" for the full design (short-lived MFA ticket tokens,
-  bcrypt-hashed recovery codes, audit logging).
 
-Still genuinely open — outside what changes to this codebase alone can fix
-(see `SECURITY_REVIEW.md` for the full reasoning on each):
+Still genuinely open (by design, or deferred — see `SECURITY_REVIEW.md` for
+the full reasoning on each):
 
-- Put this behind HTTPS, on real hosting. `npm run backup` (see "Backing up
-  the database" above) gives a real, verified way to snapshot the SQLite
-  file — scheduling it and shipping the results off-box is a hosting-level
-  step for whoever deploys this, not something a script running on the same
-  disk can guarantee alone; migrating to a managed database at that point
-  is also worth considering.
+- Every `GET` endpoint (`/api/kpis`, `/api/org`, `/api/plans`,
+  `/api/compliance`, …) is authenticated but not scope-filtered
+  server-side — any signed-in account can read data the frontend would
+  never show them by navigating there directly (e.g. via the browser's dev
+  tools or `curl`). The frontend narrows what it *shows* per role/scope;
+  the API itself doesn't. Fixing this properly means threading the same
+  `isOwner`/`inJurisdiction`/scope-chain checks the mutating routes already
+  use through every read endpoint too — a real, deliberately separate
+  follow-up given how many routes and roles it touches.
+- Put this behind HTTPS, on real hosting, with a real backup strategy for
+  the SQLite file (or migrate to a managed database).
+- Consider multi-factor authentication.
 - Have ZOU's IT/security team review authentication, data-retention, and
-  access-control requirements before go-live — including whether MFA
-  (available now, opt-in) should be mandated for some or all roles.
-- Real SMTP/email-provider integration for password-reset delivery — a
-  reset currently has to be relayed by an ICT Admin (`POST
-  /api/users/:id/reset-password`) rather than emailed directly to the
-  account holder, since wiring up an actual outbound-mail provider needs
-  real, external credentials (an SMTP relay or a service like SendGrid/SES)
-  that can't be fabricated in this environment.
-- A further accessibility pass: this build now covers keyboard operability
-  (every interactive control, including the sidebar's Programme-structure
-  tree, is reachable and operable without a mouse), screen-reader labeling
-  on icon-only controls and search inputs, live-region announcements for
-  toasts, proper modal/dialog semantics with focus management, and a
-  visible focus ring app-wide — see `SECURITY_REVIEW.md`-adjacent commit
-  history for specifics. Not yet done: roughly three dozen form
-  `<label>`/`<input>` pairs across the admin pages (Framework, KPI
-  Management, Organisation Structure/Builder, People & Roles) are visually
-  adjacent but not programmatically associated (no `htmlFor`/`id` linking
-  them) — they render correctly today only because full-width inputs
-  happen to wrap onto their own line, which a screen reader can't rely on.
-  Fixing it properly means giving each of those ~34 inputs a stable `id`
-  and pointing its label's `htmlFor` at it — mechanical, but broad enough
-  across enough files that it was deliberately left for a dedicated pass
-  rather than rushed alongside everything else in this one.
+  access-control requirements before go-live.
 
 ## Performance & caching
 
@@ -1722,93 +1164,29 @@ that distinction matters):
   divides its base limit (8 per 10 minutes) by that count so the
   cluster-wide total stays close to the original intent instead of
   silently becoming 8-per-worker.
-- A second correctness detail the cluster change exposed on a real
-  restart: `db.js` has a handful of unconditional write statements (the
-  permissions-catalog sync, a few `INSERT OR IGNORE` backfills) that
-  re-run on every process's own `require('./db')`, not just once in the
-  primary. With two worker processes starting within milliseconds of each
-  other, WAL mode's "one writer at a time" rule could make the second
-  worker's write collide with the first's — and with no
-  `PRAGMA busy_timeout` set, `node:sqlite` threw `SQLITE_BUSY` ("database
-  is locked") immediately instead of waiting. Node's `cluster` module
-  auto-restarted the crashed worker, so the app still ended up healthy,
-  but a crash-and-restart on every boot isn't acceptable — fixed by
-  setting `PRAGMA busy_timeout = 5000` in `db.js`, so a worker now waits
-  up to 5s for the other's write to finish instead of failing outright.
-  Verified live: both workers now start cleanly with no crash/restart in
-  the log.
 
 ## API reference (summary)
 
 All endpoints are under `/api`. Authenticated endpoints require an
 `Authorization: Bearer <token>` header from `POST /api/auth/login`.
 
-- `POST /api/auth/login` (rate-limited two ways — 8 attempts/3min per
-  account, 30/3min per IP as a backstop; see "Security" above), `GET /api/auth/me`,
+- `POST /api/auth/login` (rate-limited, 8/10min per IP), `GET /api/auth/me`,
   `POST /api/auth/change-password` (any signed-in user, own account,
   requires their current password — also clears `must_change_password` and
   returns a freshly-signed token), `POST /api/auth/logout-everywhere`
   (any signed-in user — bumps `token_version`, invalidating every
   outstanding token for the account, including the one used to call it),
   `PUT|DELETE /api/auth/me/avatar`
-  (any signed-in user, own profile photo — a `data:` URL, capped size),
-  `GET /api/auth/ict-admins` (deliberately unauthenticated — reachable from
-  the sign-in screen's "Forgot your password?" panel before anyone has a
-  token; returns only name/title/email for `ictadmin` accounts, the real,
-  live contacts who can actually reset a password — there is no email/SMS
-  delivery behind this app, so this replaces a fake "we'll send you a
-  link" form rather than faking one)
+  (any signed-in user, own profile photo — a `data:` URL, capped size)
 - `GET /api/org` (now also returns `executiveOwner: { id, name, title } | null`
-  — the single account, if any, currently designated Executive Owner; only
-  active rows — `deleted_at IS NULL` — on all four tables),
-  `GET /api/org/removed` (`manage_org_units` — the soft-removed side of the
-  same four tables, most-recently-removed first; backs the "Recently
-  Removed" panel),
-  `POST /api/org/programmes` / `PATCH /api/org/programmes/:id` / `DELETE
-  /api/org/programmes/:id` / `POST /api/org/programmes/:id/restore`,
-  `POST /api/org/subs` / `PATCH /api/org/subs/:id` / `DELETE
-  /api/org/subs/:id` / `POST /api/org/subs/:id/restore`,
-  `POST /api/org/units` / `PATCH /api/org/units/:id` / `DELETE
-  /api/org/units/:id` / `POST /api/org/units/:id/restore` — POST/PATCH back
-  Organisation Builder (create/update), DELETE/restore back Organisation &
-  People (remove/restore). Every POST route requires `manage_org_units` OR
-  the narrower `create_org_units`; every PATCH route requires
-  `manage_org_units` OR the narrower `edit_org_units` (both new
-  permissions — see "Finer-grained org-structure permissions" below).
-  DELETE and every `/restore` route stay behind `manage_org_units` alone,
-  deliberately: undoing a removal should require the same authority that
-  could remove it in the first place. Creation
-  provisions a real Programme Head / Sub-programme Rep / Unit Head account
-  exactly like the org's existing accounts, same pattern throughout; PATCH
-  updates the entity's own name/head (and a Unit's kind) and keeps the
-  linked account's `users.name`/`title` in sync, the same sync
-  `PATCH /api/org/individuals/:id` already did. Every DELETE genuinely
-  cascades — see `routes/org.js`'s `cascadeSoftDeleteProgramme/Sub/Unit` —
-  taking everything nested beneath it (every Sub-programme/Unit/Individual,
-  every KPI any of them own, and every login account that only exists
-  because of them) out of active use inside one transaction, and returns a
-  `removed: { kpis, individuals, units, subs, programmes, accounts }` count
-  so the frontend can confirm exactly what just disappeared — but as a
-  `deleted_at` stamp, never a real SQL DELETE, so it's never data loss: the
-  matching `POST .../restore` route clears the stamp on the row and
-  everything structurally beneath it, in one transaction, and it all
-  reappears exactly as it was. `DELETE /api/org/units/:id` didn't exist at
-  all before the Unit-level delete/restore pair landed — Unit creation had
-  no matching delete route, so a Unit created by mistake had no way to be
-  removed short of editing the database directly),
+  — the single account, if any, currently designated Executive Owner),
+  `POST /api/org/units` (requires `manage_org_units`),
   `POST /api/org/individuals` (`manage_org_units` OR the narrower,
   scope-restricted `add_individual` — a Unit Head may only target their own
   unit, a Sub Rep only a unit within their own sub-programme) /
-  `PATCH /api/org/individuals/:id` (same scoping — edits `individuals.name`/
-  `role_title` and keeps the linked login account's own `users.name`/`title`
-  in sync, which `PATCH /api/users/:id/profile` never touched; those are a
-  separate pair of columns, so an Individual's name could previously drift
-  out of sync between "who's signed in" and "who the org chart says this
-  is") /
-  `DELETE /api/org/individuals/:id` / `POST /api/org/individuals/:id/restore`
-  (`manage_org_units` only — adding an individual provisions a login
-  account; removing one deactivates that account and soft-deletes any KPIs
-  they directly own, all reversed together by restore)
+  `DELETE /api/org/individuals/:id` (`manage_org_units` only — adding or
+  removing an individual also provisions or removes their login account
+  and, on removal, any KPIs they directly own)
 - `GET /api/org/proposals`, `POST /api/org/proposals` (`manage_framework`) —
   the structural-change proposal log
 - `GET /api/kpis`, `GET /api/kpis/values?year&month`,
@@ -1820,14 +1198,8 @@ All endpoints are under `/api`. Authenticated endpoints require an
   owned KPI only, each id validated as actually belonging to that unit),
   `PUT /api/kpis/:id` (`create_kpi` — the KPI's real definition:
   name/type/measure/baseline/target; owner is deliberately not editable
-  here, see "What's real here" above) /
-  `DELETE /api/kpis/:id` / `GET /api/kpis/removed` / `POST
-  /api/kpis/:id/restore` (`create_kpi` — removal is a `deleted_at` stamp,
-  never a real delete: the KPI drops out of every active list, but its
-  values/assignments/contributions are all left exactly as they were and
-  restore brings the whole thing straight back, same soft-delete pattern as
-  the org structure above; `GET /removed` is scoped to the caller's own
-  jurisdiction the same way every other KPI action already is),
+  here, see "What's real here" above) / `DELETE /api/kpis/:id` (`create_kpi`
+  — a real delete; values/assignments/contributions all cascade),
   `PATCH /api/kpis/:id/targets` (`edit_targets` — baseline/target only, the
   narrower tier),
   `PUT /api/kpis/:id/value` / `POST /api/kpis/:id/submit` (`data_entry`, the
@@ -1835,45 +1207,19 @@ All endpoints are under `/api`. Authenticated endpoints require an
   value, only their own contribution row; see below — `PUT .../value` now
   writes the submitter's figure to `entered_value`, this period's own
   number, not the cumulative `value` column),
-  `PUT /api/kpis/bulk-value` / `POST /api/kpis/bulk-submit` (`data_entry` —
-  the table-based "My Data Entry" screen's own endpoints, one call for
-  however many KPIs were checked at once instead of one call per KPI: `PUT
-  .../bulk-value` takes `{ year, month, entries: [{ id, value }, …] }`,
-  `POST .../bulk-submit` takes `{ year, month, ids: […] }`. Both re-validate
-  EVERY row server-side — real ownership via the same `isOwner` check as the
-  single-KPI routes, automated KPIs rejected from `bulk-value`, a missing
-  value rejected from `bulk-submit` — before writing anything, and apply the
-  whole batch inside one `db.transaction()`: if any single row in the batch
-  fails validation, the entire request 4xxs and nothing in it is written,
-  not just the bad row. These two routes are deliberately registered
-  immediately after `GET /`, before any `/:id`-pattern route in this file —
-  Express otherwise matches `PUT /bulk-value` against the earlier `PUT
-  /:id` route, treating `"bulk-value"` as an `:id` and returning the wrong
-  permission error; confirmed live and fixed this way, see the comment in
-  `routes/kpis.js`),
   `POST /api/kpis/:id/approve` / `POST /api/kpis/:id/return` (`approve_own_tier`,
   approver only — approving now automatically computes and stores the new
   cumulative `value` as the previous official total plus `entered_value`;
   see "What's real here" above for the automated cumulative-performance
   feature),
-  `POST|DELETE /api/kpis/:id/override` (`apply_override`, automated KPIs
-  only — DELETE never destroys the cleared value/note, see "Manual overrides
-  are soft-deleted too" above) /
-  `POST /api/kpis/:id/override/restore` (`apply_override` — puts a just-
-  cleared override straight back; 404s if there's nothing recently cleared
-  for that period, 400s if a live override is already there),
+  `POST|DELETE /api/kpis/:id/override` (`apply_override`, automated KPIs only),
   `PUT /api/kpis/:id/explanation`,
-  `GET /api/kpis/assignments` (every current, non-removed KPI→Individual
-  assignment),
+  `GET /api/kpis/assignments` (every current KPI→Individual assignment),
   `POST /api/kpis/:id/assign` / `DELETE /api/kpis/:id/assign/:individualId`
   (`data_entry`, and only the Unit Head who owns that Unit-scoped KPI,
-  targeting someone in that same unit — DELETE stamps `deleted_at` on the
-  `kpi_assignments` row rather than deleting it, and POST restores that same
-  row instead of inserting a duplicate if this exact pairing was ever
-  assigned before, since the table's `UNIQUE(kpi_id, individual_id)`
-  constraint means a plain re-insert would collide with it) — (`POST/DELETE
-  /api/kpis/:id/claim`, the individual self-claim of a Unit-owned KPI, has
-  been removed; see `/api/kpi-templates` below for its replacement)
+  targeting someone in that same unit) — (`POST/DELETE /api/kpis/:id/claim`,
+  the individual self-claim of a Unit-owned KPI, has been removed; see
+  `/api/kpi-templates` below for its replacement)
 - `GET /api/kpis/contributions?year&month` (every assignee's own
   contribution row for the period, scoped the same as `/kpis/values`),
   `PUT /api/kpis/:id/contribution` / `POST /api/kpis/:id/contribution/submit`
@@ -1887,21 +1233,15 @@ All endpoints are under `/api`. Authenticated endpoints require an
   currently-approved contribution for that period, see above)
 - `GET /api/kpi-templates` (any signed-in user — the Unit-scoped "KPI for
   individuals" pool, each with a real `picked_count`),
-  `GET /api/kpi-templates/removed` (`create_kpi` — the soft-removed side of
-  the same pool, most-recently-removed first; backs KPI Management's own
-  "Recently Removed" panel),
   `POST /api/kpi-templates` (`create_kpi` — `{ unitId, name, type, measure,
   baseline, target }`, creates the definition once against a Unit, owned by
-  nobody yet), `DELETE /api/kpi-templates/:id` (`create_kpi` — stamps
-  `deleted_at`, never a real DELETE; removes it from the pool only, anyone
-  who already picked it up keeps their own KPI regardless — see
-  `kpis.template_id`'s `ON DELETE SET NULL`) /
-  `POST /api/kpi-templates/:id/restore` (`create_kpi` — clears the stamp,
-  reappears in the pool exactly as it was),
+  nobody yet), `DELETE /api/kpi-templates/:id` (`create_kpi` — removes it
+  from the pool only; anyone who already picked it up keeps their own KPI,
+  see `kpis.template_id`'s `ON DELETE SET NULL`),
   `POST /api/kpi-templates/:id/pick` (`data_entry`, Individual role only,
-  and only for a non-removed template scoped to their own unit —
-  instantiates a real, independent `kpis` row owned solely by them; rejects
-  a second pick of the same template by the same person)
+  and only for a template scoped to their own unit — instantiates a real,
+  independent `kpis` row owned solely by them; rejects a second pick of the
+  same template by the same person)
 - `GET /api/plans?year=<cycleYear>` — the whole compiled Annual Plan &
   Budget picture for one cycle year (units, sub-programmes, programmes,
   and the university row, each with its own proposal and, above Unit
@@ -1949,18 +1289,8 @@ All endpoints are under `/api`. Authenticated endpoints require an
   `PATCH /api/users/:id/executive-owner` (`{ on: true|false }` — setting
   `true` clears any existing holder first, in one transaction, so there is
   never more than one),
-  `GET /api/users/removed` (the soft-removed side of the Directory —
-  accounts removed directly by DELETE below, most-recently-removed first;
-  backs Permissions &amp; User Directory's own "Recently Removed" panel —
-  an account deactivated as a side effect of removing the Individual/
-  Unit-head/Sub-Rep/Programme-head it belongs to shows up on Organisation
-  &amp; People's Recently Removed instead, not here),
-  `DELETE /api/users/:id` / `POST /api/users/:id/restore` (remove/restore an
-  account — a user can't remove their own account; removal is a
-  `deleted_at` stamp, same soft-delete pattern as the org structure and
-  KPIs above, so sign-in is blocked and the account drops out of the
-  Directory without the row, its permissions, or its audit history ever
-  actually being deleted) — all `ictadmin` role only
+  `DELETE /api/users/:id` (remove an account — a user can't change their own
+  role or remove their own account) — all `ictadmin` role only
 - `GET /api/audit` (`view_audit`)
 - `GET /api/settings`, `PATCH /api/settings` (`manage_settings`)
 - `GET /api/compliance?year&month` — late-submission compliance per

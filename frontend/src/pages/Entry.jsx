@@ -3,8 +3,8 @@ import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
 import { canEnterData, canContribute, individualUnitId, valueStatus } from '../lib/scope.js';
-import KpiCard from '../components/KpiCard.jsx';
 import ContributionCard from '../components/ContributionCard.jsx';
+import DataEntryTable from '../components/DataEntryTable.jsx';
 import PeriodPicker from '../components/PeriodPicker.jsx';
 
 // Grouped so the flow reads as a queue rather than one flat list: anything
@@ -39,12 +39,7 @@ export default function Entry() {
     : [];
 
   const needsAction = mine.filter((k) => ['returned', 'none', 'draft'].includes(statusOf(k)));
-  // 'programme_approved' belongs here too, not as its own bucket: from the
-  // submitter's own point of view it's still just "awaiting review" — the
-  // Sub-programme's own KPI submission has simply moved from the Programme
-  // Head's desk to CPU's, nothing the submitter can or needs to act on
-  // either way.
-  const submitted = mine.filter((k) => ['submitted', 'programme_approved'].includes(statusOf(k)));
+  const submitted = mine.filter((k) => statusOf(k) === 'submitted');
   const approved = mine.filter((k) => statusOf(k) === 'approved');
 
   const contribNeedsAction = contributed.filter((k) => ['returned', 'none', 'draft'].includes(contribStatusOf(k)));
@@ -78,22 +73,22 @@ export default function Entry() {
       )}
 
       {needsAction.length > 0 && (
-        <Section title="Needs your action" kpis={needsAction} mode="owner" />
+        <TableSection title="Needs your action" kpis={needsAction} interactive />
       )}
       {contribNeedsAction.length > 0 && (
         <ContribSection title="Your contributions needing action" kpis={contribNeedsAction} rowFor={contribRowFor} />
       )}
       {submitted.length > 0 && (
-        <Section title="Submitted — awaiting review" kpis={submitted} mode="owner" />
+        <TableSection title="Submitted — awaiting review" kpis={submitted} interactive={false} collapsible />
       )}
       {contribSubmitted.length > 0 && (
-        <ContribSection title="Your contributions — awaiting your Unit Head's review" kpis={contribSubmitted} rowFor={contribRowFor} />
+        <ContribSection title="Your contributions — awaiting your Unit Head's review" kpis={contribSubmitted} rowFor={contribRowFor} collapsible />
       )}
       {approved.length > 0 && (
-        <Section title="Approved this period" kpis={approved} mode="owner" />
+        <TableSection title="Approved this period" kpis={approved} interactive={false} collapsible />
       )}
       {contribApproved.length > 0 && (
-        <ContribSection title="Your contributions — approved this period" kpis={contribApproved} rowFor={contribRowFor} />
+        <ContribSection title="Your contributions — approved this period" kpis={contribApproved} rowFor={contribRowFor} collapsible />
       )}
       {totalCount === 0 && pickable.length === 0 && <div className="card text-center text-ink-muted py-10">No KPIs are assigned to you for direct data entry.</div>}
 
@@ -148,20 +143,42 @@ function TemplatesSection({ templates }) {
   );
 }
 
-function Section({ title, kpis, mode }) {
+// collapsible: same hideable pattern as ApprovalsTable's FeedbackTable —
+// used on the "Submitted"/"Approved" sections (a settled record you check
+// back on sometimes, not something needing action) so a long-running
+// period's queue doesn't force scrolling past done work to reach what
+// still needs it. "Needs your action" never gets this prop, so it always
+// stays visible.
+function TableSection({ title, kpis, interactive, collapsible }) {
+  const [visible, setVisible] = useState(!collapsible);
   return (
     <div className="mb-5">
-      <h2 className="font-display font-bold text-[13.5px] text-ink-secondary mb-2">{title}</h2>
-      {kpis.map((k) => <KpiCard key={k.id} kpi={k} mode={mode} />)}
+      <SectionHeading title={title} count={kpis.length} collapsible={collapsible} visible={visible} onToggle={() => setVisible((v) => !v)} />
+      {visible && <DataEntryTable kpis={kpis} interactive={interactive} />}
     </div>
   );
 }
 
-function ContribSection({ title, kpis, rowFor }) {
+function ContribSection({ title, kpis, rowFor, collapsible }) {
+  const [visible, setVisible] = useState(!collapsible);
   return (
     <div className="mb-5">
-      <h2 className="font-display font-bold text-[13.5px] text-ink-secondary mb-2">{title}</h2>
-      {kpis.map((k) => <ContributionCard key={k.id} kpi={k} contributionRow={rowFor(k)} />)}
+      <SectionHeading title={title} count={kpis.length} collapsible={collapsible} visible={visible} onToggle={() => setVisible((v) => !v)} />
+      {visible && kpis.map((k) => <ContributionCard key={k.id} kpi={k} contributionRow={rowFor(k)} />)}
     </div>
+  );
+}
+
+function SectionHeading({ title, count, collapsible, visible, onToggle }) {
+  if (!collapsible) {
+    return <h2 className="font-display font-bold text-[13.5px] text-ink-secondary mb-2">{title}</h2>;
+  }
+  return (
+    <button
+      className="font-display font-bold text-[13.5px] text-ink-secondary mb-2 flex items-center gap-1.5 hover:text-accent-600"
+      onClick={onToggle}
+    >
+      {visible ? '▾' : '▸'} {title} ({count}) {visible ? '— hide' : '— show'}
+    </button>
   );
 }

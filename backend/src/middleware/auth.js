@@ -19,9 +19,10 @@ function getUserPermissions(userId) {
 }
 
 function loadUser(userId) {
-  const user = db.prepare('SELECT id, name, title, email, role, scope_type, scope_id, avatar, overview_limit, is_executive_owner, must_change_password FROM users WHERE id = ?').get(userId);
+  const user = db.prepare('SELECT id, name, title, email, role, scope_type, scope_id, avatar, overview_limit, is_executive_owner, must_change_password, mfa_enabled FROM users WHERE id = ?').get(userId);
   if (!user) return null;
   user.must_change_password = !!user.must_change_password;
+  user.mfa_enabled = !!user.mfa_enabled;
   user.permissions = getUserPermissions(user.id);
   return user;
 }
@@ -45,14 +46,27 @@ function requireAuth(req, res, next) {
   } catch (e) {
     return res.status(401).json({ error: 'Invalid or expired token.' });
   }
+  // A short-lived MFA ticket (see routes/auth.js's POST /login and
+  // /mfa/verify) is a different, deliberately narrower kind of token —
+  // proof that a password check passed, nothing more — and must never be
+  // accepted as a real bearer token here even though it's signed with the
+  // same secret and could otherwise pass every check below. Only
+  // /mfa/verify (and /login itself) ever inspects one of these directly.
+  if (payload.mfaPending) return res.status(401).json({ error: 'MFA verification required.' });
   // Real revocation for an otherwise-stateless token: the token's own
   // token_version (baked in at sign-in — see routes/auth.js's /login) must
   // still match the account's current one. A password change, an admin
   // password reset, or "sign out everywhere" bumps the column and every
   // token minted before that bump stops working immediately, rather than
   // staying valid for up to the remaining 12h of its natural expiry.
-  const versionRow = db.prepare('SELECT token_version FROM users WHERE id = ?').get(payload.sub);
+  const versionRow = db.prepare('SELECT token_version, deleted_at FROM users WHERE id = ?').get(payload.sub);
   if (!versionRow) return res.status(401).json({ error: 'Account no longer exists.' });
+  // A token minted before the account was removed from the org structure
+  // (see routes/org.js's deactivateUserAccount) must stop working the
+  // moment that happens, same as a bumped token_version below — otherwise
+  // someone already signed in could keep using the app for up to 12h after
+  // being removed.
+  if (versionRow.deleted_at) return res.status(401).json({ error: 'This account has been deactivated.' });
   if (Number(payload.tv || 0) !== Number(versionRow.token_version || 0)) {
     return res.status(401).json({ error: 'This session was signed out. Please sign in again.' });
   }

@@ -17,6 +17,17 @@ fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
 const db = new DatabaseSync(DB_FILE);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
+// WAL mode allows unlimited concurrent readers but still only one writer at
+// a time — without this, a second process (server.js now runs one per CPU
+// core, see its WORKER_COUNT comment) that tries to write while another is
+// mid-transaction gets an immediate SQLITE_BUSY ("database is locked")
+// instead of waiting. This matters even though the primary process runs
+// every migration before any worker is forked: several statements below
+// (the permissions-catalog sync, a few `INSERT OR IGNORE` backfills) are
+// unconditional — they re-run on every process's require('./db'), not just
+// once — so two workers starting near-simultaneously can still collide on a
+// real write. 5s is comfortably longer than any single write here takes.
+db.exec('PRAGMA busy_timeout = 5000');
 
 // better-sqlite3-style transaction helper, since the rest of the codebase
 // (see seed.js) uses `const txn = db.transaction(fn); txn();`.
@@ -383,6 +394,30 @@ if (!kpiValueColumns.includes('entered_value')) {
   db.exec('ALTER TABLE kpi_values ADD COLUMN entered_value REAL');
 }
 
+// Clearing a manual override used to just NULL override_value/override_note
+// outright — the one place left in this app where a real, user-entered
+// figure (and the reason someone typed for it) was genuinely destroyed with
+// no way back, unlike everything else here (see the softDeleteTables
+// rationale below). These three columns give it the same shadow-and-restore
+// shape as every other removal: DELETE /:id/override (routes/kpis.js) now
+// copies the live override_value/override_note into these _cleared columns
+// and stamps override_cleared_at BEFORE nulling the live ones, instead of
+// just discarding them, and POST /:id/override/restore copies them straight
+// back and clears this shadow — so "clear override" is a real, reversible
+// action, not a quiet data loss, right up until someone applies a genuinely
+// new override over it (which retires the old shadow, the same way a fresh
+// value supersedes stale history everywhere else in this app).
+const kpiValueOverrideColumns = db.prepare('PRAGMA table_info(kpi_values)').all().map((c) => c.name);
+if (!kpiValueOverrideColumns.includes('override_cleared_value')) {
+  db.exec('ALTER TABLE kpi_values ADD COLUMN override_cleared_value REAL');
+}
+if (!kpiValueOverrideColumns.includes('override_cleared_note')) {
+  db.exec('ALTER TABLE kpi_values ADD COLUMN override_cleared_note TEXT');
+}
+if (!kpiValueOverrideColumns.includes('override_cleared_at')) {
+  db.exec('ALTER TABLE kpi_values ADD COLUMN override_cleared_at TEXT');
+}
+
 // Migration: widen the users.role CHECK to also allow 'council' — the
 // University Council's own account tier, which validates/approves the
 // compiled University Annual Plan before it takes effect (see
@@ -494,6 +529,49 @@ if (!kpiValuesSql.includes("'programme_approved'")) {
   db.exec('PRAGMA foreign_keys = ON');
 }
 
+// Migration: the 'programme_approved' intermediate stage above has since
+// been retired by deliberate request — a Sub-programme's own KPI
+// submission is now approved once, finally, by its own Programme Head,
+// with no further CPU sign-off (see routes/kpis.js's isApprover and
+// POST :id/approve). The status value and its column stay in the schema
+// above for backward compatibility with old audit history, but no new row
+// is ever written into it again. This finalizes any row that happens to
+// still be sitting at that now-retired status from before the change,
+// computing its official cumulative value the exact same way
+// POST :id/approve always has (previous period's total + this period's
+// own entered figure), so a legacy row doesn't sit forever half-approved
+// and invisible to its Programme's own performance rollup. Idempotent —
+// the WHERE clause only ever matches a row still at 'programme_approved',
+// so this is a genuine no-op on every run once it's cleared them all (and
+// a live check of this app's own seeded database found zero such rows —
+// this is a defensive correctness measure, not a fix for an active
+// problem).
+{
+  const legacyRows = db.prepare("SELECT * FROM kpi_values WHERE status = 'programme_approved'").all();
+  if (legacyRows.length > 0) {
+    console.log(`Finalizing ${legacyRows.length} legacy kpi_values row(s) stuck at the retired 'programme_approved' status...`);
+    for (const row of legacyRows) {
+      const kpi = db.prepare('SELECT * FROM kpis WHERE id = ?').get(row.kpi_id);
+      if (kpi && !kpi.is_automated && row.entered_value != null) {
+        const priorRow = db.prepare(
+          `SELECT value, override_value FROM kpi_values
+           WHERE kpi_id = ? AND value IS NOT NULL AND (year < ? OR (year = ? AND month < ?))
+           ORDER BY year DESC, month DESC LIMIT 1`
+        ).get(row.kpi_id, row.year, row.year, row.month);
+        const base = priorRow ? (priorRow.override_value != null ? priorRow.override_value : priorRow.value) : kpi.baseline;
+        const newValue = base + Number(row.entered_value);
+        db.prepare('UPDATE kpi_values SET value = ?, status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(newValue, row.id);
+      } else {
+        db.prepare('UPDATE kpi_values SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
+      }
+      db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+        null, 'approve', 'kpi', row.kpi_id,
+        `${row.year}-${String(row.month).padStart(2, '0')} automatically finalized to 'approved' — the intermediate 'programme_approved' stage it was left at was retired (Programme Head approval is now final; no CPU sign-off applies).`
+      );
+    }
+  }
+}
+
 // Backfill: grant 'approve_own_tier' to every already-seeded Programme Head
 // account. Permissions live per-user in `user_permissions`, populated only
 // once at seed time from DEFAULT_PERMS_BY_ROLE (see utils/permissions.js) —
@@ -565,6 +643,85 @@ if (!usersColumnsForSecurity.includes('token_version')) {
 if (!usersColumnsForSecurity.includes('must_change_password')) {
   db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
 }
+
+// Migration: soft-delete columns for Programmes/Sub-programmes/Units/
+// Individuals/KPIs/Users. "Remove" on any of these (routes/org.js,
+// routes/kpis.js's DELETE /:id) used to be a genuine, irreversible SQL
+// DELETE — the row, and everything under it, was really gone, with only a
+// count-of-what-was-removed left behind in the audit log. That's real data
+// loss: a Unit removed by mistake took every KPI value ever recorded
+// against it with it, permanently. `deleted_at` (NULL = active, a
+// timestamp = removed) turns every one of those actions into a stamp
+// instead of a deletion — the row, and its full history, stays in the
+// database exactly as it was; every query that lists "the current org" or
+// "the current KPI catalogue" filters `deleted_at IS NULL` so a removed
+// item stops appearing anywhere active, and a real POST .../restore route
+// clears the stamp (see routes/org.js and routes/kpis.js) rather than
+// requiring a database restore. `users.deleted_at` is the same idea
+// applied to a login account tied to a removed Programme/Sub/Unit/
+// Individual: the account is deactivated (can no longer sign in — see
+// routes/auth.js's POST /login) rather than deleted, so its own history
+// (audit_log entries, messages sent/received, past KPI submissions) never
+// loses its real author.
+// kpi_templates and kpi_assignments joined this list after the rest —
+// removing a template used to be a real DELETE (the definition just gone,
+// no restore), and unassigning someone from a shared KPI used to be a real
+// DELETE FROM kpi_assignments too (losing not just the membership but who
+// assigned them and when — assigned_by/assigned_at). Same treatment as
+// every other table here now: a stamp, not a deletion, with a matching
+// restore route (see kpiTemplates.js's DELETE/:id/restore and kpis.js's
+// DELETE/POST .../assign, which restores rather than re-inserting when a
+// soft-removed assignment already exists for that kpi_id + individual_id —
+// re-inserting would collide with the UNIQUE(kpi_id, individual_id)
+// constraint the deleted_at-stamped row still occupies).
+const softDeleteTables = ['programmes', 'subs', 'units', 'individuals', 'kpis', 'users', 'kpi_templates', 'kpi_assignments'];
+softDeleteTables.forEach((table) => {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes('deleted_at')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN deleted_at TEXT`);
+  }
+});
+
+// Migration: optional, self-contained TOTP-based MFA per account (see
+// utils/totp.js) — a real second factor an account can opt into, verified
+// on login the same way any authenticator-app-based site does, with no
+// external SMS/email service behind it (this app has neither — see
+// auth.js's own honest "forgot password" route). mfa_secret is written at
+// POST /auth/mfa/setup time but stays inert (mfa_enabled = 0) until the
+// person proves they actually scanned it by submitting one real generated
+// code back to POST /auth/mfa/enable — the same "prove receipt before it's
+// live" shape as the recovery-code table below. Disabling (self-service
+// with the current password, or an ictadmin-assisted reset for a lost
+// device — see routes/auth.js and routes/users.js) clears both mfa_secret
+// and mfa_enabled together, never leaves a stale secret behind.
+const usersColumnsForMfa = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+if (!usersColumnsForMfa.includes('mfa_secret')) {
+  db.exec('ALTER TABLE users ADD COLUMN mfa_secret TEXT');
+}
+if (!usersColumnsForMfa.includes('mfa_enabled')) {
+  db.exec('ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0');
+}
+
+// A one-time recovery code exists so losing an authenticator device (phone
+// lost/replaced/wiped) doesn't necessarily need ICT admin's help to
+// recover — the same reasoning a bank or any real MFA implementation
+// applies. Ten single-use codes are generated at enable time (see
+// routes/auth.js's POST /mfa/enable) and shown to the person exactly once;
+// only their bcrypt hash is ever persisted (mirrors password_hash — a
+// leaked database row still can't be used to sign in), and used_at marks a
+// code spent without ever deleting the row, so "which codes has this
+// account already burned" stays a real, auditable fact rather than
+// disappearing the moment a code is used.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    used_at TEXT
+  )
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_mfa_recovery_codes_user ON mfa_recovery_codes(user_id)');
 
 // Indexes: every PRIMARY KEY and UNIQUE constraint above is already
 // auto-indexed by SQLite, but three real queries filter on columns that

@@ -5,13 +5,14 @@
 // still what writes a real value into kpi_values/kpi_contributions/etc.
 // (deliberately — a KPI's draft/submit/approve lifecycle depends on the
 // user choosing when something is ready). What this adds is a second,
-// local-only safety net underneath that: every keystroke is also mirrored,
-// synchronously, into localStorage, so it's already durable on disk before
-// any network request would even fire. If the tab reopens later and finds
-// a draft newer than (and different from) what the server has, the field
-// starts from that draft instead of silently discarding it — exactly the
-// "power cut during typing" case. Saving for real (the explicit
-// Save/Submit action) clears the draft, since the server now agrees.
+// local-only safety net underneath that: every field is also mirrored into
+// localStorage — via the debounced writer below, once typing actually
+// pauses, not on every keystroke — so it's durable on disk well before any
+// network request would fire. If the tab reopens later and finds a draft
+// newer than (and different from) what the server has, the field starts
+// from that draft instead of silently discarding it. Saving for real (the
+// explicit Save/Submit action) clears the draft, since the server now
+// agrees.
 const PREFIX = 'zou_draft_v1_';
 
 function storageKey(key) { return PREFIX + key; }
@@ -30,15 +31,44 @@ export function readDraft(key) {
   }
 }
 
-// Mirrors the current in-progress value — called on every keystroke. Cheap
-// (a single small localStorage write) and synchronous, so the draft is
-// already on disk the instant it's typed, not after some debounce window
-// that a power cut could still land inside.
+// Mirrors the current in-progress value into localStorage — the actual
+// write. Cheap (a single small localStorage write), but callers should
+// almost always reach it through debounce() below rather than call this
+// directly on every keystroke: the input's own on-screen value already
+// updates instantly via React state regardless, so nothing about typing
+// itself waits on this — only the local recovery copy underneath it does.
 export function writeDraft(key, value) {
   try {
     if (value === '' || value == null) { localStorage.removeItem(storageKey(key)); return; }
     localStorage.setItem(storageKey(key), JSON.stringify({ value, savedAt: Date.now() }));
   } catch (_) { /* storage unavailable — nothing else in this app depends on it */ }
+}
+
+// Delays calling `fn` until `delay` ms have passed with no further calls —
+// a fresh call restarts the timer, so it only actually fires once typing
+// pauses (effectively "on key release", not mid-keystroke). Used to turn
+// the draft mirror above from "every keystroke" into that — still local
+// and still cheap, just not dozens of localStorage writes while someone is
+// mid-word. The one honest tradeoff: a keystroke typed in the last `delay`
+// ms before a genuine crash (a power cut, a killed tab) — rather than
+// every prior one — could be what's missing from the restored draft; 500ms
+// keeps that window small while still meaningfully cutting write volume.
+export function debounce(fn, delay = 500) {
+  let timer = null;
+  const debounced = (...args) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { timer = null; fn(...args); }, delay);
+  };
+  // Fires `fn` immediately with the given args and cancels any pending
+  // timer — not currently called anywhere (every Save/Submit action reads
+  // straight from React state, never from the draft, so nothing needs to
+  // force a pending draft write early) but kept available for a future
+  // caller that does need one.
+  debounced.flush = (...args) => {
+    if (timer) { clearTimeout(timer); timer = null; }
+    fn(...args);
+  };
+  return debounced;
 }
 
 // Called once a real save has actually gone through — the server now has

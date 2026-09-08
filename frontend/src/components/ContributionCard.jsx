@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
 import { ownerName, valueStatus, computeRag } from '../lib/scope.js';
-import { readDraft, writeDraft, clearDraft, draftDiffersFrom } from '../lib/autosave.js';
+import { readDraft, writeDraft, clearDraft, draftDiffersFrom, debounce } from '../lib/autosave.js';
 import Fig from './Fig.jsx';
 import MonthlyPaceBar from './MonthlyPaceBar.jsx';
 
@@ -46,8 +46,13 @@ export default function ContributionCard({ kpi, contributionRow }) {
   const [explanation, setExplanation] = useState(restoredNote ? savedNoteDraft : (contributionRow?.explanation || ''));
   const [busy, setBusy] = useState(false);
 
-  function onEntryValueChange(v) { setEntryValue(v); writeDraft(valueDraftKey, v); }
-  function onExplanationChange(v) { setExplanation(v); writeDraft(noteDraftKey, v); }
+  // Debounced (see lib/autosave.js and KpiCard's identical comment) — the
+  // input updates instantly via React state regardless; only the local
+  // recovery mirror waits for typing to actually pause.
+  const writeValueDraft = useMemo(() => debounce(writeDraft), []);
+  const writeNoteDraft = useMemo(() => debounce(writeDraft), []);
+  function onEntryValueChange(v) { setEntryValue(v); writeValueDraft(valueDraftKey, v); }
+  function onExplanationChange(v) { setExplanation(v); writeNoteDraft(noteDraftKey, v); }
 
   async function run(fn, okMsg, onOk) {
     setBusy(true);
@@ -118,7 +123,8 @@ export default function ContributionCard({ kpi, contributionRow }) {
           <label className="field-label">Your value ({kpi.measure})</label>
           <input type="number" step="any" disabled={locked} value={entryValue}
             onChange={(e) => onEntryValueChange(e.target.value)}
-            className="field-input w-36" />
+            placeholder={kpi.measure ? `e.g. 12 (${kpi.measure})` : undefined}
+            className="field-input w-36 py-1.5" />
         </div>
         <button className="btn btn-sm" disabled={locked || busy}
           onClick={() => run(() => api(`/kpis/${kpi.id}/contribution`, { method: 'PUT', body: { year: period.year, month: period.month, value: entryValue === '' ? null : Number(entryValue) } }), 'Value saved.', () => clearDraft(valueDraftKey))}>

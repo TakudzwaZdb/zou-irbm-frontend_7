@@ -239,13 +239,37 @@ export function AppProvider({ children }) {
     }
   }, [loadCore]);
 
+  // An account with MFA enabled (see routes/auth.js) gets a short-lived
+  // mfaToken back here instead of a real session — returned to the caller
+  // (Login.jsx) so it can show the code-entry step, rather than this
+  // function trying to own that UI state itself. Everything else about
+  // signing in (error handling, applying the eventual real token) stays
+  // exactly as it was for an account that never opted into MFA.
   const login = useCallback(async (email, password) => {
     setLoginError(null);
     try {
       const r = await api('/auth/login', { method: 'POST', body: { email, password } });
+      if (r.mfaRequired) return { mfaRequired: true, mfaToken: r.mfaToken };
       await applyAuthResult(r);
+      return { mfaRequired: false };
     } catch (err) {
       setLoginError(err.message || 'Login failed.');
+      return { mfaRequired: false, error: true };
+    }
+  }, [applyAuthResult]);
+
+  // Step 2 of an MFA sign-in: the mfaToken login() just handed back, plus
+  // the 6-digit code (or a recovery code) the person entered. Same
+  // apply-then-load-core transition every other successful auth action uses.
+  const verifyMfa = useCallback(async (mfaToken, code) => {
+    setLoginError(null);
+    try {
+      const r = await api('/auth/mfa/verify', { method: 'POST', body: { mfaToken, code } });
+      await applyAuthResult(r);
+      return true;
+    } catch (err) {
+      setLoginError(err.message || 'Verification failed.');
+      return false;
     }
   }, [applyAuthResult]);
 
@@ -299,7 +323,7 @@ export function AppProvider({ children }) {
   }, [logout]);
 
   const value = {
-    booting, user, loginError, login, logout, logoutEverywhere, completePasswordChange, hasPerm, refreshUser,
+    booting, user, loginError, login, verifyMfa, logout, logoutEverywhere, completePasswordChange, hasPerm, refreshUser,
     org, kpis, settings, values, period, changePeriod,
     assignments, reloadAssignments,
     templates, reloadTemplates,

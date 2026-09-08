@@ -1,33 +1,19 @@
 import { useApp } from '../context/AppContext.jsx';
 import { isApprover, valueStatus } from '../lib/scope.js';
-import KpiCard from '../components/KpiCard.jsx';
+import ApprovalsTable, { TeamApprovalsTable, FeedbackTable } from '../components/ApprovalsTable.jsx';
 import PeriodPicker from '../components/PeriodPicker.jsx';
 
 export default function Approvals() {
   const { user, org, kpis, values, contributions, assignments, period } = useApp();
-  // A Sub-programme's own KPI now has TWO different approvers depending on
-  // stage (Programme Head at 'submitted', CPU at 'programme_approved') — so
-  // "is this KPI mine at all" has to check both stages, not just the one
-  // this role happens to act on right now. Individual/Unit-owned KPIs have
-  // only ever had one approver, so both calls agree and this is a no-op for
-  // them.
-  const mine = kpis.filter((k) => isApprover(org, user, k, 'submitted') || isApprover(org, user, k, 'programme_approved'));
+  // Single stage, every tier alike: one real approver per KPI (Individual
+  // by its Unit Head, Unit by its Sub-programme Rep, Sub by its own
+  // Programme Head, final — no further CPU stage in this cascade).
+  const mine = kpis.filter((k) => isApprover(org, user, k));
   const statusOf = (k) => valueStatus(values[`${k.id}-${period.year}-${period.month}`]);
 
-  // Pending: only the KPIs THIS role is the approver of for the value row's
-  // ACTUAL current stage — a Programme Head sees sub-owned submissions at
-  // 'submitted', never at 'programme_approved' (that one's already moved on
-  // to CPU); CPU sees the reverse.
-  const pending = mine.filter((k) => {
-    const st = statusOf(k);
-    return (st === 'submitted' || st === 'programme_approved') && isApprover(org, user, k, st);
-  });
-  // A Programme Head's own past decision also includes having forwarded a
-  // submission on to CPU — that's not "not yet submitted" or "still
-  // pending my review", it's genuinely decided from their seat, even though
-  // the KPI as a whole isn't fully approved yet.
-  const decidedStatuses = user.role === 'programme' ? ['approved', 'returned', 'programme_approved'] : ['approved', 'returned'];
-  const decided = mine.filter((k) => decidedStatuses.includes(statusOf(k)));
+  // Pending: the KPIs THIS role is the approver of, sitting at 'submitted'.
+  const pending = mine.filter((k) => statusOf(k) === 'submitted');
+  const decided = mine.filter((k) => ['approved', 'returned'].includes(statusOf(k)));
   const notStarted = mine.filter((k) => ['none', 'draft'].includes(statusOf(k)));
 
   // A Unit Head's OWN review queue, one tier below the `mine` section above:
@@ -63,30 +49,32 @@ export default function Approvals() {
         <div className="card text-center text-ink-muted py-10">Nothing awaiting your review for this period.</div>
       )}
 
-      {pending.map((k) => <KpiCard key={k.id} kpi={k} mode="approver" />)}
+      {pending.length > 0 && <ApprovalsTable kpis={pending} interactive />}
 
       {pendingContributionKpis.length > 0 && (
-        <>
-          <h2 className="font-display font-bold text-[13.5px] text-ink-secondary mt-2 mb-2">
+        <div className="mt-5">
+          <h2 className="font-display font-bold text-[13.5px] text-ink-secondary mb-2">
             Contributions from your team, awaiting your review
           </h2>
-          {pendingContributionKpis.map((k) => <KpiCard key={`c${k.id}`} kpi={k} mode="owner" context="approvals" />)}
-        </>
+          <TeamApprovalsTable kpis={pendingContributionKpis} />
+        </div>
       )}
 
       {decided.length > 0 && (
-        <>
-          <h2 className="font-display font-bold text-[13.5px] text-ink-secondary mt-6 mb-2">Decided this period</h2>
-          {decided.map((k) => <KpiCard key={k.id} kpi={k} mode="readOnly" />)}
-        </>
+        <div className="mt-6">
+          <h2 className="font-display font-bold text-[13.5px] text-ink-secondary mb-2">Decided this period</h2>
+          <ApprovalsTable kpis={decided} interactive={false} />
+        </div>
       )}
 
       {notStarted.length > 0 && (
-        <>
-          <h2 className="font-display font-bold text-[13.5px] text-ink-secondary mt-6 mb-2">Not yet submitted by the tier below you</h2>
-          {notStarted.map((k) => <KpiCard key={k.id} kpi={k} mode="readOnly" />)}
-        </>
+        <div className="mt-6">
+          <h2 className="font-display font-bold text-[13.5px] text-ink-secondary mb-2">Not yet submitted by the tier below you</h2>
+          <ApprovalsTable kpis={notStarted} interactive={false} />
+        </div>
       )}
+
+      <FeedbackTable kpis={mine} />
     </div>
   );
 }

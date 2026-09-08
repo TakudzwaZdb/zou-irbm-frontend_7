@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
@@ -6,17 +6,12 @@ import {
   byId, computeRag, computeVariance, ownerName, valueStatus,
   canEnterData, canContribute,
 } from '../lib/scope.js';
-import { readDraft, writeDraft, clearDraft, draftDiffersFrom } from '../lib/autosave.js';
+import { readDraft, writeDraft, clearDraft, draftDiffersFrom, debounce } from '../lib/autosave.js';
 import Fig from './Fig.jsx';
 import MonthlyPaceBar from './MonthlyPaceBar.jsx';
 
 const STATUS_LABEL = {
-  none: 'Not started', draft: 'Draft', returned: 'Returned', submitted: 'Submitted',
-  // Only ever reached by a Sub-programme's own KPI (owner_type = 'sub'): the
-  // Programme Head has approved it and forwarded it on — it's now with CPU
-  // for final sign-off, not yet the KPI's official "Approved" figure.
-  programme_approved: 'Approved by Programme — with CPU',
-  approved: 'Approved',
+  none: 'Not started', draft: 'Draft', returned: 'Returned', submitted: 'Submitted', approved: 'Approved',
 };
 
 // `context` keeps the two review surfaces that share this same card from
@@ -111,8 +106,17 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
   const [overrideNote, setOverrideNote] = useState('');
   const [busy, setBusy] = useState(false);
 
-  function onEntryValueChange(v) { setEntryValue(v); writeDraft(valueDraftKey, v); }
-  function onExplanationChange(v) { setExplanation(v); writeDraft(noteDraftKey, v); }
+  // Debounced (see lib/autosave.js) rather than writing to localStorage on
+  // every keystroke — the input above updates instantly either way via
+  // entryValue/explanation's own React state; only the local recovery
+  // mirror waits for typing to actually pause. useMemo (not useRef) so it's
+  // still one stable debounced function per field for this card's whole
+  // lifetime, not recreated — and its pending timer reset — on every
+  // render.
+  const writeValueDraft = useMemo(() => debounce(writeDraft), []);
+  const writeNoteDraft = useMemo(() => debounce(writeDraft), []);
+  function onEntryValueChange(v) { setEntryValue(v); writeValueDraft(valueDraftKey, v); }
+  function onExplanationChange(v) { setExplanation(v); writeNoteDraft(noteDraftKey, v); }
 
   async function run(fn, okMsg, onOk) {
     setBusy(true);
@@ -121,12 +125,10 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
     finally { setBusy(false); }
   }
 
-  // Locked for editing throughout BOTH pending stages of a Sub-programme's
-  // own KPI — 'submitted' (with the Programme Head) and 'programme_approved'
-  // (forwarded on to CPU) — not just the first one, since the submitter
-  // can't touch it again until either final approval or a return resets it
-  // back to 'draft'.
-  const locked = valueRow && (valueRow.status === 'submitted' || valueRow.status === 'programme_approved');
+  // Locked for editing while pending review — the submitter can't touch it
+  // again until either its one real approval or a return resets it back to
+  // 'draft'.
+  const locked = valueRow && valueRow.status === 'submitted';
   // A shared/automated KPI's own row is gated on `value` (recomputeUnitTotal
   // already fills it from approved contributions); every directly-entered
   // KPI is gated on `entered_value` — the number PUT /:id/value actually
@@ -189,7 +191,7 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
               to see what was actually typed in before deciding whether to
               approve it. Shown for anyone reviewing or looking back at a
               period that's actually had something entered. */}
-          {valueRow?.entered_value != null && ['submitted', 'programme_approved', 'approved'].includes(status) && (
+          {valueRow?.entered_value != null && ['submitted', 'approved'].includes(status) && (
             <Fig k="Submitted this period" v={`${valueRow.entered_value} ${kpi.measure}`} />
           )}
           <Fig
@@ -360,8 +362,17 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
               </button>
               {valueRow?.override_value != null && (
                 <button className="btn btn-sm btn-ghost" disabled={busy}
-                  onClick={() => run(() => api(`/kpis/${kpi.id}/override`, { method: 'DELETE', body: { year: period.year, month: period.month } }), 'Override cleared.')}>
+                  onClick={() => {
+                    if (!window.confirm(`Clear this override (${valueRow.override_value}, "${valueRow.override_note}")? Nothing is deleted — it stays recoverable with a "Restore override" button here until a new one is applied over it.`)) return;
+                    run(() => api(`/kpis/${kpi.id}/override`, { method: 'DELETE', body: { year: period.year, month: period.month } }), 'Override cleared.');
+                  }}>
                   Clear override
+                </button>
+              )}
+              {valueRow?.override_value == null && valueRow?.override_cleared_at != null && (
+                <button className="btn btn-sm btn-ghost" disabled={busy}
+                  onClick={() => run(() => api(`/kpis/${kpi.id}/override/restore`, { method: 'POST', body: { year: period.year, month: period.month } }), 'Override restored.')}>
+                  Restore override ({valueRow.override_cleared_value})
                 </button>
               )}
             </div>
@@ -377,8 +388,10 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
 // kpi_assignments / POST|DELETE /kpis/:id/assign on the backend), not a
 // display-only label. The KPI stays owned by the unit either way: approval
 // still goes to the Sub-programme Rep exactly as if the Unit Head had
-// entered it themselves.
-function AssignmentManager({ kpi, assignees }) {
+// entered it themselves. Exported — DataEntryTable's "Manage team" row
+// reuses this exact component rather than duplicating the assign/unassign
+// logic a second time.
+export function AssignmentManager({ kpi, assignees }) {
   const { org, reloadAssignments } = useApp();
   const toast = useToast();
   const [pickId, setPickId] = useState('');
@@ -398,6 +411,8 @@ function AssignmentManager({ kpi, assignees }) {
     finally { setBusy(false); }
   }
   async function unassign(individualId) {
+    const person = unitIndividuals.find((i) => i.id === individualId);
+    if (!window.confirm(`Unassign ${person ? person.name : 'this person'} from "${kpi.name}"? Nothing is deleted — re-assigning them restores this exact assignment.`)) return;
     setBusy(true);
     try {
       await api(`/kpis/${kpi.id}/assign/${individualId}`, { method: 'DELETE' });
@@ -415,14 +430,14 @@ function AssignmentManager({ kpi, assignees }) {
           {assignees.map((i) => (
             <span key={i.id} className="chip bg-accent-50 text-accent-600 flex items-center gap-1.5">
               {i.name}
-              <button className="text-accent-600/60 hover:text-critical font-bold leading-none" disabled={busy} onClick={() => unassign(i.id)}>✕</button>
+              <button className="text-accent-600/60 hover:text-critical font-bold leading-none" disabled={busy} onClick={() => unassign(i.id)} aria-label={`Unassign ${i.name}`}>✕</button>
             </span>
           ))}
         </div>
       )}
       {available.length > 0 ? (
         <div className="flex gap-2 flex-wrap items-center">
-          <select className="field-input py-1.5 w-auto" value={pickId} onChange={(e) => setPickId(e.target.value)}>
+          <select className="field-input py-1.5 w-auto" aria-label="Assign an individual" value={pickId} onChange={(e) => setPickId(e.target.value)}>
             <option value="">Select a person…</option>
             {available.map((i) => <option key={i.id} value={i.id}>{i.name} — {i.role_title}</option>)}
           </select>
@@ -468,8 +483,10 @@ function ContributorsSummary({ kpi, assignees, contributions }) {
 // is what triggers the automated resum on the backend (recomputeUnitTotal)
 // — nothing here computes a total itself, it only ever shows what the
 // server already has. Approvals Queue only — see ContributorsSummary above
-// for My Data Entry's read-only equivalent.
-function ContributorsBreakdown({ kpi, assignees, contributions }) {
+// for My Data Entry's read-only equivalent. Exported — ApprovalsTable's
+// expandable "Team" row reuses this exact component rather than
+// duplicating the per-contributor approve/return logic a second time.
+export function ContributorsBreakdown({ kpi, assignees, contributions }) {
   return (
     <div className="mt-3 pt-3 border-t border-line">
       <label className="field-label block mb-1.5">Contributions from your team</label>

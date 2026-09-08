@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requirePerm } = require('../middleware/auth');
+const { canReadKpi } = require('../utils/scope');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -32,7 +33,7 @@ function kpiSubId(kpi) {
 // to the Sub-programme Rep exactly as if the Unit Head had entered it.
 function isAssignedIndividual(user, kpi) {
   if (kpi.owner_type !== 'unit' || user.role !== 'individual') return false;
-  return !!db.prepare('SELECT 1 FROM kpi_assignments WHERE kpi_id = ? AND individual_id = ?').get(kpi.id, user.scope_id);
+  return !!db.prepare('SELECT 1 FROM kpi_assignments WHERE kpi_id = ? AND individual_id = ? AND deleted_at IS NULL').get(kpi.id, user.scope_id);
 }
 
 // Does this user directly own (enter data for) this KPI's own official
@@ -52,29 +53,26 @@ function isUnitHeadOwner(user, kpi) {
   return user.role === 'unithead' && kpi.owner_type === 'unit' && user.scope_id === kpi.owner_id;
 }
 
-// Is this user the tier ABOVE this KPI's owner (i.e. can approve/return it)
-// AT ITS CURRENT STAGE? `status` matters only for a sub-owned KPI, which
-// now passes through two real approval stages rather than one: the Sub
-// Rep's own Programme Head reviews it first (while it's 'submitted'), and
-// only once THEY approve — moving it to 'programme_approved' — does it
-// reach CPU for the real, final sign-off (see POST /:id/approve below,
-// which is also where the automated cumulative value actually gets
-// computed, deliberately only at that last step). Individual- and
-// Unit-owned KPIs are unaffected — still one approver, one stage, exactly
-// as before — since the caller always passes the row's current status.
-function isApprover(user, kpi, status) {
+// Is this user the tier ABOVE this KPI's owner (i.e. can approve/return it)?
+// Every tier is single-stage, one real approver, straight to 'approved':
+// Individual-owned by their Unit Head, Unit-owned by their Sub-programme
+// Rep, and Sub-owned by that Sub-programme's own Programme Head — the same
+// shape all the way up. A sub-owned KPI used to pass through a second CPU
+// sign-off stage after the Programme Head ('programme_approved', an
+// intermediate status); that's been removed by deliberate request — the
+// Programme Head's own approval is now final, and CPU has no approval role
+// in this cascade at all. See db.js's one-time migration for any row still
+// sitting at the retired 'programme_approved' status from before this
+// change, and POST /:id/approve below for where the cumulative value is
+// actually computed (now at the Programme Head's approval, for a sub-owned
+// KPI, exactly like every other tier's one true approval).
+function isApprover(user, kpi) {
   if (kpi.owner_type === 'individual') {
     return user.role === 'unithead' && user.scope_id === individualUnitId(kpi.owner_id);
   }
   if (kpi.owner_type === 'unit') {
     return user.role === 'rep' && user.scope_id === unitSubId(kpi.owner_id);
   }
-  // sub-owned KPIs: Programme Head first (at 'submitted'), CPU last (at
-  // 'programme_approved') — CPU is also the fallback approver when status
-  // is unknown/omitted, so any caller that doesn't pass a status (there are
-  // none left, but this keeps the function safe to call defensively) still
-  // gets a sensible, non-crashing answer.
-  if (status === 'programme_approved') return user.role === 'cpu';
   const programmeId = db.prepare('SELECT programme_id FROM subs WHERE id = ?').get(kpi.owner_id)?.programme_id;
   return user.role === 'programme' && programmeId != null && user.scope_id === programmeId;
 }
@@ -95,7 +93,11 @@ function inJurisdiction(user, kpi) {
 }
 
 function getKpiOr404(req, res) {
-  const kpi = db.prepare('SELECT * FROM kpis WHERE id = ?').get(req.params.id);
+  // Excludes soft-removed KPIs (deleted_at set — see DELETE /:id below) from
+  // every action route that resolves a KPI by id: a removed KPI's history
+  // stays in the database, but it can't be edited, valued, approved, or
+  // otherwise acted on again until it's restored.
+  const kpi = db.prepare('SELECT * FROM kpis WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!kpi) { res.status(404).json({ error: 'KPI not found.' }); return null; }
   return kpi;
 }
@@ -136,7 +138,7 @@ function previousOfficialValue(kpiId, year, month, baseline) {
 // show — nothing to preview.
 function attachPreview(row) {
   if (!row || row.value != null || row.entered_value == null) return row;
-  if (!['submitted', 'programme_approved'].includes(row.status)) return row;
+  if (row.status !== 'submitted') return row;
   const kpi = db.prepare('SELECT baseline, is_automated FROM kpis WHERE id = ?').get(row.kpi_id);
   if (!kpi || kpi.is_automated) return row;
   const base = previousOfficialValue(row.kpi_id, row.year, row.month, kpi.baseline);
@@ -156,8 +158,8 @@ function attachPreview(row) {
 // approves the Unit's own value on anyone's behalf — the Unit Head still
 // has to explicitly review and click Submit, same as any other Unit KPI,
 // which is what sends it on to the Sub-programme Rep.
-function recomputeUnitTotal(kpiId, year, month) {
-  const hasAssignees = db.prepare('SELECT 1 FROM kpi_assignments WHERE kpi_id = ?').get(kpiId);
+function recomputeUnitTotal(kpiId, year, month, userId) {
+  const hasAssignees = db.prepare('SELECT 1 FROM kpi_assignments WHERE kpi_id = ? AND deleted_at IS NULL').get(kpiId);
   if (!hasAssignees) return;
   const kpi = db.prepare('SELECT * FROM kpis WHERE id = ?').get(kpiId);
   const rows = db.prepare(
@@ -187,29 +189,244 @@ function recomputeUnitTotal(kpiId, year, month) {
   } else {
     db.prepare('INSERT INTO kpi_values (kpi_id, year, month, value, status) VALUES (?, ?, ?, ?, \'draft\')').run(kpiId, year, month, sum);
   }
+  // This month's total just changed (or was set for the first time) — walk
+  // every later period forward and correct any that were chained off the
+  // old figure. See cascadeRecomputeForward below for why this matters even
+  // for a period that isn't formally "approved" yet: an automated KPI's
+  // value is a real, live-displayed number the moment any contribution is
+  // approved, and previousOfficialValue treats it as a real link in the
+  // chain regardless of status.
+  cascadeRecomputeForward(kpiId, year, month, userId);
+}
+
+// The forward half of the cumulative engine, and the fix for a real,
+// confirmed gap: recomputeUnitTotal and POST :id/approve both correctly set
+// THIS period's own official value from whatever the chain looked like at
+// the moment they ran — but until this function existed, nothing ever
+// revisited a LATER period that had already built its own value on top of
+// this one. Amend and re-approve an old month, and every later approved
+// month silently kept its stale total forever, along with every RAG/
+// variance/rollup figure built on it — reproduced live during this app's
+// correctness audit (Jan 100→300 left Feb frozen at the old 150 instead of
+// the correct 350).
+//
+// This walks forward chronologically from the period that just changed and
+// rebuilds each later period from the exact same rule that produced it in
+// the first place: previousOfficialValue (itself now correct, since we're
+// walking in order — its own DB query always sees whatever this loop just
+// wrote) plus that period's own already-recorded contribution — entered_value
+// for a directly-entered KPI, or a fresh sum of that period's own approved
+// contributions for an automated one (never read back from a total that
+// might itself have been stale). A period whose recomputed total doesn't
+// actually change is left untouched — no audit noise, no unnecessary write.
+// An already-approved directly-entered period's status is deliberately
+// never reverted here (unlike a fresh amendment via PUT :id/value): the
+// figure is corrected in place and logged as a system correction, not
+// silently un-approved out from under whoever signed off on it. A period
+// still mid-amendment (non-automated, value non-null but status no longer
+// 'approved') is skipped — its own upcoming re-approval will call
+// previousOfficialValue itself at that time and pick up the right base
+// automatically, so touching it early here would be redundant.
+function cascadeRecomputeForward(kpiId, year, month, userId) {
+  const kpi = db.prepare('SELECT * FROM kpis WHERE id = ?').get(kpiId);
+  if (!kpi) return;
+  const laterRows = db.prepare(
+    `SELECT * FROM kpi_values WHERE kpi_id = ? AND value IS NOT NULL
+     AND (year > ? OR (year = ? AND month > ?))
+     ORDER BY year ASC, month ASC`
+  ).all(kpiId, year, year, month);
+
+  for (const period of laterRows) {
+    if (!kpi.is_automated && period.status !== 'approved') continue;
+
+    const base = previousOfficialValue(kpiId, period.year, period.month, kpi.baseline);
+    let newValue;
+    if (kpi.is_automated) {
+      const contributions = db.prepare(
+        "SELECT value FROM kpi_contributions WHERE kpi_id = ? AND year = ? AND month = ? AND status = 'approved'"
+      ).all(kpiId, period.year, period.month);
+      // Nothing approved for this period any more — recomputeUnitTotal
+      // would already have nulled its value itself when that happened, so
+      // a non-null row here with no approved contributions shouldn't occur;
+      // skip rather than guess if it somehow does.
+      if (contributions.length === 0) continue;
+      newValue = base + contributions.reduce((s, r) => s + Number(r.value || 0), 0);
+    } else {
+      newValue = base + Number(period.entered_value || 0);
+    }
+    if (newValue === period.value) continue;
+
+    const oldValue = period.value;
+    db.prepare('UPDATE kpi_values SET value = ? WHERE id = ?').run(newValue, period.id);
+    db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+      userId || null, 'cascade_recompute', 'kpi', kpiId,
+      `${period.year}-${String(period.month).padStart(2, '0')} automatically recalculated from ${oldValue} to ${newValue} — an earlier period it was built on top of just changed.`
+    );
+    // period.value written above now feeds the NEXT iteration's
+    // previousOfficialValue lookup (a fresh query, not a cached figure),
+    // so the chain stays correct all the way forward even when several
+    // periods in a row need correcting.
+  }
 }
 
 // ---- routes ---------------------------------------------------------------
 
 router.get('/', (req, res) => {
-  res.json({ kpis: db.prepare('SELECT * FROM kpis ORDER BY id').all() });
+  // Soft-removed KPIs (deleted_at set — see DELETE /:id below) drop out of
+  // every active list — data entry, KPI Management's catalogue, ownership
+  // lookups — without their recorded values ever being destroyed.
+  //
+  // Scope-filtered by canReadKpi (see utils/scope.js): a signed-in account
+  // only ever sees KPIs within its own branch of the org tree (or all of
+  // them, for the global oversight roles) — closing the gap where this used
+  // to hand back every KPI in the university to anyone with a valid login,
+  // regardless of what the UI would actually show them.
+  const kpis = db.prepare('SELECT * FROM kpis WHERE deleted_at IS NULL ORDER BY id').all()
+    .filter((kpi) => canReadKpi(req.user, kpi));
+  res.json({ kpis });
+});
+
+// ---- bulk data entry -------------------------------------------------
+// Powers a single-table "My Data Entry" UI: capture every KPI's figure
+// once and submit once, instead of one PUT + one POST per KPI card. Each
+// row is re-validated against the real database and this caller's real
+// ownership — exactly the same checks PUT /:id/value and POST /:id/submit
+// already make one row at a time (isOwner is re-derived here per KPI, not
+// trusted from whatever the client's selection claims) — fully up front,
+// before anything is written. Either every row in the batch is written, or
+// (on the first invalid one) none are — a single db.transaction, so a
+// partial batch is never left for the caller to reconcile by hand.
+//
+// Registered here, right after the collection-level GET /, and deliberately
+// BEFORE every /:id route below — Express matches routes in registration
+// order, and a plain string route like '/bulk-value' would otherwise be
+// swallowed by an earlier, more general '/:id' pattern (id="bulk-value"),
+// hitting the wrong handler with the wrong permission check entirely. Found
+// live in this session's own testing before it ever reached a user: a call
+// here returned "Missing permission: create_kpi" — PUT /:id's own check —
+// instead of ever running this route's body.
+router.put('/bulk-value', requirePerm('data_entry'), (req, res) => {
+  const { year, month, entries } = req.body || {};
+  if (!year || !month) return res.status(400).json({ error: 'year and month are required.' });
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return res.status(400).json({ error: 'entries must be a non-empty array of { id, value }.' });
+  }
+
+  const prepared = [];
+  for (const entry of entries) {
+    const kpiId = Number(entry?.id);
+    if (!kpiId) return res.status(400).json({ error: 'Each entry needs a numeric KPI id.' });
+    const kpi = db.prepare('SELECT * FROM kpis WHERE id = ?').get(kpiId);
+    if (!kpi) return res.status(404).json({ error: `KPI #${kpiId} not found.` });
+    if (!isOwner(req.user, kpi)) return res.status(403).json({ error: `You can only enter data for KPIs you own (KPI #${kpiId}).` });
+    // An automated (shared/contribution-summed) KPI's own value comes from
+    // approved team contributions, not direct entry — same distinction the
+    // frontend's table only ever offers an editable cell for a non-shared
+    // row for; this is the server-side backstop against a stale or crafted
+    // payload trying to bulk-write one anyway.
+    if (kpi.is_automated) return res.status(400).json({ error: `"${kpi.name}" is automated — its value comes from team contributions, not direct entry.` });
+    const value = entry.value;
+    if (value != null && !Number.isFinite(Number(value))) {
+      return res.status(400).json({ error: `Value for "${kpi.name}" must be a number.` });
+    }
+    prepared.push({ kpi, value: value == null ? null : Number(value) });
+  }
+
+  const applyAll = db.transaction(() => {
+    const results = [];
+    for (const { kpi, value } of prepared) {
+      const existing = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month);
+      const wasApproved = existing && existing.status === 'approved';
+      if (existing) {
+        db.prepare(
+          `UPDATE kpi_values SET entered_value = ?, status = ?, submitted_at = CASE WHEN ? THEN datetime('now') ELSE submitted_at END
+           WHERE id = ?`
+        ).run(value, wasApproved ? 'submitted' : existing.status, wasApproved ? 1 : 0, existing.id);
+      } else {
+        db.prepare('INSERT INTO kpi_values (kpi_id, year, month, entered_value, status) VALUES (?, ?, ?, ?, \'draft\')').run(kpi.id, year, month, value);
+      }
+      db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+        req.user.id, wasApproved ? 'amend_value' : 'enter_value', 'kpi', kpi.id,
+        `${year}-${String(month).padStart(2, '0')} entry set to ${value} (bulk save, ${prepared.length} KPI${prepared.length > 1 ? 's' : ''} in this batch)${wasApproved ? ' — amendment on a previously approved period, returned to submitted.' : '.'}`
+      );
+      results.push(db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month));
+    }
+    return results;
+  });
+
+  res.json({ values: applyAll() });
+});
+
+router.post('/bulk-submit', requirePerm('data_entry'), (req, res) => {
+  const { year, month, ids } = req.body || {};
+  if (!year || !month) return res.status(400).json({ error: 'year and month are required.' });
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids must be a non-empty array of KPI ids.' });
+  }
+
+  const prepared = [];
+  for (const rawId of ids) {
+    const kpiId = Number(rawId);
+    if (!kpiId) return res.status(400).json({ error: 'Each id must be numeric.' });
+    const kpi = db.prepare('SELECT * FROM kpis WHERE id = ?').get(kpiId);
+    if (!kpi) return res.status(404).json({ error: `KPI #${kpiId} not found.` });
+    if (!isOwner(req.user, kpi)) return res.status(403).json({ error: `You can only submit KPIs you own (KPI #${kpiId}).` });
+    const row = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month);
+    if (!row) return res.status(404).json({ error: `No value recorded for "${kpi.name}" for that period yet.` });
+    // Same distinction POST /:id/submit already makes: an automated KPI is
+    // gated on `value` (recomputeUnitTotal fills it from approved team
+    // contributions), every directly-entered KPI on `entered_value`.
+    const missing = kpi.is_automated ? row.value == null : row.entered_value == null;
+    if (missing) return res.status(400).json({ error: `Enter a value before submitting "${kpi.name}".` });
+    prepared.push({ kpi, row });
+  }
+
+  const applyAll = db.transaction(() => {
+    for (const { kpi, row } of prepared) {
+      db.prepare('UPDATE kpi_values SET status = \'submitted\', submitted_at = datetime(\'now\'), return_comment = NULL WHERE id = ?').run(row.id);
+      db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+        req.user.id, 'submit', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} submitted for review (bulk submit, ${prepared.length} KPI${prepared.length > 1 ? 's' : ''} in this batch).`
+      );
+    }
+    return prepared.length;
+  });
+
+  res.json({ ok: true, submitted: applyAll() });
 });
 
 router.get('/:id/values', (req, res) => {
   const kpi = getKpiOr404(req, res); if (!kpi) return;
+  if (!canReadKpi(req.user, kpi)) return res.status(403).json({ error: 'That KPI is outside your scope.' });
   const rows = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? ORDER BY year, month').all(kpi.id);
   res.json({ values: rows.map(attachPreview) });
 });
+
+// Small in-request cache: values-by-period reads join back to `kpis` purely
+// to scope-check each row, and the same handful of KPI rows gets looked up
+// over and over across a batch — cheap at this app's size, but no reason to
+// re-query the same id twice in one response.
+function readableKpiIds(user) {
+  const kpis = db.prepare('SELECT * FROM kpis').all(); // deliberately unfiltered by deleted_at — a value row for an already-removed KPI still needs its scope checked the same way
+  const allowed = new Set();
+  kpis.forEach((kpi) => { if (canReadKpi(user, kpi)) allowed.add(kpi.id); });
+  return allowed;
+}
 
 // Batch read for a single period across all KPIs — used by the "My Data
 // Entry" / "Approvals Queue" / "Reviews" pages to avoid one request per KPI.
 // attachPreview is what lets an approver actually see a submitted figure's
 // projected score before they act on it, rather than a blank "no data" —
 // see attachPreview's own comment above for why that gap existed at all.
+//
+// Scope-filtered the same way as GET / (see canReadKpi in utils/scope.js):
+// this used to hand back every KPI's figure for the period to any signed-in
+// account, including ones for KPIs well outside their own branch.
 router.get('/values', (req, res) => {
   const year = Number(req.query.year), month = Number(req.query.month);
   if (!year || !month) return res.status(400).json({ error: 'year and month query params are required.' });
-  const rows = db.prepare('SELECT * FROM kpi_values WHERE year = ? AND month = ?').all(year, month);
+  const allowed = readableKpiIds(req.user);
+  const rows = db.prepare('SELECT * FROM kpi_values WHERE year = ? AND month = ?').all(year, month)
+    .filter((row) => allowed.has(row.kpi_id));
   res.json({ values: rows.map(attachPreview) });
 });
 
@@ -220,7 +437,9 @@ router.get('/values', (req, res) => {
 router.get('/values-range', (req, res) => {
   const year = Number(req.query.year), fromMonth = Number(req.query.fromMonth), toMonth = Number(req.query.toMonth);
   if (!year || !fromMonth || !toMonth) return res.status(400).json({ error: 'year, fromMonth, and toMonth query params are required.' });
-  const rows = db.prepare('SELECT * FROM kpi_values WHERE year = ? AND month BETWEEN ? AND ? ORDER BY month').all(year, fromMonth, toMonth);
+  const allowed = readableKpiIds(req.user);
+  const rows = db.prepare('SELECT * FROM kpi_values WHERE year = ? AND month BETWEEN ? AND ? ORDER BY month').all(year, fromMonth, toMonth)
+    .filter((row) => allowed.has(row.kpi_id));
   res.json({ values: rows });
 });
 
@@ -228,12 +447,24 @@ router.get('/values-range', (req, res) => {
 // let the frontend narrow it per-unit/per-individual, the same pattern
 // GET /org already uses for the org tree.
 router.get('/assignments', (req, res) => {
-  res.json({ assignments: db.prepare('SELECT * FROM kpi_assignments ORDER BY id').all() });
+  // Soft-removed assignments (deleted_at set — see DELETE /:id/assign/:individualId
+  // below) drop out of the active list without who-assigned-whom-and-when
+  // ever being destroyed.
+  const allowed = readableKpiIds(req.user);
+  const assignments = db.prepare('SELECT * FROM kpi_assignments WHERE deleted_at IS NULL ORDER BY id').all()
+    .filter((a) => allowed.has(a.kpi_id));
+  res.json({ assignments });
 });
 
 // Delegate this Unit-owned KPI to an Individual within that same unit.
 // Unit Head only, and only for their own unit's KPI and their own unit's
-// people — see isUnitHeadOwner above.
+// people — see isUnitHeadOwner above. If this exact pairing was assigned
+// before and later unassigned, that row still exists (deleted_at stamped,
+// not deleted — see the DELETE route below) and the UNIQUE(kpi_id,
+// individual_id) constraint means a plain INSERT would collide with it, so
+// this restores that row instead of inserting a duplicate — same
+// restore-over-insert care every other re-creation-after-removal in this
+// app takes.
 router.post('/:id/assign', requirePerm('data_entry'), (req, res) => {
   const kpi = getKpiOr404(req, res); if (!kpi) return;
   if (!isUnitHeadOwner(req.user, kpi)) return res.status(403).json({ error: 'Only the Unit Head who owns this KPI can assign it.' });
@@ -244,21 +475,33 @@ router.post('/:id/assign', requirePerm('data_entry'), (req, res) => {
     return res.status(400).json({ error: 'That person is not in this unit.' });
   }
 
-  db.prepare('INSERT OR IGNORE INTO kpi_assignments (kpi_id, individual_id, assigned_by) VALUES (?, ?, ?)').run(kpi.id, individualId, req.user.id);
+  const existing = db.prepare('SELECT * FROM kpi_assignments WHERE kpi_id = ? AND individual_id = ?').get(kpi.id, individualId);
+  if (existing) {
+    db.prepare(
+      "UPDATE kpi_assignments SET deleted_at = NULL, assigned_by = ?, assigned_at = datetime('now') WHERE id = ?"
+    ).run(req.user.id, existing.id);
+  } else {
+    db.prepare('INSERT INTO kpi_assignments (kpi_id, individual_id, assigned_by) VALUES (?, ?, ?)').run(kpi.id, individualId, req.user.id);
+  }
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'assign_kpi', 'kpi', kpi.id, `Assigned "${kpi.name}" to ${individual.name} (${individual.role_title}).`
   );
   res.status(201).json({ ok: true });
 });
 
+// Nothing is deleted — deleted_at stamped, same as every other removal in
+// this app, so who was assigned, by whom, and when is never lost, and
+// re-assigning the same person (POST above) restores this exact row.
 router.delete('/:id/assign/:individualId', requirePerm('data_entry'), (req, res) => {
   const kpi = getKpiOr404(req, res); if (!kpi) return;
   if (!isUnitHeadOwner(req.user, kpi)) return res.status(403).json({ error: 'Only the Unit Head who owns this KPI can unassign it.' });
   const individual = db.prepare('SELECT * FROM individuals WHERE id = ?').get(req.params.individualId);
 
-  db.prepare('DELETE FROM kpi_assignments WHERE kpi_id = ? AND individual_id = ?').run(kpi.id, req.params.individualId);
+  db.prepare(
+    "UPDATE kpi_assignments SET deleted_at = datetime('now') WHERE kpi_id = ? AND individual_id = ? AND deleted_at IS NULL"
+  ).run(kpi.id, req.params.individualId);
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'unassign_kpi', 'kpi', kpi.id, `Unassigned "${kpi.name}" from ${individual ? individual.name : `individual #${req.params.individualId}`}.`
+    req.user.id, 'unassign_kpi', 'kpi', kpi.id, `Unassigned "${kpi.name}" from ${individual ? individual.name : `individual #${req.params.individualId}`}. Re-assigning them restores this.`
   );
   res.json({ ok: true });
 });
@@ -281,7 +524,10 @@ router.delete('/:id/assign/:individualId', requirePerm('data_entry'), (req, res)
 router.get('/contributions', (req, res) => {
   const year = Number(req.query.year), month = Number(req.query.month);
   if (!year || !month) return res.status(400).json({ error: 'year and month query params are required.' });
-  res.json({ contributions: db.prepare('SELECT * FROM kpi_contributions WHERE year = ? AND month = ?').all(year, month) });
+  const allowed = readableKpiIds(req.user);
+  const contributions = db.prepare('SELECT * FROM kpi_contributions WHERE year = ? AND month = ?').all(year, month)
+    .filter((c) => allowed.has(c.kpi_id));
+  res.json({ contributions });
 });
 
 // An assigned Individual sets/updates their OWN figure toward a shared
@@ -307,7 +553,7 @@ router.put('/:id/contribution', requirePerm('data_entry'), (req, res) => {
     db.prepare('INSERT INTO kpi_contributions (kpi_id, individual_id, year, month, value) VALUES (?, ?, ?, ?, ?)')
       .run(kpi.id, req.user.scope_id, year, month, value);
   }
-  recomputeUnitTotal(kpi.id, year, month);
+  recomputeUnitTotal(kpi.id, year, month, req.user.id);
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, wasApproved ? 'amend_contribution' : 'enter_contribution', 'kpi', kpi.id,
     `${year}-${String(month).padStart(2, '0')} contribution set to ${value}${wasApproved ? ' (amendment on a previously approved contribution — returned to submitted).' : '.'}`
@@ -353,7 +599,7 @@ router.post('/:id/contribution/:individualId/approve', requirePerm('approve_own_
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that period.' });
 
   db.prepare('UPDATE kpi_contributions SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
-  recomputeUnitTotal(kpi.id, year, month);
+  recomputeUnitTotal(kpi.id, year, month, req.user.id);
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'approve_contribution', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} contribution from individual #${req.params.individualId} approved.`
   );
@@ -369,7 +615,7 @@ router.post('/:id/contribution/:individualId/return', requirePerm('approve_own_t
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that period.' });
 
   db.prepare('UPDATE kpi_contributions SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment, row.id);
-  recomputeUnitTotal(kpi.id, year, month);
+  recomputeUnitTotal(kpi.id, year, month, req.user.id);
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'return_contribution', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} contribution from individual #${req.params.individualId} returned: "${comment}"`
   );
@@ -470,23 +716,47 @@ router.put('/:id', requirePerm('create_kpi'), (req, res) => {
   res.json({ kpi: db.prepare('SELECT * FROM kpis WHERE id = ?').get(kpi.id) });
 });
 
-// Deletes a KPI outright — its recorded values, any assignments, and any
-// contributions all cascade with it (kpi_values/kpi_assignments/
-// kpi_contributions all reference kpis(id) ON DELETE CASCADE, see db.js).
-// Past audit_log entries about this KPI are left exactly as the individual-
-// removal route above already treats them: a real historical record of what
-// happened, each entry self-contained (it already names the KPI in its own
-// `detail` text), not tidied away just because the KPI itself is gone now.
+// Removes a KPI — stamped deleted_at, never a real SQL DELETE. Its recorded
+// values, assignments, contributions, and template link all stay exactly as
+// they were (nothing here references kpis(id) ON DELETE CASCADE anymore in
+// practice, since the kpis row itself is never actually gone) — a removed
+// KPI's whole performance history remains genuinely intact and traceable,
+// not just summarized in an audit_log line. Fully reversible: POST
+// /:id/restore below clears the stamp and the KPI reappears everywhere
+// exactly as it was, values and all.
 router.delete('/:id', requirePerm('create_kpi'), (req, res) => {
   const kpi = getKpiOr404(req, res); if (!kpi) return;
   if (!inJurisdiction(req.user, kpi)) return res.status(403).json({ error: 'This KPI is outside your scope.' });
 
-  db.prepare('DELETE FROM kpis WHERE id = ?').run(kpi.id);
+  db.prepare("UPDATE kpis SET deleted_at = datetime('now') WHERE id = ?").run(kpi.id);
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'delete_kpi', 'kpi', kpi.id,
-    `KPI "${kpi.name}" (owner: ${kpi.owner_type} #${kpi.owner_id}) deleted, along with all its recorded values, assignments, and contributions.`
+    req.user.id, 'remove_kpi', 'kpi', kpi.id,
+    `KPI "${kpi.name}" (owner: ${kpi.owner_type} #${kpi.owner_id}) removed. Its recorded values are kept and it's recoverable from Recently Removed.`
   );
   res.json({ ok: true });
+});
+
+// Recently-removed KPIs — the same "Recently Removed" idea routes/org.js's
+// GET /api/org/removed already provides for the org structure, scoped to
+// this create_kpi holder's own jurisdiction so a Unit Head only sees KPIs
+// they could actually restore.
+router.get('/removed', requirePerm('create_kpi'), (req, res) => {
+  const rows = db.prepare("SELECT * FROM kpis WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC").all();
+  res.json({ kpis: rows.filter((k) => inJurisdiction(req.user, k)) });
+});
+
+// Restore a previously-removed KPI — clears deleted_at and it reappears in
+// every active list/lookup exactly as it was, values and all.
+router.post('/:id/restore', requirePerm('create_kpi'), (req, res) => {
+  const kpi = db.prepare('SELECT * FROM kpis WHERE id = ? AND deleted_at IS NOT NULL').get(req.params.id);
+  if (!kpi) return res.status(404).json({ error: 'Removed KPI not found.' });
+  if (!inJurisdiction(req.user, kpi)) return res.status(403).json({ error: 'This KPI is outside your scope.' });
+
+  db.prepare('UPDATE kpis SET deleted_at = NULL WHERE id = ?').run(kpi.id);
+  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+    req.user.id, 'restore_kpi', 'kpi', kpi.id, `KPI "${kpi.name}" restored.`
+  );
+  res.json({ kpi: db.prepare('SELECT * FROM kpis WHERE id = ?').get(kpi.id) });
 });
 
 // What gets typed here is THIS PERIOD'S OWN figure — never a running total
@@ -563,46 +833,35 @@ router.post('/:id/approve', requirePerm('approve_own_tier'), (req, res) => {
   const kpi = getKpiOr404(req, res); if (!kpi) return;
   const { year, month } = req.body || {};
   const row = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month);
-  // A sub-owned KPI has two real pending stages ('submitted', then
-  // 'programme_approved'); every other tier still has exactly one
-  // ('submitted'). isApprover checks the CURRENT stage against this
-  // caller's role/scope, so a Programme Head can only act while it's
-  // 'submitted' and CPU only once it's already 'programme_approved' — one
-  // cannot skip ahead of the other, and a 403 for anyone who tries.
-  const pendingStatuses = kpi.owner_type === 'sub' ? ['submitted', 'programme_approved'] : ['submitted'];
+  // Single stage, every tier alike: 'submitted' is the only pending status
+  // now (see isApprover's own comment above for why the old sub-owned
+  // 'programme_approved' intermediate stage was retired).
+  const pendingStatuses = ['submitted'];
   if (!row || !pendingStatuses.includes(row.status)) return res.status(400).json({ error: 'Nothing pending review for that period.' });
-  if (!isApprover(req.user, kpi, row.status)) return res.status(403).json({ error: 'You are not the approver for this KPI.' });
+  if (!isApprover(req.user, kpi)) return res.status(403).json({ error: 'You are not the approver for this KPI.' });
 
-  // Sub-owned KPI, first stage: the Programme Head's own sign-off — moves
-  // it on to CPU, but is deliberately NOT the moment the cumulative value
-  // gets computed. A Sub-programme's own performance figure only becomes
-  // official once CPU has had the final say, exactly like every other
-  // approval in this app is the one moment "official" changes — never
-  // provisionally, on an intermediate reviewer's approval alone.
-  if (kpi.owner_type === 'sub' && row.status === 'submitted') {
-    db.prepare('UPDATE kpi_values SET status = \'programme_approved\', programme_approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
-    db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-      req.user.id, 'programme_approve', 'kpi', kpi.id,
-      `${year}-${String(month).padStart(2, '0')} approved by Programme Head — forwarded to CPU for final approval.`
-    );
-    return res.json({ ok: true });
-  }
-
-  // Final approval — either the one-and-only stage for an Individual/Unit-
-  // owned KPI, or CPU's sign-off on a sub-owned KPI already approved by its
-  // Programme Head. This is where the automated cumulative-addition
-  // actually happens (see previousOfficialValue above): the newly-approved
-  // figure is added to whatever this KPI's official total already was as
-  // of the most recent earlier period, so "current performance" always
-  // reads as a real running total. An automated (shared) KPI's own row
-  // skips this — recomputeUnitTotal already applied the exact same rule
-  // the moment its contributions were approved.
+  // This is where "current performance" actually becomes official — the
+  // one true approval for every tier alike, including a sub-owned KPI now
+  // approved directly and finally by its Programme Head (no further CPU
+  // stage). This is where the automated cumulative-addition actually
+  // happens (see previousOfficialValue above): the newly-approved figure
+  // is added to whatever this KPI's official total already was as of the
+  // most recent earlier period, so "current performance" always reads as
+  // a real running total. An automated (shared) KPI's own row skips this —
+  // recomputeUnitTotal already applied the exact same rule the moment its
+  // contributions were approved.
   let detail = `${year}-${String(month).padStart(2, '0')} approved.`;
   if (!kpi.is_automated) {
     const base = previousOfficialValue(kpi.id, Number(year), Number(month), kpi.baseline);
     const newValue = base + Number(row.entered_value);
     db.prepare('UPDATE kpi_values SET value = ?, status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(newValue, row.id);
     detail = `${year}-${String(month).padStart(2, '0')} approved: ${row.entered_value} added to the previous total of ${base} → ${newValue}.`;
+    // This is exactly the "amend an old period, re-approve it" moment the
+    // correctness audit flagged — this period's own total may have just
+    // changed (a first-time approval, or a corrected re-approval), so walk
+    // every later already-approved period forward and fix any that were
+    // built on top of the old figure. See cascadeRecomputeForward above.
+    cascadeRecomputeForward(kpi.id, Number(year), Number(month), req.user.id);
   } else {
     db.prepare('UPDATE kpi_values SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
   }
@@ -617,15 +876,15 @@ router.post('/:id/return', requirePerm('approve_own_tier'), (req, res) => {
   const { year, month, comment } = req.body || {};
   if (!comment) return res.status(400).json({ error: 'A reason is required when returning a submission.' });
   const row = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month);
-  const pendingStatuses = kpi.owner_type === 'sub' ? ['submitted', 'programme_approved'] : ['submitted'];
+  const pendingStatuses = ['submitted'];
   if (!row || !pendingStatuses.includes(row.status)) return res.status(400).json({ error: 'Nothing pending review for that period.' });
-  if (!isApprover(req.user, kpi, row.status)) return res.status(403).json({ error: 'You are not the approver for this KPI.' });
+  if (!isApprover(req.user, kpi)) return res.status(403).json({ error: 'You are not the approver for this KPI.' });
 
-  // A return — whether from the Programme Head's first stage or CPU's
-  // final one — always goes all the way back to the Sub Rep as a plain
-  // draft with the reviewer's comment attached, the same "back to whoever
-  // actually owns the data" rule every other return in this app already
-  // follows (never bounced to an intermediate reviewer to pass along).
+  // A return always goes all the way back to whoever actually owns the
+  // data as a plain draft with the reviewer's comment attached — the same
+  // rule every other return in this app already follows (never bounced to
+  // an intermediate reviewer to pass along; there is no intermediate stage
+  // in this cascade any more).
   db.prepare('UPDATE kpi_values SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment, row.id);
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'return', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} returned: "${comment}"`
@@ -641,22 +900,73 @@ router.post('/:id/override', requirePerm('apply_override'), (req, res) => {
   const row = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month);
   if (!row) return res.status(404).json({ error: 'No value recorded for that period yet.' });
 
-  db.prepare('UPDATE kpi_values SET override_value = ?, override_note = ? WHERE id = ?').run(value, note, row.id);
+  // A fresh override supersedes any earlier one that was cleared and left
+  // sitting in the _cleared shadow columns below — that shadow is a "restore
+  // what I just cleared" target, not a permanent log, so it's retired the
+  // moment a genuinely new override is applied over it.
+  db.prepare(
+    'UPDATE kpi_values SET override_value = ?, override_note = ?, override_cleared_value = NULL, override_cleared_note = NULL, override_cleared_at = NULL WHERE id = ?'
+  ).run(value, note, row.id);
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'override', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} overridden to ${value}. Note: "${note}"`
   );
+  // previousOfficialValue prefers override_value over value whenever both
+  // exist, so this new override just changed what every LATER period's base
+  // resolves to — walk them forward the same as any other change to this
+  // period's effective figure.
+  cascadeRecomputeForward(kpi.id, Number(year), Number(month), req.user.id);
   res.json({ ok: true });
 });
 
+// Clearing an override never destroys it: the live value/note move into
+// override_cleared_value/override_cleared_note (stamped override_cleared_at)
+// before being nulled, so POST /:id/override/restore below can put them
+// straight back — the same shadow-and-restore shape every deletion in this
+// app uses, just scoped to one field pair on an existing row instead of a
+// whole entity, since there's no separate row here to stamp deleted_at on.
 router.delete('/:id/override', requirePerm('apply_override'), (req, res) => {
   const kpi = getKpiOr404(req, res); if (!kpi) return;
   const { year, month } = req.body || {};
   const row = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month);
   if (!row) return res.status(404).json({ error: 'No value recorded for that period.' });
-  db.prepare('UPDATE kpi_values SET override_value = NULL, override_note = NULL WHERE id = ?').run(row.id);
+  if (row.override_value == null) return res.status(400).json({ error: 'There is no active override for that period.' });
+  db.prepare(
+    "UPDATE kpi_values SET override_cleared_value = override_value, override_cleared_note = override_note, override_cleared_at = datetime('now'), override_value = NULL, override_note = NULL WHERE id = ?"
+  ).run(row.id);
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'override_clear', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} override removed.`
+    req.user.id, 'override_clear', 'kpi', kpi.id,
+    `${year}-${String(month).padStart(2, '0')} override removed (was ${row.override_value}, "${row.override_note}"). Nothing is deleted — it's recoverable.`
   );
+  // This period's effective figure just fell back from override_value to
+  // its plain computed value — every later period's base needs the same
+  // forward walk as any other change here.
+  cascadeRecomputeForward(kpi.id, Number(year), Number(month), req.user.id);
+  res.json({ ok: true });
+});
+
+// Restore a just-cleared override — copies override_cleared_value/note back
+// onto the live fields and clears the shadow, undoing exactly what the
+// DELETE above just did. Requires a clean slate (no live override already
+// in place) so it never silently clobbers a genuinely new one someone
+// applied since — same invariant a Programme/Individual restore keeps by
+// only ever restoring into a normal, non-conflicting active state.
+router.post('/:id/override/restore', requirePerm('apply_override'), (req, res) => {
+  const kpi = getKpiOr404(req, res); if (!kpi) return;
+  const { year, month } = req.body || {};
+  const row = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month);
+  if (!row) return res.status(404).json({ error: 'No value recorded for that period.' });
+  if (row.override_cleared_at == null) return res.status(404).json({ error: 'No recently-cleared override to restore for that period.' });
+  if (row.override_value != null) return res.status(400).json({ error: 'There is already an active override for that period — clear it first.' });
+  db.prepare(
+    'UPDATE kpi_values SET override_value = override_cleared_value, override_note = override_cleared_note, override_cleared_value = NULL, override_cleared_note = NULL, override_cleared_at = NULL WHERE id = ?'
+  ).run(row.id);
+  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+    req.user.id, 'override_restore', 'kpi', kpi.id,
+    `${year}-${String(month).padStart(2, '0')} override restored to ${row.override_cleared_value}.`
+  );
+  // Same reasoning as applying a fresh override — this period's effective
+  // figure just changed again, so later periods need re-walking forward.
+  cascadeRecomputeForward(kpi.id, Number(year), Number(month), req.user.id);
   res.json({ ok: true });
 });
 

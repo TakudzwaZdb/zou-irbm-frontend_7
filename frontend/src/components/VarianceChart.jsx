@@ -63,7 +63,26 @@ function makeOwnerTick(chartData) {
 // short list still looks exactly like it always did.
 const MIN_SLOT_WIDTH = 112;
 export default function VarianceChart({ data, height = 280 }) {
-  const chartData = data.map((d) => ({ ...d, actual: d.actual ?? 0 }));
+  // `_uid` — a per-row value that is ALWAYS unique, even when two (or more)
+  // KPIs share the exact same name (a real scenario: e.g. an "Individual"
+  // duty-KPI template like "Vacuuming" or "Bin collection" assigned to
+  // several different people). This is the fix for a real, confirmed bug:
+  // Recharts' own hover/tooltip machinery identifies the "active" category
+  // for a category-type XAxis by matching on the axis's `dataKey` VALUE, not
+  // purely by the mouse's pixel position — so when that value (here, the
+  // KPI's plain `name`) repeats across two or more bars, hovering over one
+  // of the duplicated bars can resolve to a *different* bar sharing that
+  // same name, and the tooltip then shows that other bar's owner/actual/
+  // expected figures instead of the one actually under the cursor (this is
+  // exactly what was reported: hovering "Vacuuming — Misheck Makufa" showed
+  // "Vacuuming — Tonderai Mupamaonde"'s numbers). Using a guaranteed-unique
+  // value as the axis's own dataKey removes the ambiguity at the source, so
+  // the active bar Recharts resolves is always the one really being
+  // hovered — regardless of how many KPIs on the chart share a name. The
+  // human-readable name is kept as a separate field and used everywhere a
+  // label is actually displayed (the custom OwnerTick below, and the
+  // Tooltip's labelFormatter), so nothing shown on screen changes.
+  const chartData = data.map((d, idx) => ({ ...d, actual: d.actual ?? 0, _uid: `${d.name ?? ''}__${idx}` }));
   const scrollRef = useRef(null);
 
   // Whether the chart is ACTUALLY wider than the card right now — measured
@@ -197,17 +216,21 @@ export default function VarianceChart({ data, height = 280 }) {
           <ResponsiveContainer width="100%" height={height}>
             <BarChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }} barGap={2} barCategoryGap="28%">
               <CartesianGrid vertical={false} stroke="var(--color-line)" />
-              <XAxis dataKey="name" tick={OwnerTick} axisLine={{ stroke: 'var(--color-line)' }} tickLine={false} interval={0} height={54} />
+              <XAxis dataKey="_uid" tick={OwnerTick} axisLine={{ stroke: 'var(--color-line)' }} tickLine={false} interval={0} height={54} />
               <YAxis allowDecimals={false} domain={[0, 100]} tick={{ fontSize: 11, fill: 'var(--color-ink-muted)' }} axisLine={false} tickLine={false} width={30} unit="%" />
               <ReferenceLine y={100} stroke="var(--color-line-strong)" strokeDasharray="3 3" />
               <Tooltip
                 cursor={{ fill: 'var(--color-sunken)' }}
                 contentStyle={{ borderRadius: 8, border: '1px solid var(--color-line)', fontSize: 12.5, background: 'var(--color-surface)', color: 'var(--color-ink)' }}
                 labelFormatter={(label, item) => {
+                  // The real display name for this exact hovered row — never
+                  // the raw axis `label`, which is now the internal `_uid`
+                  // (see chartData above) rather than the KPI's name.
+                  const name = item?.[0]?.payload?.name ?? label;
                   const owner = item?.[0]?.payload?.owner;
                   const ownerKind = item?.[0]?.payload?.ownerKind;
-                  if (!owner) return label;
-                  return `${label} — ${owner}${ownerKind ? ` (${ownerKind})` : ''}`;
+                  if (!owner) return name;
+                  return `${name} — ${owner}${ownerKind ? ` (${ownerKind})` : ''}`;
                 }}
                 formatter={(v, name, item) => {
                   if (name === 'Actual') {
@@ -220,7 +243,7 @@ export default function VarianceChart({ data, height = 280 }) {
               <Legend wrapperStyle={{ fontSize: 11.5, paddingTop: 8 }} iconType="circle" iconSize={8} />
               <Bar dataKey="expected" name="Expected pace" fill="var(--color-ink-muted)" opacity={0.35} radius={[4, 4, 0, 0]} maxBarSize={26} />
               <Bar dataKey="actual" name="Actual" radius={[4, 4, 0, 0]} maxBarSize={26}>
-                {chartData.map((d, idx) => <Cell key={`${d.name}-${idx}`} fill={FLAG_COLOR[d.flag] || FLAG_COLOR.none} />)}
+                {chartData.map((d) => <Cell key={d._uid} fill={FLAG_COLOR[d.flag] || FLAG_COLOR.none} />)}
               </Bar>
             </BarChart>
           </ResponsiveContainer>

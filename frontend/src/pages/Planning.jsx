@@ -1,6 +1,4 @@
 import { useEffect, useState } from 'react';
-import { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
@@ -32,7 +30,10 @@ function fmtMoney(n) {
 // applies) provisional budget, plus every tier's own planning narrative
 // beneath its table so the document reads as a real plan, not just a
 // budget ledger.
-function downloadPlanPdf(data, cycleYear) {
+// jsPDF + jspdf-autotable, loaded on demand (see Reports.jsx's identical
+// reasoning) — only this one button, on this one page, ever needs them.
+async function downloadPlanPdf(data, cycleYear) {
+  const [{ jsPDF }, { default: autoTable }] = await Promise.all([import('jspdf'), import('jspdf-autotable')]);
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
   const marginX = 40;
   const pageBottom = 780;
@@ -136,19 +137,31 @@ function downloadPlanPdf(data, cycleYear) {
 
 // The annual planning & budget cycle: Units enter their own budget request,
 // Sub-programme Reps approve those and add a sub-level narrative (its budget
-// is always the live sum of its units, never typed in), CPU compiles each
-// Programme and finally the University Annual Plan — see backend/src/routes/plans.js.
+// is always the live sum of its units, never typed in), that Sub-programme's
+// own Programme Head approves it and compiles their Programme's plan (their
+// budget likewise always the live sum of its sub-programmes — CPU has no
+// approval authority at either of these two tiers, only oversight), and CPU
+// finally compiles and submits the single University Annual Plan — see
+// backend/src/routes/plans.js.
 export default function Planning() {
   const { user } = useApp();
   const toast = useToast();
   const now = new Date().getFullYear();
   const [cycleYear, setCycleYear] = useState(now + 1);
   const [data, setData] = useState(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   async function load(year) {
     try { setData(await api(`/plans?year=${year ?? cycleYear}`)); } catch (err) { toast(err.message, 'err'); }
   }
   useEffect(() => { load(cycleYear); }, [cycleYear]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function onDownloadPdf() {
+    setPdfBusy(true);
+    try { await downloadPlanPdf(data, cycleYear); }
+    catch { toast('Could not generate the PDF. Check your connection and try again.', 'err'); }
+    finally { setPdfBusy(false); }
+  }
 
   return (
     <div>
@@ -164,8 +177,8 @@ export default function Planning() {
           <select className="field-input w-auto" value={cycleYear} onChange={(e) => setCycleYear(Number(e.target.value))}>
             {yearRange(now).map((y) => <option key={y} value={y}>{y} cycle</option>)}
           </select>
-          <button className="btn btn-sm btn-primary" disabled={!data} onClick={() => downloadPlanPdf(data, cycleYear)}>
-            Download PDF
+          <button className="btn btn-sm btn-primary" disabled={!data || pdfBusy} onClick={onDownloadPdf}>
+            {pdfBusy ? 'Preparing…' : 'Download PDF'}
           </button>
         </div>
       </div>
@@ -320,7 +333,7 @@ function SubProposalCard({ sub, cycleYear, reload }) {
   }
   async function submit() {
     setBusy(true);
-    try { await api(`/plans/subs/${sub.id}/submit`, { method: 'POST', body: { cycleYear } }); toast('Sub-programme plan submitted to CPU.'); await reload(); }
+    try { await api(`/plans/subs/${sub.id}/submit`, { method: 'POST', body: { cycleYear } }); toast('Sub-programme plan submitted to your Programme Head.'); await reload(); }
     catch (err) { toast(err.message, 'err'); } finally { setBusy(false); }
   }
 
@@ -336,7 +349,7 @@ function SubProposalCard({ sub, cycleYear, reload }) {
       </p>
       {proposal?.return_comment && planStatus(proposal) === 'returned' && (
         <div className="mb-3 rounded-lg bg-warning-soft text-warning text-[12.8px] px-3.5 py-2.5">
-          <b>Feedback from CPU:</b> {proposal.return_comment}
+          <b>Feedback from your Programme Head:</b> {proposal.return_comment}
         </div>
       )}
       <div className="space-y-1 mb-3">
@@ -346,7 +359,7 @@ function SubProposalCard({ sub, cycleYear, reload }) {
       </div>
       <div className="flex gap-2">
         <button className="btn btn-sm" disabled={locked || busy} onClick={saveDraft}>Save draft</button>
-        <button className="btn btn-sm btn-primary" disabled={locked || busy || !narrative.trim()} onClick={submit}>Submit to CPU</button>
+        <button className="btn btn-sm btn-primary" disabled={locked || busy || !narrative.trim()} onClick={submit}>Submit to Programme Head</button>
       </div>
     </div>
   );
@@ -364,7 +377,7 @@ function CpuPanel({ data, cycleYear, reload }) {
             </p>
           </div>
           {data.subs.filter((s) => s.programme_id === p.id).map((s) => (
-            <SubApprovalRow key={s.id} s={s} units={data.units.filter((u) => u.sub_id === s.id)} cycleYear={cycleYear} reload={reload} />
+            <SubApprovalRow key={s.id} s={s} units={data.units.filter((u) => u.sub_id === s.id)} cycleYear={cycleYear} reload={reload} canAct={false} />
           ))}
           <ProgrammeCompileForm programme={p} cycleYear={cycleYear} reload={reload} />
         </div>
@@ -380,9 +393,10 @@ function CpuPanel({ data, cycleYear, reload }) {
 // data.subs is filtered to programme.id below, mirroring the same
 // "own branch only" shape as RepPanel/UnitPanel), plus the two real actions
 // that belong to their tier: approving/returning a Sub-programme's proposal
-// (see SubApprovalRow — the same real, scope-checked
-// POST /plans/subs/:id/approve|return CPU also uses) and compiling &
-// submitting their own Programme's plan once ready.
+// — see SubApprovalRow, the same real, scope-checked
+// POST /plans/subs/:id/approve|return this is the ONLY role authorized to
+// call, CPU included — and compiling & submitting their own Programme's
+// plan once ready.
 function ProgrammeHeadPanel({ data, cycleYear, reload }) {
   const { user } = useApp();
   const programme = data.programmes.find((p) => p.id === user.scope_id);
@@ -401,7 +415,7 @@ function ProgrammeHeadPanel({ data, cycleYear, reload }) {
           </p>
         </div>
         {data.subs.filter((s) => s.programme_id === programme.id).map((s) => (
-          <SubApprovalRow key={s.id} s={s} units={data.units.filter((u) => u.sub_id === s.id)} cycleYear={cycleYear} reload={reload} />
+          <SubApprovalRow key={s.id} s={s} units={data.units.filter((u) => u.sub_id === s.id)} cycleYear={cycleYear} reload={reload} canAct />
         ))}
         <ProgrammeCompileForm programme={programme} cycleYear={cycleYear} reload={reload} />
       </div>
@@ -411,11 +425,14 @@ function ProgrammeHeadPanel({ data, cycleYear, reload }) {
 
 // One Sub-programme's plan row — its own narrative/status/budget, the
 // Programme-tier approve/return actions (real POST /plans/subs/:id/approve
-// and /return calls — CPU and this Sub's own Programme Head are both
-// authorized server-side, see routes/plans.js's isProgrammeHeadOwner), and
-// its own Units listed underneath for context. Shared by CpuPanel (every
-// Programme) and ProgrammeHeadPanel (their one Programme only).
-function SubApprovalRow({ s, units, cycleYear, reload }) {
+// and /return calls — only this Sub's own Programme Head is authorized
+// server-side, see routes/plans.js's isProgrammeHeadOwner; CPU gets a 403
+// even calling the API directly), and its own Units listed underneath for
+// context. Shared by CpuPanel (every Programme, `canAct={false}` — status
+// for oversight only, no controls that would just 403) and
+// ProgrammeHeadPanel (their one Programme only, `canAct` — the only place
+// these controls ever render).
+function SubApprovalRow({ s, units, cycleYear, reload, canAct = false }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [returning, setReturning] = useState(false);
@@ -448,13 +465,17 @@ function SubApprovalRow({ s, units, cycleYear, reload }) {
           </div>
         </div>
         {s.proposal?.status === 'submitted' && (
-          <div className="flex gap-2 flex-wrap">
-            <button className="btn btn-sm btn-primary" disabled={busy} onClick={approve}>Approve</button>
-            <button className="btn btn-sm btn-danger" onClick={() => setReturning((v) => !v)}>Return…</button>
-          </div>
+          canAct ? (
+            <div className="flex gap-2 flex-wrap">
+              <button className="btn btn-sm btn-primary" disabled={busy} onClick={approve}>Approve</button>
+              <button className="btn btn-sm btn-danger" onClick={() => setReturning((v) => !v)}>Return…</button>
+            </div>
+          ) : (
+            <p className="text-[11.5px] text-ink-muted italic">Awaiting this Sub-programme's Programme Head</p>
+          )
         )}
       </div>
-      {returning && (
+      {canAct && returning && (
         <div className="mt-2 space-y-1.5">
           <textarea rows={2} className="field-input" placeholder="Reason for returning this proposal"
             value={comment} onChange={(e) => setComment(e.target.value)} />

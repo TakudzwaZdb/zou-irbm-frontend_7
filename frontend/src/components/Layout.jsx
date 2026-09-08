@@ -29,7 +29,7 @@ function GreetingBanner({ name }) {
   return (
     <div
       role="status"
-      className="fixed top-[70px] left-1/2 -translate-x-1/2 z-50 rounded-full bg-ink text-page text-[13px] font-semibold px-4 py-2 shadow-lg animate-[fadeIn_.25s_ease]"
+      className="fixed top-[78px] left-1/2 -translate-x-1/2 z-50 rounded-full bg-ink text-page text-[13px] font-semibold px-4 py-2 shadow-lg animate-[fadeIn_.25s_ease]"
     >
       Welcome back, {name}
     </div>
@@ -72,17 +72,36 @@ export default function Layout({ route, setRoute, children }) {
     // that ever scroll, fully independently of one another.
     <div className="h-dvh flex flex-col overflow-hidden bg-sunken">
       <GreetingBanner key={user.id} name={user.name} />
-      <header className="no-print h-14 flex-none flex items-center gap-3.5 px-4 border-b border-line bg-surface">
+      <header className="no-print h-16 flex-none flex items-center gap-3 sm:gap-3.5 px-3 sm:px-4 border-b border-line bg-surface">
         <button
-          className="md:hidden flex items-center justify-center w-8 h-8 rounded-lg border border-line-strong"
+          className="md:hidden flex items-center justify-center w-8 h-8 rounded-lg border border-line-strong flex-none"
           onClick={() => setSidebarOpen((v) => !v)}
           aria-label="Menu"
-        >☰</button>
-        <div className="flex items-center gap-2.5 min-w-0">
-          <img src="/assets/zou-mark.png" alt="ZOU" className="w-8 h-[34px] object-contain flex-none" />
+          aria-haspopup="true"
+          aria-expanded={sidebarOpen}
+        ><span aria-hidden="true">☰</span></button>
+        <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+          {/* The FULL ZOU logo — crest + "Zimbabwe Open University" wordmark
+              + tagline, the same lockup the Login screen uses — not just the
+              crest cropped out of it, from sm: up where there's room for it.
+              w-auto (no fixed width) lets its own ~6.9:1 aspect ratio decide
+              the width, so it always renders complete, never stretched or
+              edge-clipped. The wordmark's dark ink sits on a transparent
+              background in the source file, so a light plate behind it
+              (rather than the header's own bg-surface, which turns dark in
+              dark mode) is what keeps it legible in both themes — the exact
+              same white the Login card already provides it for free. Below
+              sm, the full lockup's ~200px width would crowd out the
+              hamburger and the header's own action icons on a phone, so a
+              narrow viewport keeps just the compact crest instead. */}
+          <span className="hidden sm:flex items-center bg-white border border-line rounded-lg px-2 py-1 flex-none">
+            <img src="/assets/zou-logo.png" alt="Zimbabwe Open University" className="h-7 w-auto object-contain" />
+          </span>
+          <img src="/assets/zou-mark.png" alt="Zimbabwe Open University" className="sm:hidden h-10 w-auto object-contain flex-none" />
+          <span className="hidden sm:block w-px self-stretch bg-line" aria-hidden="true" />
           <div className="leading-tight min-w-0">
-            <div className="font-display font-extrabold text-[14.5px] truncate">Strategic Plan Monitor</div>
-            <div className="text-[11px] text-ink-secondary truncate">IRBM Monitoring &amp; Evaluation</div>
+            <div className="font-display font-extrabold text-[15.5px] truncate">Strategic Plan Monitor</div>
+            <div className="text-[11.5px] text-ink-secondary truncate">IRBM Monitoring &amp; Evaluation</div>
           </div>
         </div>
         <div className="flex-1" />
@@ -119,11 +138,12 @@ export default function Layout({ route, setRoute, children }) {
 
       <div className="flex-1 flex min-h-0 relative">
         {sidebarOpen && (
-          <div className="fixed inset-0 top-14 bg-black/25 z-30 md:hidden" onClick={() => setSidebarOpen(false)} />
+          <div className="fixed inset-0 top-16 bg-black/25 z-30 md:hidden" onClick={() => setSidebarOpen(false)} />
         )}
         <nav
+          aria-label="Primary"
           className={`no-print w-56 flex-none border-r border-line bg-surface p-2.5 overflow-y-auto overscroll-contain
-            fixed md:static top-14 bottom-0 left-0 z-40 transition-transform
+            fixed md:static top-16 bottom-0 left-0 z-40 transition-transform
             ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
         >
           <div className="text-[10.8px] uppercase tracking-wide text-ink-muted font-bold px-2.5 mb-1.5">
@@ -137,10 +157,11 @@ export default function Layout({ route, setRoute, children }) {
                 header's profile button is hidden. */}
             <button
               onClick={() => { setRoute('profile'); setSidebarOpen(false); }}
+              aria-current={route === 'profile' ? 'page' : undefined}
               className={`sm:hidden flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[12.8px] font-semibold text-left
                 ${route === 'profile' ? 'bg-accent-50 text-accent-600' : 'text-ink-secondary hover:bg-sunken'}`}
             >
-              <span className="w-4 text-center flex-none">👤</span>
+              <span className="w-4 text-center flex-none" aria-hidden="true">👤</span>
               My Profile
             </button>
             {nav.map((k) => {
@@ -150,13 +171,14 @@ export default function Layout({ route, setRoute, children }) {
                 <button
                   key={k}
                   onClick={() => { setRoute(k); setSidebarOpen(false); }}
+                  aria-current={active ? 'page' : undefined}
                   className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[12.8px] font-semibold text-left
                     ${active ? 'bg-accent-50 text-accent-600' : 'text-ink-secondary hover:bg-sunken'}`}
                 >
-                  <span className="w-4 text-center flex-none">{item.icon}</span>
+                  <span className="w-4 text-center flex-none" aria-hidden="true">{item.icon}</span>
                   {item.label}
                   {k === 'messages' && unreadMessages > 0 && (
-                    <span className="ml-auto min-w-[18px] h-[18px] px-1 rounded-full bg-critical text-white text-[10px] font-bold flex items-center justify-center flex-none">
+                    <span className="ml-auto min-w-[18px] h-[18px] px-1 rounded-full bg-critical text-white text-[10px] font-bold flex items-center justify-center flex-none" aria-label={`, ${unreadMessages} unread`}>
                       {unreadMessages > 9 ? '9+' : unreadMessages}
                     </span>
                   )}

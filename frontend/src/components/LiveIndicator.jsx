@@ -44,24 +44,29 @@ export default function LiveIndicator() {
         disabled={busy}
         className="flex items-center gap-1.5 text-[11.5px] text-ink-muted hover:text-ink-secondary disabled:cursor-wait px-1 py-1 rounded-l-lg"
         title="Quick refresh — values, contributions, and messages (fast)"
+        aria-label={`Quick refresh. ${syncing || quickSyncing ? 'Refreshing…' : `Synced ${timeAgo(lastSync)}`}`}
       >
-        <span className={`w-1.5 h-1.5 rounded-full ${busy ? 'bg-accent-500 animate-pulse' : 'bg-good'}`} />
-        <span className="hidden sm:inline">{syncing ? 'Refreshing…' : quickSyncing ? 'Refreshing…' : `Synced ${timeAgo(lastSync)}`}</span>
+        <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full ${busy ? 'bg-accent-500 animate-pulse' : 'bg-good'}`} />
+        <span className="hidden sm:inline" aria-hidden="true">{syncing ? 'Refreshing…' : quickSyncing ? 'Refreshing…' : `Synced ${timeAgo(lastSync)}`}</span>
       </button>
       <button
         onClick={() => setMenuOpen((v) => !v)}
         disabled={busy}
         className="flex items-center justify-center w-5 h-6 text-ink-muted hover:text-ink-secondary disabled:cursor-wait rounded-r-lg"
         aria-label="Refresh options"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
         title="Refresh options"
       >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3" aria-hidden="true">
           <path d="M6 9l6 6 6-6" />
         </svg>
       </button>
       {menuOpen && (
-        <div className="absolute right-0 top-full mt-1.5 w-56 rounded-xl border border-line bg-surface shadow-lg z-50 py-1">
+        <div role="menu" aria-label="Refresh options" className="absolute right-0 top-full mt-1.5 w-56 rounded-xl border border-line bg-surface shadow-lg z-50 py-1"
+          onKeyDown={(e) => { if (e.key === 'Escape') setMenuOpen(false); }}>
           <button
+            role="menuitem"
             className="w-full text-left px-3 py-2 text-[12.3px] hover:bg-sunken flex flex-col gap-0.5"
             disabled={busy}
             onClick={() => { quickRefresh(); setMenuOpen(false); }}
@@ -70,6 +75,7 @@ export default function LiveIndicator() {
             <span className="text-[11px] text-ink-muted">Values, contributions &amp; messages — fast.</span>
           </button>
           <button
+            role="menuitem"
             className="w-full text-left px-3 py-2 text-[12.3px] hover:bg-sunken flex flex-col gap-0.5"
             disabled={busy}
             onClick={() => { refreshAll(); setMenuOpen(false); }}

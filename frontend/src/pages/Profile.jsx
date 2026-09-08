@@ -63,6 +63,7 @@ export default function Profile() {
   }
 
   async function removePhoto() {
+    if (!window.confirm('Remove your profile photo?')) return;
     setUploading(true);
     try {
       await api('/auth/me/avatar', { method: 'DELETE' });
@@ -76,7 +77,7 @@ export default function Profile() {
     <div className="max-w-xl">
       <div className="mb-5">
         <h1 className="text-xl font-bold mb-0.5">My Profile</h1>
-        <p className="text-[13px] text-ink-secondary">Your photo and password. Everyone can update these for their own account.</p>
+        <p className="text-[13px] text-ink-secondary">Your photo, password, and two-factor authentication. Everyone can update these for their own account.</p>
       </div>
 
       <div className="card mb-5">
@@ -120,6 +121,7 @@ export default function Profile() {
       </div>
 
       <ChangePasswordCard />
+      <MfaCard />
       <SignOutEverywhereCard />
 
       {viewingPhoto && <PhotoLightbox src={user.avatar} name={user.name} onClose={() => setViewingPhoto(false)} />}
@@ -209,6 +211,146 @@ function ChangePasswordCard() {
         </div>
         <button className="btn btn-sm btn-primary" disabled={busy}>Change password</button>
       </form>
+    </div>
+  );
+}
+
+// Real, self-contained TOTP-based two-factor authentication (see
+// backend/src/utils/totp.js — RFC 6238, the same algorithm every
+// authenticator app already speaks) — entirely opt-in per account, never
+// forced. Three states: off (just an Enable button), mid-enrollment
+// (secret shown for the person to add to their app, waiting on one real
+// code back to confirm they captured it correctly), and on (Disable,
+// gated behind the current password same as everywhere else in this app).
+function MfaCard() {
+  const { user, refreshUser } = useApp();
+  const toast = useToast();
+  const [enrolling, setEnrolling] = useState(null); // { secret, otpauthUrl } while mid-setup
+  const [code, setCode] = useState('');
+  const [recoveryCodes, setRecoveryCodes] = useState(null); // shown exactly once, right after enabling
+  const [disablePassword, setDisablePassword] = useState('');
+  const [showDisable, setShowDisable] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function startEnroll() {
+    setBusy(true);
+    try {
+      const r = await api('/auth/mfa/setup', { method: 'POST' });
+      setEnrolling(r);
+    } catch (err) { toast(err.message, 'err'); }
+    finally { setBusy(false); }
+  }
+
+  async function confirmEnroll(e) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const r = await api('/auth/mfa/enable', { method: 'POST', body: { code: code.trim() } });
+      setRecoveryCodes(r.recoveryCodes);
+      setEnrolling(null);
+      setCode('');
+      await refreshUser();
+      toast('Two-factor authentication enabled.');
+    } catch (err) { toast(err.message, 'err'); }
+    finally { setBusy(false); }
+  }
+
+  async function disable(e) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api('/auth/mfa/disable', { method: 'POST', body: { password: disablePassword } });
+      setDisablePassword(''); setShowDisable(false);
+      await refreshUser();
+      toast('Two-factor authentication disabled.');
+    } catch (err) { toast(err.message, 'err'); }
+    finally { setBusy(false); }
+  }
+
+  // The one-time reveal of the ten recovery codes — shown right after
+  // enabling, never retrievable again afterward (only their bcrypt hashes
+  // are ever stored — see db.js's mfa_recovery_codes), same as a generated
+  // temporary password elsewhere in this app.
+  if (recoveryCodes) {
+    return (
+      <div className="card mt-5 border-2 border-warning/30">
+        <h2 className="font-display font-bold text-[14.5px] mb-1">Save your recovery codes</h2>
+        <p className="text-[11.8px] text-ink-secondary mb-3">
+          Each code works once, if you ever lose access to your authenticator app. This is the only time they'll be shown —
+          save them somewhere safe now.
+        </p>
+        <div className="grid grid-cols-2 gap-1.5 mb-3 font-mono text-[12.5px]">
+          {recoveryCodes.map((c) => <div key={c} className="bg-sunken rounded px-2 py-1 text-center">{c}</div>)}
+        </div>
+        <button className="btn btn-sm btn-primary" onClick={() => setRecoveryCodes(null)}>I've saved these codes</button>
+      </div>
+    );
+  }
+
+  if (enrolling) {
+    return (
+      <div className="card mt-5">
+        <h2 className="font-display font-bold text-[14.5px] mb-1">Set up two-factor authentication</h2>
+        <p className="text-[11.8px] text-ink-secondary mb-3">
+          Add this account to your authenticator app (Google Authenticator, Authy, 1Password, etc.) by entering the key below
+          manually, then confirm with the 6-digit code it generates.
+        </p>
+        <div className="bg-sunken rounded-lg px-3 py-2.5 mb-3">
+          <p className="text-[10.5px] text-ink-muted uppercase font-semibold tracking-wide mb-1">Secret key</p>
+          <p className="font-mono text-[13px] tracking-wider break-all">{enrolling.secret}</p>
+        </div>
+        <form onSubmit={confirmEnroll} className="space-y-3 max-w-xs">
+          <div className="space-y-1">
+            <label className="field-label">6-digit code from your app</label>
+            <input type="text" required inputMode="numeric" pattern="\d{6}" maxLength={6} className="field-input tracking-widest text-center"
+              value={code} onChange={(e) => setCode(e.target.value)} autoFocus />
+          </div>
+          <div className="flex gap-2">
+            <button className="btn btn-sm btn-primary" disabled={busy}>Confirm &amp; enable</button>
+            <button type="button" className="btn btn-sm" disabled={busy} onClick={() => { setEnrolling(null); setCode(''); }}>Cancel</button>
+          </div>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card mt-5">
+      <h2 className="font-display font-bold text-[14.5px] mb-1">Two-factor authentication</h2>
+      {user.mfa_enabled ? (
+        <>
+          <p className="text-[11.8px] text-ink-secondary mb-3">
+            <span className="chip chip-st-approved mr-1.5">On</span>
+            Your account requires a code from your authenticator app (or a recovery code) every time you sign in.
+          </p>
+          {!showDisable ? (
+            <button className="btn btn-sm btn-danger" onClick={() => setShowDisable(true)}>Disable two-factor authentication</button>
+          ) : (
+            <form onSubmit={disable} className="space-y-3 max-w-xs">
+              <div className="space-y-1">
+                <label className="field-label">Confirm your current password</label>
+                <input type="password" required autoComplete="current-password" className="field-input"
+                  value={disablePassword} onChange={(e) => setDisablePassword(e.target.value)} />
+              </div>
+              <div className="flex gap-2">
+                <button className="btn btn-sm btn-danger" disabled={busy}>Disable</button>
+                <button type="button" className="btn btn-sm" disabled={busy} onClick={() => { setShowDisable(false); setDisablePassword(''); }}>Cancel</button>
+              </div>
+            </form>
+          )}
+          <p className="text-[11.5px] text-ink-muted mt-3">
+            Lost your device and your recovery codes? An ICT Systems Administrator can reset this for your account from Permissions.
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="text-[11.8px] text-ink-secondary mb-3">
+            <span className="chip chip-tag mr-1.5">Off</span>
+            Add a second step to signing in — a 6-digit code from an authenticator app on your phone, on top of your password.
+          </p>
+          <button className="btn btn-sm btn-primary" disabled={busy} onClick={startEnroll}>Enable two-factor authentication</button>
+        </>
+      )}
     </div>
   );
 }

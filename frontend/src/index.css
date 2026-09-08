@@ -40,7 +40,13 @@
   --color-sunken: #f0efec;
   --color-ink: #15140f;
   --color-ink-secondary: #54524a;
-  --color-ink-muted: #8c8a80;
+  /* Darkened from the original #8c8a80 (3.46:1 on white — fails WCAG AA's
+     4.5:1 floor for normal-size text, and this token is used at 10.5–11px
+     all over the app: timestamps, captions, the header tagline). #6e6c65
+     keeps the same warm-gray hue but clears AA (5.26:1) with real margin,
+     while staying visibly a step lighter than ink-secondary (7.83:1) so the
+     three-tier ink/ink-secondary/ink-muted hierarchy still reads clearly. */
+  --color-ink-muted: #6e6c65;
   --color-line: rgb(21 20 15 / 0.12);
   --color-line-strong: rgb(21 20 15 / 0.20);
 }
@@ -81,11 +87,30 @@
     font-family: var(--font-display);
     letter-spacing: -0.01em;
   }
+  /* A real, visible keyboard-focus ring on every interactive element —
+     buttons, links, chips-turned-buttons, checkboxes, the works — not just
+     the accent ring .field-input already had for text inputs. :focus-visible
+     (not a bare :focus) means this only ever appears for keyboard/assistive-
+     tech navigation, never as an unwanted outline after an ordinary mouse
+     click, so nothing about the app's normal look changes for a mouse user.
+     Before this, tabbing through the app (the nav sidebar, header icon
+     buttons, chip-style role/permission toggles) left no visible indication
+     of which element was focused at all. */
+  a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible,
+  textarea:focus-visible, [tabindex]:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--color-accent-500);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
 }
 
 @layer components {
+  /* Every size below is nudged up half a step from the original (11→11.5,
+     12.5→13, 11.5→12, 12→12.5, 13→13.5) — small enough to change no layout
+     that already worked, but a real, app-wide readability gain since these
+     four classes back nearly every chip, button, and form field in the app. */
   .chip {
-    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold whitespace-nowrap;
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11.5px] font-bold whitespace-nowrap;
   }
   .chip-rag-green { @apply bg-good-soft text-good; }
   .chip-rag-amber { @apply bg-warning-soft text-warning; }
@@ -93,29 +118,24 @@
   .chip-rag-none { @apply bg-sunken text-ink-muted; }
   .chip-st-draft { @apply bg-sunken text-ink-secondary; }
   .chip-st-submitted { @apply bg-accent-50 text-accent-600; }
-  /* A Sub-programme's own KPI submission, approved by its Programme Head and
-     now forwarded on to CPU for final sign-off — a distinct, slightly
-     deeper accent than plain "Submitted" so the two pending stages read as
-     different at a glance, without borrowing the "done" green of Approved. */
-  .chip-st-programme_approved { @apply bg-accent-100 text-accent-700; }
   .chip-st-approved { @apply bg-good-soft text-good; }
   .chip-st-returned { @apply bg-warning-soft text-warning; }
   .chip-st-none { @apply bg-sunken text-ink-muted; }
   .chip-tag { @apply bg-sunken text-ink-secondary font-semibold; }
 
   .btn {
-    @apply inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-[12.5px] font-semibold text-ink hover:bg-sunken disabled:opacity-40 disabled:cursor-not-allowed transition-colors;
+    @apply inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-[13px] font-semibold text-ink hover:bg-sunken disabled:opacity-40 disabled:cursor-not-allowed transition-colors;
   }
   .btn-primary { @apply bg-accent-500 text-white border-transparent hover:bg-accent-600; }
   .btn-danger { @apply text-critical border-critical/40 hover:bg-critical-soft; }
   .btn-ghost { @apply border-transparent bg-transparent hover:bg-sunken; }
-  .btn-sm { @apply px-2 py-1 text-[11.5px] rounded-md; }
+  .btn-sm { @apply px-2 py-1 text-[12px] rounded-md; }
 
   .card { @apply rounded-2xl border border-line bg-surface p-4 shadow-sm; }
 
-  .field-label { @apply text-[12px] font-bold text-ink-secondary; }
+  .field-label { @apply text-[12.5px] font-bold text-ink-secondary; }
   .field-input {
-    @apply w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:ring-2 focus:ring-accent-500/50 focus:border-accent-500;
+    @apply w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-[13.5px] text-ink outline-none focus:ring-2 focus:ring-accent-500/50 focus:border-accent-500;
   }
 }
 

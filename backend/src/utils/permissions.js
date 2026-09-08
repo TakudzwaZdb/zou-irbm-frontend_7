@@ -10,7 +10,23 @@ const PERMISSIONS = [
   { key: 'apply_override', label: 'Apply manual overrides on automated KPIs', group: 'Data' },
   { key: 'edit_targets', label: 'Edit KPI baselines & targets', group: 'Framework' },
   { key: 'create_kpi', label: 'Create new KPIs', group: 'Framework' },
-  { key: 'manage_org_units', label: 'Create Units / Departments / Faculties / Regions', group: 'Framework' },
+  { key: 'manage_org_units', label: 'Manage the org structure (create, update, remove, restore)', group: 'Framework' },
+  // Deliberately separate, narrower siblings of manage_org_units — the same
+  // "broad permission vs. one specific slice of it" pattern edit_targets is
+  // to create_kpi. manage_org_units alone already covers everything
+  // (Organisation Setup's create/update forms AND Organisation Maintenance's
+  // remove/restore), so these exist purely so ICT admin can hand someone a
+  // narrower slice of control: create_org_units lets a person build new
+  // structure without being able to touch or remove anything that already
+  // exists; edit_org_units lets a person correct an existing entity's own
+  // name/head/kind without being able to create new ones or remove
+  // anything. Neither one grants remove/restore — that stays behind
+  // manage_org_units alone, since undoing a removal should require the same
+  // authority that could remove it in the first place. See routes/org.js's
+  // POST/PATCH routes (requireAnyPerm with manage_org_units) for exactly
+  // where each is checked.
+  { key: 'create_org_units', label: 'Create Programmes / Sub-programmes / Units (create only)', group: 'Framework' },
+  { key: 'edit_org_units', label: 'Update existing Programmes / Sub-programmes / Units (edit only)', group: 'Framework' },
   // Deliberately separate from manage_org_units: lets ICT admin hand a Sub
   // Rep or Unit Head just the ability to add an Individual under their own
   // scope, without also granting them unit-creation. See routes/org.js for
@@ -76,10 +92,11 @@ const DEFAULT_PERMS_BY_ROLE = {
   // permission every other tier's plan-entry route already requires.
   // 'approve_own_tier' is the SAME permission Sub Reps/Unit Heads already
   // hold, now also granted here: a Sub-programme's own KPI performance
-  // submission (owner_type = 'sub') stops at the Programme Head first for
-  // review before it ever reaches CPU — see routes/kpis.js's isApprover
-  // and the two-stage 'submitted' -> 'programme_approved' -> 'approved'
-  // flow on kpi_values.status.
+  // submission (owner_type = 'sub') is approved once, finally, by its own
+  // Programme Head — no CPU sign-off in this cascade at all — see
+  // routes/kpis.js's isApprover and the single-stage 'submitted' ->
+  // 'approved' flow on kpi_values.status (the old 'programme_approved'
+  // intermediate stage has been retired; see db.js's migration).
   programme: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework', 'view_reports'],
   // University Council: the final sign-off tier above CPU's own compiled
   // submission — read-only everywhere else in the app (no data_entry, no

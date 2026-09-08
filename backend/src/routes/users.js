@@ -15,7 +15,15 @@ const router = express.Router();
 router.use(requireAuth, requireRole('ictadmin'));
 
 router.get('/', (req, res) => {
-  const users = db.prepare('SELECT id, name, title, email, role, scope_type, scope_id, avatar, overview_limit, is_executive_owner FROM users ORDER BY role, name').all();
+  // Deactivated accounts (deleted_at set — see routes/org.js's
+  // deactivateUserAccount, fired when the person tied to them is removed
+  // from the org structure) are excluded from the Directory the same way a
+  // removed Programme/Sub/Unit/Individual is excluded from the org tree:
+  // the row and its history are intact, it just isn't part of "current"
+  // anymore. It stays fully visible and actionable from Recently Removed →
+  // restoring the person there reactivates the account too.
+  const users = db.prepare('SELECT id, name, title, email, role, scope_type, scope_id, avatar, overview_limit, is_executive_owner, mfa_enabled FROM users WHERE deleted_at IS NULL ORDER BY role, name').all();
+  users.forEach((u) => { u.mfa_enabled = !!u.mfa_enabled; });
   const permRows = db.prepare('SELECT user_id, permission_key FROM user_permissions').all();
   const permsByUser = {};
   permRows.forEach((r) => {
@@ -28,7 +36,7 @@ router.get('/', (req, res) => {
 router.post('/:id/permissions/:key/grant', (req, res) => {
   const { id, key } = req.params;
   if (!PERMISSIONS.some((p) => p.key === key)) return res.status(404).json({ error: 'Unknown permission key.' });
-  const target = db.prepare('SELECT id, name FROM users WHERE id = ?').get(id);
+  const target = db.prepare('SELECT id, name FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
   db.prepare('INSERT OR IGNORE INTO user_permissions (user_id, permission_key) VALUES (?, ?)').run(id, key);
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
@@ -106,6 +114,26 @@ router.post('/:id/reset-password', (req, res) => {
   res.json({ newPassword: chosen });
 });
 
+// The real answer to "I lost my phone and my recovery codes" — the same
+// admin-assisted-recovery shape as reset-password just above, for the one
+// other credential this app now has. Turns MFA off for the account (never
+// silently re-enables it) and clears every recovery code; the person signs
+// in with just their password afterward and can set MFA back up with a new
+// device from their own Profile page whenever they're ready.
+router.post('/:id/mfa/disable', (req, res) => {
+  const { id } = req.params;
+  const target = db.prepare('SELECT id, name, mfa_enabled FROM users WHERE id = ?').get(id);
+  if (!target) return res.status(404).json({ error: 'User not found.' });
+  if (!target.mfa_enabled) return res.status(400).json({ error: 'That account does not have two-factor authentication enabled.' });
+
+  db.prepare('UPDATE users SET mfa_enabled = 0, mfa_secret = NULL WHERE id = ?').run(id);
+  db.prepare('DELETE FROM mfa_recovery_codes WHERE user_id = ?').run(id);
+  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+    req.user.id, 'mfa_disabled', 'user', id, `Two-factor authentication reset for ${target.name} by ICT admin (lost device/recovery codes).`
+  );
+  res.json({ ok: true });
+});
+
 const ROLES = ['exec', 'cpu', 'ictadmin', 'rep', 'unithead', 'individual', 'programme', 'council'];
 const OVERVIEW_LIMITS = ['programme', 'sub', 'unit'];
 const SCOPE_TYPES = ['sub', 'unit', 'individual', 'programme'];
@@ -178,30 +206,62 @@ router.patch('/:id/executive-owner', (req, res) => {
   res.json({ ok: true });
 });
 
-// Remove a user account entirely. Any unit/sub they head/represent, or
-// individual record they're the login for, is left in place but loses
-// its account (head_user_id/rep_user_id/individuals.user_id set to NULL)
-// rather than being deleted outright — use DELETE /api/org/individuals/:id
-// instead to remove an Individual's org record along with their account.
+// Remove a user account — stamped deleted_at (see db.js's migration and
+// routes/org.js's deactivateUserAccount, which uses the same mechanism),
+// never a real SQL DELETE. Sign-in is blocked immediately (routes/auth.js's
+// POST /login, middleware/auth.js's requireAuth) and the account drops out
+// of the Directory above, but the row itself, its permissions, its audit
+// history, and its links from any Unit/Sub it heads or represents
+// (head_user_id/rep_user_id) or Individual record it's the login for
+// (individuals.user_id) are all left exactly as they were — nothing is
+// nulled out, because nothing needs to satisfy a foreign key that a real
+// DELETE would have violated. Fully reversible from Recently Removed
+// (POST /:id/restore below) or use DELETE /api/org/individuals/:id instead
+// to remove an Individual's whole org record along with their account in
+// one step.
+// Recently-removed accounts — the same "Recently Removed" idea as
+// routes/org.js's GET /api/org/removed and routes/kpis.js's GET /removed,
+// scoped to accounts removed directly from this Directory (DELETE /:id
+// below). An account deactivated as a side effect of removing the
+// Individual/Unit-head/Sub-Rep/Programme-head it belongs to already
+// reappears in Organisation Maintenance's own Recently Removed instead —
+// restoring the person there reactivates their account in the same step —
+// so this list only ever shows accounts removed by that DELETE route
+// directly, which had no restore path visible anywhere in the UI at all
+// until this endpoint existed to back one.
+router.get('/removed', (req, res) => {
+  const users = db.prepare(
+    'SELECT id, name, title, email, role, scope_type, scope_id, deleted_at FROM users WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC'
+  ).all();
+  res.json({ users });
+});
+
 router.delete('/:id', (req, res) => {
   const { id } = req.params;
   if (Number(id) === req.user.id) return res.status(400).json({ error: 'You cannot remove your own account.' });
-  const target = db.prepare('SELECT id, name FROM users WHERE id = ?').get(id);
+  const target = db.prepare('SELECT id, name FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
 
-  const removeTxn = db.transaction(() => {
-    db.prepare('UPDATE units SET head_user_id = NULL WHERE head_user_id = ?').run(id);
-    db.prepare('UPDATE subs SET rep_user_id = NULL WHERE rep_user_id = ?').run(id);
-    db.prepare('UPDATE individuals SET user_id = NULL WHERE user_id = ?').run(id);
-    // Past audit entries where this person was the actor are kept, just
-    // no longer attributed to a user row that's about to be gone.
-    db.prepare('UPDATE audit_log SET user_id = NULL WHERE user_id = ?').run(id);
-    db.prepare('DELETE FROM users WHERE id = ?').run(id);
-  });
-  removeTxn();
+  db.prepare("UPDATE users SET deleted_at = datetime('now') WHERE id = ?").run(id);
 
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'remove_account', 'user', id, `Account removed: ${target.name}.`
+    req.user.id, 'remove_account', 'user', id, `Account removed: ${target.name}. Recoverable from Recently Removed.`
+  );
+  res.json({ ok: true });
+});
+
+// Restore a previously-removed account — clears deleted_at so it can sign
+// in again immediately, with its permissions, role, and every link to it
+// (Unit/Sub headship, Individual record) intact exactly as they were.
+router.post('/:id/restore', (req, res) => {
+  const { id } = req.params;
+  const target = db.prepare('SELECT id, name FROM users WHERE id = ? AND deleted_at IS NOT NULL').get(id);
+  if (!target) return res.status(404).json({ error: 'Removed account not found.' });
+
+  db.prepare('UPDATE users SET deleted_at = NULL WHERE id = ?').run(id);
+
+  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+    req.user.id, 'restore_account', 'user', id, `Account restored: ${target.name}.`
   );
   res.json({ ok: true });
 });

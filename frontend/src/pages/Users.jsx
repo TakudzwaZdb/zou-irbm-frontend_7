@@ -5,8 +5,11 @@ import { api } from '../lib/api.js';
 import { avatarClass, initialsOf, scopeBreadcrumb } from '../lib/scope.js';
 import PhotoLightbox from '../components/PhotoLightbox.jsx';
 
-const ROLES = ['exec', 'cpu', 'ictadmin', 'rep', 'unithead', 'individual', 'programme', 'council'];
-const ROLE_LABEL = {
+// Exported so OrgStructure.jsx's own (narrower — individuals only) role
+// control uses the exact same role list/labels rather than a second,
+// driftable copy.
+export const ROLES = ['exec', 'cpu', 'ictadmin', 'rep', 'unithead', 'individual', 'programme', 'council'];
+export const ROLE_LABEL = {
   exec: 'Executive', cpu: 'Corporate Planning Unit', ictadmin: 'ICT Systems Administrator',
   rep: 'Sub-programme Rep', unithead: 'Unit Head', individual: 'Individual', programme: 'Programme Head',
   council: 'University Council',
@@ -36,13 +39,29 @@ export default function Users() {
   const [resetDraft, setResetDraft] = useState({});
   const [resetResult, setResetResult] = useState({});
   const [viewingUser, setViewingUser] = useState(null);
+  const [removedUsers, setRemovedUsers] = useState([]);
+  const [removedOpen, setRemovedOpen] = useState(false);
+  const [restoreBusyId, setRestoreBusyId] = useState(null);
 
   async function load() {
     const r = await api('/users');
     setUsers(r.users);
     setCatalog(r.catalog);
   }
-  useEffect(() => { load().catch((e) => toast(e.message, 'err')); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  async function loadRemoved() {
+    try { setRemovedUsers((await api('/users/removed')).users); } catch (err) { toast(err.message, 'err'); }
+  }
+  useEffect(() => { load().catch((e) => toast(e.message, 'err')); loadRemoved(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function restoreAccount(u) {
+    setRestoreBusyId(u.id);
+    try {
+      await api(`/users/${u.id}/restore`, { method: 'POST' });
+      toast(`${u.name}'s account restored.`);
+      await Promise.all([load(), loadRemoved()]);
+    } catch (err) { toast(err.message, 'err'); }
+    finally { setRestoreBusyId(null); }
+  }
 
   // Search reaches every visible field of a user's profile — name, email,
   // title, role, and where they sit in the org tree — so "search all users
@@ -126,6 +145,22 @@ export default function Users() {
     finally { setBusyId(null); }
   }
 
+  // Admin-assisted MFA reset — the same "when they can't help themselves"
+  // shape as resetPassword above, for the one other credential this app
+  // now has (see routes/users.js's POST /:id/mfa/disable). Only ever turns
+  // it OFF for a locked-out person; they set it back up themselves from
+  // their own Profile page with a new device whenever they're ready.
+  async function resetMfa(u) {
+    if (!window.confirm(`Turn off two-factor authentication for ${u.name}? Use this only if they've lost their authenticator device and their recovery codes — they can set it back up themselves afterward.`)) return;
+    setBusyId(u.id);
+    try {
+      await api(`/users/${u.id}/mfa/disable`, { method: 'POST' });
+      toast(`Two-factor authentication turned off for ${u.name}.`);
+      await load();
+    } catch (err) { toast(err.message, 'err'); }
+    finally { setBusyId(null); }
+  }
+
   // Overview navigation restriction — a visibility ceiling independent of
   // role/permissions (see db.js's users.overview_limit / lib/scope.js's
   // canDrillToKind), not a permission grant, so it lives here as its own
@@ -154,12 +189,13 @@ export default function Users() {
   }
 
   async function removeAccount(u) {
-    if (!window.confirm(`Remove ${u.name}'s account entirely? This cannot be undone.`)) return;
+    if (!window.confirm(`Remove ${u.name}'s account? They're deactivated, not deleted — their permissions, role, and full history (audit log, messages, past KPI submissions) stay intact, and it's recoverable from Recently Removed below.`)) return;
     setBusyId(u.id);
     try {
       await api(`/users/${u.id}`, { method: 'DELETE' });
       toast(`${u.name}'s account removed.`);
       await load();
+      await loadRemoved();
     } catch (err) { toast(err.message, 'err'); }
     finally { setBusyId(null); }
   }
@@ -177,6 +213,7 @@ export default function Users() {
         <input
           className="field-input w-auto min-w-[220px]"
           placeholder="Search name, email, role, unit…"
+          aria-label="Search users"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
@@ -217,6 +254,7 @@ export default function Users() {
               )}
               <span className="truncate">{u.name}</span>
               <span className="text-ink-muted font-normal text-[12px]">({ROLE_LABEL[u.role]}{isSelf ? ' · you' : ''})</span>
+              {u.mfa_enabled && <span className="chip chip-st-approved" title="Two-factor authentication is enabled">2FA</span>}
               <span className="ml-auto chip chip-tag">{u.permissions.length} of {catalog.length} granted</span>
             </summary>
             <div className="text-[11.3px] text-ink-muted mt-1.5">
@@ -260,7 +298,7 @@ export default function Users() {
               {resetResult[u.id] && (
                 <div className="mb-2 rounded-lg bg-good-soft text-good text-[12.3px] px-3 py-2 flex items-center gap-2 flex-wrap">
                   <span>New password: <b className="font-mono">{resetResult[u.id]}</b> — share it with {u.name} now, it won't be shown again.</span>
-                  <button className="ml-auto text-good/70 hover:text-good font-bold" onClick={() => setResetResult((s) => { const n = { ...s }; delete n[u.id]; return n; })}>✕</button>
+                  <button className="ml-auto text-good/70 hover:text-good font-bold" onClick={() => setResetResult((s) => { const n = { ...s }; delete n[u.id]; return n; })} aria-label="Dismiss">✕</button>
                 </div>
               )}
               <div className="flex gap-2 flex-wrap items-center">
@@ -271,6 +309,11 @@ export default function Users() {
                   onChange={(e) => setResetDraft((s) => ({ ...s, [u.id]: e.target.value }))}
                 />
                 <button className="btn btn-sm" disabled={busyId === u.id} onClick={() => resetPassword(u)}>Reset password</button>
+                {u.mfa_enabled && (
+                  <button className="btn btn-sm btn-danger" disabled={busyId === u.id} onClick={() => resetMfa(u)}>
+                    Turn off two-factor authentication
+                  </button>
+                )}
               </div>
             </div>
 
@@ -344,6 +387,38 @@ export default function Users() {
           </details>
         );
       })}
+
+      <div className="card mt-4">
+        <button className="w-full flex items-center justify-between text-left" onClick={() => setRemovedOpen((v) => !v)}>
+          <span className="font-display font-bold text-[14px] flex items-center gap-2">
+            Recently Removed
+            <span className={`chip ${removedUsers.length ? 'chip-rag-amber' : ''}`}>{removedUsers.length}</span>
+          </span>
+          <span className="text-ink-muted text-[12px]">{removedOpen ? 'Hide ▲' : 'Show ▼'}</span>
+        </button>
+        <p className="text-[12px] text-ink-muted mt-1">
+          Accounts removed directly from this Directory — nothing here is deleted; restoring lets them sign in again
+          immediately with their role, permissions, and full history intact. (An account deactivated because its
+          Individual/Unit-head/Sub-Rep/Programme-head was removed shows up on Organisation Maintenance's own Recently
+          Removed instead — restoring the person there reactivates the account too.)
+        </p>
+        {removedOpen && (
+          removedUsers.length === 0 ? (
+            <p className="text-[12px] text-ink-muted mt-3">Nothing removed right now.</p>
+          ) : (
+            <div className="mt-3 space-y-1 text-[12.5px]">
+              {removedUsers.map((u) => (
+                <div key={u.id} className="flex items-center justify-between gap-2 bg-sunken rounded-lg px-2.5 py-1.5">
+                  <span className="text-ink-muted">{u.name} — {u.email} ({ROLE_LABEL[u.role] || u.role})</span>
+                  <button className="btn btn-sm btn-primary" disabled={restoreBusyId === u.id} onClick={() => restoreAccount(u)}>
+                    {restoreBusyId === u.id ? 'Restoring…' : 'Restore'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )
+        )}
+      </div>
 
       {viewingUser && <PhotoLightbox src={viewingUser.avatar} name={viewingUser.name} onClose={() => setViewingUser(null)} />}
     </div>
