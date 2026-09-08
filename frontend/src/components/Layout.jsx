@@ -29,7 +29,7 @@ function GreetingBanner({ name }) {
   return (
     <div
       role="status"
-      className="fixed top-[70px] left-1/2 -translate-x-1/2 z-50 rounded-full bg-ink text-page text-[13px] font-semibold px-4 py-2 shadow-lg animate-[fadeIn_.25s_ease]"
+      className="fixed top-[78px] left-1/2 -translate-x-1/2 z-50 rounded-full bg-ink text-page text-[13px] font-semibold px-4 py-2 shadow-lg animate-[fadeIn_.25s_ease]"
     >
       Welcome back, {name}
     </div>
@@ -72,17 +72,17 @@ export default function Layout({ route, setRoute, children }) {
     // that ever scroll, fully independently of one another.
     <div className="h-dvh flex flex-col overflow-hidden bg-sunken">
       <GreetingBanner key={user.id} name={user.name} />
-      <header className="no-print h-14 flex-none flex items-center gap-3.5 px-4 border-b border-line bg-surface">
+      <header className="no-print h-16 flex-none flex items-center gap-3.5 px-4 border-b border-line bg-surface">
         <button
           className="md:hidden flex items-center justify-center w-8 h-8 rounded-lg border border-line-strong"
           onClick={() => setSidebarOpen((v) => !v)}
           aria-label="Menu"
         >☰</button>
-        <div className="flex items-center gap-2.5 min-w-0">
-          <img src="/assets/zou-mark.png" alt="ZOU" className="w-8 h-[34px] object-contain flex-none" />
-          <div className="leading-tight min-w-0">
-            <div className="font-display font-extrabold text-[14.5px] truncate">Strategic Plan Monitor</div>
-            <div className="text-[11px] text-ink-secondary truncate">IRBM Monitoring &amp; Evaluation</div>
+        <div className="flex flex-col items-center gap-0.5 min-w-0">
+          <img src="/assets/zou-logo.png" alt="ZOU" className="h-9 w-auto max-w-[140px] object-contain flex-none" />
+          <div className="leading-tight min-w-0 text-center">
+            <div className="font-display font-extrabold text-[12px] truncate">Strategic Plan Monitor</div>
+            <div className="text-[9.5px] text-ink-secondary truncate">IRBM Monitoring &amp; Evaluation</div>
           </div>
         </div>
         <div className="flex-1" />
@@ -119,11 +119,11 @@ export default function Layout({ route, setRoute, children }) {
 
       <div className="flex-1 flex min-h-0 relative">
         {sidebarOpen && (
-          <div className="fixed inset-0 top-14 bg-black/25 z-30 md:hidden" onClick={() => setSidebarOpen(false)} />
+          <div className="fixed inset-0 top-16 bg-black/25 z-30 md:hidden" onClick={() => setSidebarOpen(false)} />
         )}
         <nav
           className={`no-print w-56 flex-none border-r border-line bg-surface p-2.5 overflow-y-auto overscroll-contain
-            fixed md:static top-14 bottom-0 left-0 z-40 transition-transform
+            fixed md:static top-16 bottom-0 left-0 z-40 transition-transform
             ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
         >
           <div className="text-[10.8px] uppercase tracking-wide text-ink-muted font-bold px-2.5 mb-1.5">
