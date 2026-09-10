@@ -21,12 +21,26 @@ router.get('/', (req, res) => {
 const KNOWN_SETTING_KEYS = new Set([
   'ragGreen', 'ragAmber', 'lateCutoffIndividual', 'lateCutoffUnit', 'lateCutoffSub',
   'escalateProgramme', 'escalateVC', 'redEscalateProgramme', 'redEscalateVC',
+  'submissionOpenDay', 'submissionCloseDay',
 ]);
+
+// The submission-window pair (see utils/submissionWindow.js) is a day-of-
+// month, so it gets a real bounds check unlike the other settings above —
+// an out-of-range value here wouldn't just be a bad number, it would make
+// the window computation land on the wrong calendar month entirely.
+const DAY_OF_MONTH_KEYS = new Set(['submissionOpenDay', 'submissionCloseDay']);
 
 router.patch('/', requirePerm('manage_settings'), (req, res) => {
   const body = req.body || {};
   const unknown = Object.keys(body).filter((k) => !KNOWN_SETTING_KEYS.has(k));
   if (unknown.length) return res.status(400).json({ error: `Unknown setting(s): ${unknown.join(', ')}.` });
+  for (const k of Object.keys(body)) {
+    if (!DAY_OF_MONTH_KEYS.has(k)) continue;
+    const n = Number(body[k]);
+    if (!Number.isInteger(n) || n < 1 || n > 31) {
+      return res.status(400).json({ error: `${k} must be a whole number between 1 and 31.` });
+    }
+  }
   const upsert = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
   Object.keys(body).forEach((k) => upsert.run(k, String(body[k])));
   db.prepare('INSERT INTO audit_log (user_id, action, entity, detail) VALUES (?, ?, ?, ?)').run(

@@ -118,6 +118,16 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
   function onEntryValueChange(v) { setEntryValue(v); writeValueDraft(valueDraftKey, v); }
   function onExplanationChange(v) { setExplanation(v); writeNoteDraft(noteDraftKey, v); }
 
+  // Flushes the pending debounced draft write immediately instead of
+  // waiting out the rest of its 500ms window — wired to keyup/blur below so
+  // the local recovery copy is current the moment a key is released or the
+  // field loses focus, not just once typing has paused for half a second.
+  // Reads straight off the DOM node (e.target.value) rather than the
+  // entryValue/explanation React state, so it's correct even if this fires
+  // before the corresponding onChange's state update has been committed.
+  function onValueKeyRelease(e) { writeValueDraft.flush(valueDraftKey, e.target.value); }
+  function onNoteKeyRelease(e) { writeNoteDraft.flush(noteDraftKey, e.target.value); }
+
   async function run(fn, okMsg, onOk) {
     setBusy(true);
     try { await fn(); if (okMsg) toast(okMsg); if (onOk) onOk(); await reloadValues(); }
@@ -247,6 +257,7 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
               <label className="field-label">This period's entry ({kpi.measure})</label>
               <input type="number" step="any" disabled={locked} value={entryValue}
                 onChange={(e) => onEntryValueChange(e.target.value)}
+                onKeyUp={onValueKeyRelease} onBlur={onValueKeyRelease}
                 className="field-input w-36" />
             </div>
             <button className="btn btn-sm" disabled={locked || busy}
@@ -280,7 +291,8 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
           <div className="mt-2.5 space-y-1">
             <label className="field-label">Explanation / notes</label>
             <textarea rows={2} className="field-input" placeholder="Optional context for reviewers"
-              value={explanation} onChange={(e) => onExplanationChange(e.target.value)} />
+              value={explanation} onChange={(e) => onExplanationChange(e.target.value)}
+              onKeyUp={onNoteKeyRelease} onBlur={onNoteKeyRelease} />
           </div>
           <button className="btn btn-sm btn-ghost mt-1.5" disabled={busy}
             onClick={() => run(() => api(`/kpis/${kpi.id}/explanation`, { method: 'PUT', body: { year: period.year, month: period.month, text: explanation } }), 'Note saved.', () => clearDraft(noteDraftKey))}>

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
@@ -48,8 +48,9 @@ function pctOfTargetLabel(kpi, rawValue) {
 export default function DataEntryTable({ kpis, interactive = true }) {
   const {
     user, org, settings, values, period, reloadValues,
-    assignments, contributions,
+    assignments, contributions, submissionWindow,
   } = useApp();
+  const submitBlocked = !submissionWindow?.allowed;
   const toast = useToast();
   const [selected, setSelected] = useState(() => new Set(interactive ? kpis.map((k) => k.id) : []));
   const [entries, setEntries] = useState({});
@@ -128,13 +129,28 @@ export default function DataEntryTable({ kpis, interactive = true }) {
     return r.valueRow?.explanation || '';
   }
 
-  // One debounced draft-writer, reused for every row (see lib/autosave.js
-  // and KpiCard's identical pattern) — keyed per call by each row's own
-  // valueDraftKey/noteDraftKey, so different rows never share a timer.
-  const debouncedWriteDraft = useMemo(() => debounce(writeDraft), []);
+  // One debounced draft-writer PER FIELD (not one shared across the whole
+  // table — a single shared debounce has only one pending timer/args pair,
+  // so typing in row B's field before row A's 500ms window elapses would
+  // silently cancel and replace row A's pending write instead of both
+  // eventually landing). Lazily created and cached per draft key in a ref
+  // so each field keeps its own independent timer for this table's whole
+  // lifetime, same lifetime guarantee useMemo gave the old single instance.
+  const writersRef = useRef(new Map());
+  function writerFor(key) {
+    if (!writersRef.current.has(key)) writersRef.current.set(key, debounce(writeDraft));
+    return writersRef.current.get(key);
+  }
 
-  function setEntry(kpi, v) { setEntries((e) => ({ ...e, [kpi.id]: v })); debouncedWriteDraft(valueDraftKey(kpi), v); }
-  function setNote(kpi, v) { setNotes((n) => ({ ...n, [kpi.id]: v })); debouncedWriteDraft(noteDraftKey(kpi), v); }
+  function setEntry(kpi, v) { setEntries((e) => ({ ...e, [kpi.id]: v })); writerFor(valueDraftKey(kpi))(valueDraftKey(kpi), v); }
+  function setNote(kpi, v) { setNotes((n) => ({ ...n, [kpi.id]: v })); writerFor(noteDraftKey(kpi))(noteDraftKey(kpi), v); }
+
+  // Flushes a field's pending draft write immediately on keyup/blur instead
+  // of waiting out the rest of its debounce window (see lib/autosave.js and
+  // KpiCard's identical comment) — reads straight off the DOM node so it's
+  // correct regardless of render timing.
+  function onValueKeyRelease(kpi, e) { writerFor(valueDraftKey(kpi)).flush(valueDraftKey(kpi), e.target.value); }
+  function onNoteKeyRelease(kpi, e) { writerFor(noteDraftKey(kpi)).flush(noteDraftKey(kpi), e.target.value); }
 
   function toggle(id) {
     setSelected((s) => { const next = new Set(s); if (next.has(id)) next.delete(id); else next.add(id); return next; });
@@ -217,7 +233,11 @@ export default function DataEntryTable({ kpis, interactive = true }) {
           <button className="btn btn-sm ml-auto" disabled={busy || selected.size === 0} onClick={() => saveSelected(false)}>
             Save selected
           </button>
-          <button className="btn btn-sm btn-primary" disabled={busy || selected.size === 0} onClick={() => saveSelected(true)}>
+          <button
+            className="btn btn-sm btn-primary" disabled={busy || selected.size === 0 || submitBlocked}
+            title={submitBlocked ? (submissionWindow?.message || 'Submissions are not open for this period.') : undefined}
+            onClick={() => saveSelected(true)}
+          >
             Save &amp; submit selected
           </button>
         </div>
@@ -277,6 +297,11 @@ export default function DataEntryTable({ kpis, interactive = true }) {
                   </td>
                   <td className="px-3 py-2.5">
                     <span className={`chip chip-st-${r.status} text-[10.8px] px-2 py-0.5`}>{STATUS_LABEL[r.status]}</span>
+                    {r.valueRow?.late && ['submitted', 'approved'].includes(r.status) && (
+                      <span className="chip bg-warning-soft text-warning text-[10px] px-1.5 py-0.5 ml-1" title="Submitted after month-end, inside the late-submission grace window">
+                        Late
+                      </span>
+                    )}
                     {r.valueRow?.return_comment && r.status === 'returned' && (
                       <div className="text-[10.8px] text-warning mt-1 max-w-[160px]" title={r.valueRow.return_comment}>
                         “{r.valueRow.return_comment}”
@@ -299,6 +324,7 @@ export default function DataEntryTable({ kpis, interactive = true }) {
                           placeholder={kpi.measure ? `Actual (${kpi.measure})` : 'Actual'}
                           value={entryFor(kpi, r)}
                           onChange={(e) => setEntry(kpi, e.target.value)}
+                          onKeyUp={(e) => onValueKeyRelease(kpi, e)} onBlur={(e) => onValueKeyRelease(kpi, e)}
                         />
                         {pctOfTargetLabel(kpi, entryFor(kpi, r)) && (
                           <div className="text-[10.5px] text-ink-muted mt-0.5">{pctOfTargetLabel(kpi, entryFor(kpi, r))}</div>
@@ -328,6 +354,7 @@ export default function DataEntryTable({ kpis, interactive = true }) {
                         className="field-input w-full py-1.5"
                         value={noteFor(kpi, r)}
                         onChange={(e) => setNote(kpi, e.target.value)}
+                        onKeyUp={(e) => onNoteKeyRelease(kpi, e)} onBlur={(e) => onNoteKeyRelease(kpi, e)}
                       />
                     ) : (
                       <span className="text-ink-secondary text-[11.5px]">{r.valueRow?.explanation || '—'}</span>

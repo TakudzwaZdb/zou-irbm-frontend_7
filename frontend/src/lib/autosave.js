@@ -60,10 +60,14 @@ export function debounce(fn, delay = 500) {
     timer = setTimeout(() => { timer = null; fn(...args); }, delay);
   };
   // Fires `fn` immediately with the given args and cancels any pending
-  // timer — not currently called anywhere (every Save/Submit action reads
-  // straight from React state, never from the draft, so nothing needs to
-  // force a pending draft write early) but kept available for a future
-  // caller that does need one.
+  // timer. Wired to each draft field's onKeyUp/onBlur (KpiCard.jsx,
+  // ContributionCard.jsx, DataEntryTable.jsx) so the local recovery copy is
+  // current the moment a key is released or the field loses focus, instead
+  // of waiting out the rest of the 500ms debounce window — true
+  // "save on key release" rather than "save once typing pauses". Save/
+  // Submit actions still read straight from React state, never from the
+  // draft, so this only affects how quickly the crash-recovery copy
+  // catches up, never what gets sent to the server.
   debounced.flush = (...args) => {
     if (timer) { clearTimeout(timer); timer = null; }
     fn(...args);

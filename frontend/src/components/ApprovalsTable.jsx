@@ -100,7 +100,14 @@ export default function ApprovalsTable({ kpis, interactive }) {
                       {r.isShared && <span className="chip bg-accent-50 text-accent-600 text-[10px] px-1.5 py-0.5">Team ({r.assignees.length})</span>}
                     </div>
                   </td>
-                  <td className="px-3 py-2.5"><span className={`chip chip-st-${r.status} text-[10.8px] px-2 py-0.5`}>{STATUS_LABEL[r.status]}</span></td>
+                  <td className="px-3 py-2.5">
+                    <span className={`chip chip-st-${r.status} text-[10.8px] px-2 py-0.5`}>{STATUS_LABEL[r.status]}</span>
+                    {r.valueRow?.late && ['submitted', 'approved'].includes(r.status) && (
+                      <span className="chip bg-warning-soft text-warning text-[10px] px-1.5 py-0.5 ml-1" title="Submitted after month-end, inside the late-submission grace window">
+                        Late
+                      </span>
+                    )}
+                  </td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{kpi.baseline}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{kpi.target} <span className="text-ink-muted">{kpi.measure}</span></td>
                   <td className="px-3 py-2.5 text-right tabular-nums" title={r.isPreview ? 'Projected total if approved as-is' : undefined}>

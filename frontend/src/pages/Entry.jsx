@@ -6,6 +6,7 @@ import { canEnterData, canContribute, individualUnitId, valueStatus } from '../l
 import ContributionCard from '../components/ContributionCard.jsx';
 import DataEntryTable from '../components/DataEntryTable.jsx';
 import PeriodPicker from '../components/PeriodPicker.jsx';
+import SubmissionWindowBanner from '../components/SubmissionWindowBanner.jsx';
 
 // Grouped so the flow reads as a queue rather than one flat list: anything
 // returned with feedback or never started needs action right now, what's
@@ -65,6 +66,8 @@ export default function Entry() {
         </div>
         <PeriodPicker />
       </div>
+
+      <SubmissionWindowBanner />
 
       {totalReturned > 0 && (
         <div className="mb-4 rounded-lg bg-warning-soft text-warning text-[12.8px] px-3.5 py-2.5 font-semibold">

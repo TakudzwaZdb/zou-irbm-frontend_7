@@ -17,7 +17,8 @@ const STATUS_LABEL = { none: 'Not started', draft: 'Draft', returned: 'Returned'
 // everyone else assigned to it) or returns it with feedback, same shape as
 // every other submission in this app just one level down.
 export default function ContributionCard({ kpi, contributionRow }) {
-  const { user, org, values, settings, period, reloadContributions } = useApp();
+  const { user, org, values, settings, period, reloadContributions, submissionWindow } = useApp();
+  const submitBlocked = !submissionWindow?.allowed;
   const toast = useToast();
   const status = valueStatus(contributionRow);
   const current = contributionRow?.value ?? null;
@@ -54,6 +55,13 @@ export default function ContributionCard({ kpi, contributionRow }) {
   function onEntryValueChange(v) { setEntryValue(v); writeValueDraft(valueDraftKey, v); }
   function onExplanationChange(v) { setExplanation(v); writeNoteDraft(noteDraftKey, v); }
 
+  // Flushes the pending debounced draft write immediately instead of
+  // waiting out the rest of its 500ms window (see KpiCard.jsx's identical
+  // comment) — wired to keyup/blur below, reading straight off the DOM
+  // node so it's correct regardless of render timing.
+  function onValueKeyRelease(e) { writeValueDraft.flush(valueDraftKey, e.target.value); }
+  function onNoteKeyRelease(e) { writeNoteDraft.flush(noteDraftKey, e.target.value); }
+
   async function run(fn, okMsg, onOk) {
     setBusy(true);
     try { await fn(); if (okMsg) toast(okMsg); if (onOk) onOk(); await reloadContributions(); }
@@ -73,6 +81,11 @@ export default function ContributionCard({ kpi, contributionRow }) {
             <span className="chip chip-tag">{ownerName(org, kpi)} — your contribution</span>
             <span className="chip chip-tag">{kpi.type}</span>
             <span className={`chip chip-st-${status}`}>{STATUS_LABEL[status]}</span>
+            {contributionRow?.late && ['submitted', 'approved'].includes(status) && (
+              <span className="chip bg-warning-soft text-warning text-[10px] px-1.5 py-0.5" title="Submitted after month-end, inside the late-submission grace window">
+                Late
+              </span>
+            )}
           </div>
           {(contributionRow?.submitted_at || contributionRow?.approved_at) && (
             <div className="text-[11.5px] text-ink-muted flex gap-3 flex-wrap">
@@ -123,6 +136,7 @@ export default function ContributionCard({ kpi, contributionRow }) {
           <label className="field-label">Your value ({kpi.measure})</label>
           <input type="number" step="any" disabled={locked} value={entryValue}
             onChange={(e) => onEntryValueChange(e.target.value)}
+            onKeyUp={onValueKeyRelease} onBlur={onValueKeyRelease}
             placeholder={kpi.measure ? `e.g. 12 (${kpi.measure})` : undefined}
             className="field-input w-36 py-1.5" />
         </div>
@@ -130,7 +144,8 @@ export default function ContributionCard({ kpi, contributionRow }) {
           onClick={() => run(() => api(`/kpis/${kpi.id}/contribution`, { method: 'PUT', body: { year: period.year, month: period.month, value: entryValue === '' ? null : Number(entryValue) } }), 'Value saved.', () => clearDraft(valueDraftKey))}>
           Save value
         </button>
-        <button className="btn btn-sm btn-primary" disabled={!canSubmit || busy}
+        <button className="btn btn-sm btn-primary" disabled={!canSubmit || busy || submitBlocked}
+          title={submitBlocked ? (submissionWindow?.message || 'Submissions are not open for this period.') : undefined}
           onClick={() => run(() => api(`/kpis/${kpi.id}/contribution/submit`, { method: 'POST', body: { year: period.year, month: period.month } }), 'Submitted to your Unit Head.', () => clearDraft(valueDraftKey))}>
           Submit
         </button>
@@ -143,7 +158,8 @@ export default function ContributionCard({ kpi, contributionRow }) {
       <div className="mt-2.5 space-y-1">
         <label className="field-label">Explanation / notes</label>
         <textarea rows={2} className="field-input" placeholder="Optional context for your Unit Head"
-          value={explanation} onChange={(e) => onExplanationChange(e.target.value)} />
+          value={explanation} onChange={(e) => onExplanationChange(e.target.value)}
+          onKeyUp={onNoteKeyRelease} onBlur={onNoteKeyRelease} />
       </div>
       <button className="btn btn-sm btn-ghost mt-1.5" disabled={busy}
         onClick={() => run(() => api(`/kpis/${kpi.id}/contribution/explanation`, { method: 'PUT', body: { year: period.year, month: period.month, text: explanation } }), 'Note saved.', () => clearDraft(noteDraftKey))}>

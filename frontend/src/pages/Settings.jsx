@@ -37,6 +37,14 @@ const SECTIONS = [
       { key: 'redEscalateVC', label: 'Escalate to VC / Council after (consecutive Red periods)', fallback: 4 },
     ],
   },
+  {
+    title: 'Submission window',
+    hint: 'When each month\'s KPI figures may actually be submitted for review. Opens on the day below (within the reporting month itself), runs on-time through month-end, then stays open — flagged late but still accepted — through the closing day of the FOLLOWING month. Nothing may be submitted outside this window.',
+    fields: [
+      { key: 'submissionOpenDay', label: 'Opens on day (of the reporting month)', fallback: 25 },
+      { key: 'submissionCloseDay', label: 'Closes on day (of the following month)', fallback: 3 },
+    ],
+  },
 ];
 const ALL_FIELDS = SECTIONS.flatMap((s) => s.fields);
 

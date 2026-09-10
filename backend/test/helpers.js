@@ -70,6 +70,12 @@ async function startTestServer() {
     WEB_CONCURRENCY: '1',
     SEED_PASSWORD: DEMO_PASSWORD,
     CORS_ORIGIN: '',
+    // Lets tests deterministically exercise every submission-window state
+    // (not_open/open/late/closed — see utils/submissionWindow.js) via an
+    // X-Test-Now request header, without which a real server always uses
+    // the real clock. Only ever set here, for a disposable test server —
+    // never present in a real deployment's own environment.
+    ALLOW_TEST_CLOCK_OVERRIDE: '1',
   };
 
   // Real migrations + real seed data, run exactly the way `npm run seed`
@@ -106,8 +112,8 @@ async function startTestServer() {
 // in, JSON body out, Bearer token auth) — no HTTP mocking, every call is a
 // genuine request against the server started above.
 function client(baseUrl) {
-  async function request(path, { method = 'GET', token, body } = {}) {
-    const headers = { 'Content-Type': 'application/json' };
+  async function request(path, { method = 'GET', token, body, headers: extraHeaders } = {}) {
+    const headers = { 'Content-Type': 'application/json', ...extraHeaders };
     if (token) headers.Authorization = `Bearer ${token}`;
     const res = await fetch(`${baseUrl}${path}`, {
       method,

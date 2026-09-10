@@ -42,7 +42,7 @@ export default function Login() {
 
         <h1 className="text-[15.5px] font-bold mb-1">Sign in</h1>
         <p className="text-[11.5px] text-ink-secondary leading-relaxed mb-3.5">
-          Strategic Plan Monitor · IRBM Monitoring &amp; Evaluation. Enter your ZOU email address and password.
+        Enter your ZOU email address and password.
         </p>
 
         {loginError && (

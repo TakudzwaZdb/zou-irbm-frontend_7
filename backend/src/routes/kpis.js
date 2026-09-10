@@ -2,6 +2,20 @@ const express = require('express');
 const db = require('../db');
 const { requireAuth, requirePerm } = require('../middleware/auth');
 const { canReadKpi } = require('../utils/scope');
+const { checkSubmissionWindow, wasLate, windowMessage, nowSqlString } = require('../utils/submissionWindow');
+
+// Shared guard for every "submit for review" route below (single, bulk, and
+// contribution alike) — draft entry itself is never gated, only the actual
+// submit action. Returns the live window check on success (so a caller can
+// still act on `.late`) or null after already sending a 403.
+function enforceSubmissionWindow(req, res, year, month) {
+  const win = checkSubmissionWindow(year, month, req);
+  if (!win.allowed) {
+    res.status(403).json({ error: windowMessage(year, month, win) || 'Submissions are not open for that period.', submissionWindow: win });
+    return null;
+  }
+  return win;
+}
 
 const router = express.Router();
 router.use(requireAuth);
@@ -143,6 +157,18 @@ function attachPreview(row) {
   if (!kpi || kpi.is_automated) return row;
   const base = previousOfficialValue(row.kpi_id, row.year, row.month, kpi.baseline);
   return { ...row, preview_value: base + Number(row.entered_value) };
+}
+
+// Marks a kpi_values (or kpi_contributions — both carry year/month/status/
+// submitted_at) row with whether it fell inside the late-but-accepted
+// grace window at the moment it was actually submitted — see
+// utils/submissionWindow.js. Applied independently of attachPreview (which
+// bails out early for several row shapes attachLate still needs to cover),
+// never overwrites anything already on the row, and is a no-op for a row
+// that was never submitted.
+function attachLate(row) {
+  if (!row || !row.submitted_at) return row;
+  return { ...row, late: wasLate(row.year, row.month, row.submitted_at) };
 }
 
 // The automated heart of the shared-KPI feature: whenever a contribution is
@@ -363,6 +389,7 @@ router.post('/bulk-submit', requirePerm('data_entry'), (req, res) => {
   if (!Array.isArray(ids) || ids.length === 0) {
     return res.status(400).json({ error: 'ids must be a non-empty array of KPI ids.' });
   }
+  const win = enforceSubmissionWindow(req, res, year, month); if (!win) return;
 
   const prepared = [];
   for (const rawId of ids) {
@@ -381,24 +408,25 @@ router.post('/bulk-submit', requirePerm('data_entry'), (req, res) => {
     prepared.push({ kpi, row });
   }
 
+  const submittedAt = nowSqlString(req);
   const applyAll = db.transaction(() => {
     for (const { kpi, row } of prepared) {
-      db.prepare('UPDATE kpi_values SET status = \'submitted\', submitted_at = datetime(\'now\'), return_comment = NULL WHERE id = ?').run(row.id);
+      db.prepare('UPDATE kpi_values SET status = \'submitted\', submitted_at = ?, return_comment = NULL WHERE id = ?').run(submittedAt, row.id);
       db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-        req.user.id, 'submit', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} submitted for review (bulk submit, ${prepared.length} KPI${prepared.length > 1 ? 's' : ''} in this batch).`
+        req.user.id, 'submit', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} submitted for review (bulk submit, ${prepared.length} KPI${prepared.length > 1 ? 's' : ''} in this batch)${win.late ? ' — late, within the grace window.' : '.'}`
       );
     }
     return prepared.length;
   });
 
-  res.json({ ok: true, submitted: applyAll() });
+  res.json({ ok: true, submitted: applyAll(), late: win.late });
 });
 
 router.get('/:id/values', (req, res) => {
   const kpi = getKpiOr404(req, res); if (!kpi) return;
   if (!canReadKpi(req.user, kpi)) return res.status(403).json({ error: 'That KPI is outside your scope.' });
   const rows = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? ORDER BY year, month').all(kpi.id);
-  res.json({ values: rows.map(attachPreview) });
+  res.json({ values: rows.map((r) => attachLate(attachPreview(r))) });
 });
 
 // Small in-request cache: values-by-period reads join back to `kpis` purely
@@ -427,7 +455,7 @@ router.get('/values', (req, res) => {
   const allowed = readableKpiIds(req.user);
   const rows = db.prepare('SELECT * FROM kpi_values WHERE year = ? AND month = ?').all(year, month)
     .filter((row) => allowed.has(row.kpi_id));
-  res.json({ values: rows.map(attachPreview) });
+  res.json({ values: rows.map((r) => attachLate(attachPreview(r))) });
 });
 
 // A range read across several months in one year — used by the quarterly /
@@ -441,6 +469,18 @@ router.get('/values-range', (req, res) => {
   const rows = db.prepare('SELECT * FROM kpi_values WHERE year = ? AND month BETWEEN ? AND ? ORDER BY month').all(year, fromMonth, toMonth)
     .filter((row) => allowed.has(row.kpi_id));
   res.json({ values: rows });
+});
+
+// Live submission-window status for one reporting period — lets the
+// frontend show a banner and disable Submit before ever attempting it,
+// rather than only reacting to a rejected request. Every signed-in user
+// may check this (it carries no KPI data of its own); no data_entry
+// permission required, same as PeriodPicker being available to anyone.
+router.get('/submission-window', (req, res) => {
+  const year = Number(req.query.year), month = Number(req.query.month);
+  if (!year || !month) return res.status(400).json({ error: 'year and month query params are required.' });
+  const win = checkSubmissionWindow(year, month, req);
+  res.json({ ...win, message: windowMessage(year, month, win) });
 });
 
 // Every current assignment, system-wide — small enough to serve whole and
@@ -527,7 +567,7 @@ router.get('/contributions', (req, res) => {
   const allowed = readableKpiIds(req.user);
   const contributions = db.prepare('SELECT * FROM kpi_contributions WHERE year = ? AND month = ?').all(year, month)
     .filter((c) => allowed.has(c.kpi_id));
-  res.json({ contributions });
+  res.json({ contributions: contributions.map(attachLate) });
 });
 
 // An assigned Individual sets/updates their OWN figure toward a shared
@@ -575,15 +615,17 @@ router.post('/:id/contribution/submit', requirePerm('data_entry'), (req, res) =>
   const kpi = getKpiOr404(req, res); if (!kpi) return;
   if (!isAssignedIndividual(req.user, kpi)) return res.status(403).json({ error: 'You are not assigned to contribute to this KPI.' });
   const { year, month } = req.body || {};
+  if (!year || !month) return res.status(400).json({ error: 'year and month are required.' });
+  const win = enforceSubmissionWindow(req, res, year, month); if (!win) return;
   const row = db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND individual_id = ? AND year = ? AND month = ?').get(kpi.id, req.user.scope_id, year, month);
   if (!row) return res.status(404).json({ error: 'No contribution recorded for that period yet.' });
   if (row.value == null) return res.status(400).json({ error: 'Enter a value before submitting.' });
 
-  db.prepare('UPDATE kpi_contributions SET status = \'submitted\', submitted_at = datetime(\'now\'), return_comment = NULL WHERE id = ?').run(row.id);
+  db.prepare('UPDATE kpi_contributions SET status = \'submitted\', submitted_at = ?, return_comment = NULL WHERE id = ?').run(nowSqlString(req), row.id);
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'submit_contribution', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} contribution submitted to Unit Head for review.`
+    req.user.id, 'submit_contribution', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} contribution submitted to Unit Head for review${win.late ? ' (late — within the grace window).' : '.'}`
   );
-  res.json({ ok: true });
+  res.json({ ok: true, late: win.late });
 });
 
 // The Unit Head who owns this shared KPI approves ONE contributor's
@@ -801,6 +843,8 @@ router.post('/:id/submit', requirePerm('data_entry'), (req, res) => {
   const kpi = getKpiOr404(req, res); if (!kpi) return;
   if (!isOwner(req.user, kpi)) return res.status(403).json({ error: 'You can only submit KPIs you own.' });
   const { year, month } = req.body || {};
+  if (!year || !month) return res.status(400).json({ error: 'year and month are required.' });
+  const win = enforceSubmissionWindow(req, res, year, month); if (!win) return;
   const row = db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month);
   if (!row) return res.status(404).json({ error: 'No value recorded for that period yet.' });
   // An automated (shared/contribution-summed) KPI's own row is never typed
@@ -811,11 +855,11 @@ router.post('/:id/submit', requirePerm('data_entry'), (req, res) => {
   const missing = kpi.is_automated ? row.value == null : row.entered_value == null;
   if (missing) return res.status(400).json({ error: 'Enter a value before submitting.' });
 
-  db.prepare('UPDATE kpi_values SET status = \'submitted\', submitted_at = datetime(\'now\'), return_comment = NULL WHERE id = ?').run(row.id);
+  db.prepare('UPDATE kpi_values SET status = \'submitted\', submitted_at = ?, return_comment = NULL WHERE id = ?').run(nowSqlString(req), row.id);
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'submit', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} submitted for review.`
+    req.user.id, 'submit', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} submitted for review${win.late ? ' (late — within the grace window).' : '.'}`
   );
-  res.json({ ok: true });
+  res.json({ ok: true, late: win.late });
 });
 
 // This is where "current performance" actually becomes official — the

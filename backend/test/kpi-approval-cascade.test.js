@@ -35,11 +35,16 @@ test("a Sub-owned KPI submission is approved once, finally, by its own Programme
   const kpiId = created.body.kpi.id;
 
   const year = 2032, month = 3; // an isolated period this test file owns
+  // The submission-window feature ties a real submit to real (or, in tests,
+  // fake — see helpers.js's ALLOW_TEST_CLOCK_OVERRIDE) wall-clock time
+  // against the period itself, so submitting into this isolated future
+  // period needs an X-Test-Now that actually falls inside its own window.
+  const withinWindow = { headers: { 'X-Test-Now': '2032-03-26T00:00:00Z' } };
 
   // Rep enters and submits this period's figure.
   let r = await api.request(`/api/kpis/${kpiId}/value`, { method: 'PUT', token: rep, body: { year, month, value: 50 } });
   assert.equal(r.status, 200);
-  r = await api.request(`/api/kpis/${kpiId}/submit`, { method: 'POST', token: rep, body: { year, month } });
+  r = await api.request(`/api/kpis/${kpiId}/submit`, { method: 'POST', token: rep, body: { year, month }, ...withinWindow });
   assert.equal(r.status, 200);
 
   // CPU: no longer any path into this cascade — real 403, not 200, and

@@ -33,6 +33,13 @@ export function AppProvider({ children }) {
   const [hiddenKpiIds, setHiddenKpiIds] = useState(() => new Set());
   const [settings, setSettings] = useState({});
   const [values, setValues] = useState({});
+  // Whether THIS period's KPI/contribution figures may actually be
+  // submitted right now (see backend's utils/submissionWindow.js) — a
+  // status ('not_open' | 'open' | 'late' | 'closed'), whether the window is
+  // open at all, and a ready-to-show message when it isn't. Loaded per
+  // period exactly like `values`, so switching the PeriodPicker always
+  // reflects that period's own window, not the one you started on.
+  const [submissionWindow, setSubmissionWindow] = useState({ status: 'open', allowed: true, late: false, message: null });
   // Each assignee's own monthly figure toward a shared Unit-owned KPI (see
   // lib/scope.js's canContribute / backend's kpi_contributions) — a flat
   // array like `assignments`, not a map, since more than one row can share
@@ -110,6 +117,11 @@ export function AppProvider({ children }) {
     setContributions(r.contributions);
   }, []);
 
+  const loadSubmissionWindow = useCallback(async (p) => {
+    const r = await api(`/kpis/submission-window?year=${p.year}&month=${p.month}`);
+    setSubmissionWindow(r);
+  }, []);
+
   const loadPerfValues = useCallback(async (pp) => {
     const [fromMonth, toMonth] = rangeFor(pp.type, pp.idx);
     const r = await api(`/kpis/values-range?year=${pp.year}&fromMonth=${fromMonth}&toMonth=${toMonth}`);
@@ -166,12 +178,12 @@ export function AppProvider({ children }) {
     setKpis(kpiRes.kpis);
     setSettings(settingsRes.settings);
     setAssignments(assignRes.assignments);
-    await Promise.all([loadValuesForPeriod(p), loadContributionsForPeriod(p), reloadHidden(), reloadTemplates()]);
+    await Promise.all([loadValuesForPeriod(p), loadContributionsForPeriod(p), loadSubmissionWindow(p), reloadHidden(), reloadTemplates()]);
     const pp = { type: 'monthly', year: p.year, idx: defaultIdx('monthly', p.month) };
     setPerfPeriod(pp);
     await loadPerfValues(pp);
     await reloadUnread();
-  }, [loadValuesForPeriod, loadContributionsForPeriod, loadPerfValues, reloadUnread, reloadHidden, reloadTemplates]);
+  }, [loadValuesForPeriod, loadContributionsForPeriod, loadSubmissionWindow, loadPerfValues, reloadUnread, reloadHidden, reloadTemplates]);
 
   // Refresh everything on demand (the header's Refresh control — see
   // LiveIndicator.jsx) — values, the performance lens, and the org/KPI
@@ -186,11 +198,11 @@ export function AppProvider({ children }) {
     try {
       const [orgRes, kpiRes, settingsRes, assignRes] = await Promise.all([api('/org'), api('/kpis'), api('/settings'), api('/kpis/assignments')]);
       setOrg(orgRes); setKpis(kpiRes.kpis); setSettings(settingsRes.settings); setAssignments(assignRes.assignments);
-      await Promise.all([loadValuesForPeriod(period), loadContributionsForPeriod(period), loadPerfValues(perfPeriod), reloadUnread(), reloadHidden(), reloadTemplates()]);
+      await Promise.all([loadValuesForPeriod(period), loadContributionsForPeriod(period), loadSubmissionWindow(period), loadPerfValues(perfPeriod), reloadUnread(), reloadHidden(), reloadTemplates()]);
     } finally {
       setSyncing(false);
     }
-  }, [period, perfPeriod, loadValuesForPeriod, loadContributionsForPeriod, loadPerfValues, reloadUnread, reloadHidden, reloadTemplates]);
+  }, [period, perfPeriod, loadValuesForPeriod, loadContributionsForPeriod, loadSubmissionWindow, loadPerfValues, reloadUnread, reloadHidden, reloadTemplates]);
 
   // The fast path: everyone's day-to-day reason to hit refresh is "did
   // anyone's figures move" — a value someone just saved, a contribution
@@ -208,18 +220,19 @@ export function AppProvider({ children }) {
     quickRefreshing.current = true;
     setQuickSyncing(true);
     try {
-      await Promise.all([loadValuesForPeriod(period), loadContributionsForPeriod(period), loadPerfValues(perfPeriod), reloadUnread()]);
+      await Promise.all([loadValuesForPeriod(period), loadContributionsForPeriod(period), loadSubmissionWindow(period), loadPerfValues(perfPeriod), reloadUnread()]);
     } finally {
       setQuickSyncing(false);
       quickRefreshing.current = false;
     }
-  }, [period, perfPeriod, loadValuesForPeriod, loadContributionsForPeriod, loadPerfValues, reloadUnread]);
+  }, [period, perfPeriod, loadValuesForPeriod, loadContributionsForPeriod, loadSubmissionWindow, loadPerfValues, reloadUnread]);
 
   const changePeriod = useCallback((p) => {
     setPeriod(p);
     loadValuesForPeriod(p);
     loadContributionsForPeriod(p);
-  }, [loadValuesForPeriod, loadContributionsForPeriod]);
+    loadSubmissionWindow(p);
+  }, [loadValuesForPeriod, loadContributionsForPeriod, loadSubmissionWindow]);
 
   // Stores a fresh token + user from /login or /change-password, and — the
   // one branch point both share — only loads the rest of the app's data if
@@ -325,6 +338,7 @@ export function AppProvider({ children }) {
   const value = {
     booting, user, loginError, login, verifyMfa, logout, logoutEverywhere, completePasswordChange, hasPerm, refreshUser,
     org, kpis, settings, values, period, changePeriod,
+    submissionWindow,
     assignments, reloadAssignments,
     templates, reloadTemplates,
     hiddenKpiIds, hideKpi, unhideKpi,
@@ -333,7 +347,7 @@ export function AppProvider({ children }) {
     perfPeriod, perfValues, changePerfPeriod,
     refreshAll, quickRefresh, quickSyncing,
     reloadCore: () => loadCore(period),
-    reloadValues: () => Promise.all([loadValuesForPeriod(period), loadContributionsForPeriod(period)]),
+    reloadValues: () => Promise.all([loadValuesForPeriod(period), loadContributionsForPeriod(period), loadSubmissionWindow(period)]),
     setSettings,
     lastSync, syncing,
     unreadMessages, reloadUnread,

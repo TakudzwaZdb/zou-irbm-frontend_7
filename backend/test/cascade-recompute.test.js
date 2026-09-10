@@ -51,10 +51,19 @@ test('amending and re-approving an earlier period cascades the new total forward
   assert.equal(kpiRes.status, 201);
   const kpiId = kpiRes.body.kpi.id;
 
+  // The submission-window feature ties a real submit to real (or, in tests,
+  // fake — see helpers.js's ALLOW_TEST_CLOCK_OVERRIDE) wall-clock time
+  // against the period itself, and only opens on day 25 by default — the
+  // 26th of each fixed test month is always both on-or-after that default
+  // open day AND a real day in every month (including February).
+  function withinWindow(year, month) {
+    return { headers: { 'X-Test-Now': `${year}-${String(month).padStart(2, '0')}-26T00:00:00Z` } };
+  }
+
   async function enterSubmitApprove(year, month, value) {
     let r = await api.request(`/api/kpis/${kpiId}/value`, { method: 'PUT', token: indivToken, body: { year, month, value } });
     assert.equal(r.status, 200, `enter ${year}-${month} failed: ${JSON.stringify(r.body)}`);
-    r = await api.request(`/api/kpis/${kpiId}/submit`, { method: 'POST', token: indivToken, body: { year, month } });
+    r = await api.request(`/api/kpis/${kpiId}/submit`, { method: 'POST', token: indivToken, body: { year, month }, ...withinWindow(year, month) });
     assert.equal(r.status, 200, `submit ${year}-${month} failed: ${JSON.stringify(r.body)}`);
     r = await api.request(`/api/kpis/${kpiId}/approve`, { method: 'POST', token: headToken, body: { year, month } });
     assert.equal(r.status, 200, `approve ${year}-${month} failed: ${JSON.stringify(r.body)}`);

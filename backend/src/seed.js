@@ -35,6 +35,8 @@ const txn = db.transaction(() => {
   insertSetting.run('escalateVC', '11');
   insertSetting.run('redEscalateProgramme', '2');
   insertSetting.run('redEscalateVC', '4');
+  insertSetting.run('submissionOpenDay', '25');
+  insertSetting.run('submissionCloseDay', '3');
 
   const passwordHash = bcrypt.hashSync(DEMO_PASSWORD, 10);
   const insertUser = db.prepare(

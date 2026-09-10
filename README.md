@@ -1287,6 +1287,50 @@ while still talking to the same real backend over the same REST API.
   performance-lens period more than once — the exact case that was broken
   before. The reproduction KPIs were removed afterward, and the full
   backend test suite (28 tests) still passes.
+- **New: a system-enforced monthly submission window**, so figures can't be
+  submitted for review at arbitrary times. Two admin-configurable settings
+  (Settings → "Submission window", `manage_settings` permission — the CPU
+  role by default) control it: **Opens on day** (default **25**, of the
+  reporting month itself) and **Closes on day** (default **3**, of the
+  *following* month). For any given month: before the open day, submitting
+  is blocked ("not open yet"); from the open day through the last day of
+  the month, submission is normal/on-time; from the 1st through the close
+  day of the next month, submission is still accepted but flagged **late**;
+  after the close day, submission is blocked outright until next month's
+  window opens. Saving a draft is never blocked — only the final "Submit
+  for review" step is affected, at every tier (Individual, Unit, Sub-
+  programme direct-value submissions, `POST /:id/submit` and
+  `/bulk-submit`, and Unit contribution submissions,
+  `POST /:id/contribution/submit`), enforced server-side (403 with a
+  human-readable reason) and mirrored client-side (the button is disabled
+  with the same message as its tooltip, and a banner on "My Data Entry"
+  explains why *before* anyone tries). A "Late" chip appears next to any
+  KPI/contribution that was actually submitted inside the grace window, on
+  My Data Entry, the Approvals Queue, and contribution cards, computed from
+  each submission's own real timestamp rather than "now" — so it stays
+  correct forever, not just at submission time. New backend module
+  `backend/src/utils/submissionWindow.js`; new endpoint
+  `GET /api/kpis/submission-window?year=&month=`; new settings keys
+  `submissionOpenDay`/`submissionCloseDay` (validated server-side as whole
+  numbers 1–31). Covered by 4 new backend tests (window-state transitions,
+  settings validation, submit/bulk-submit blocking + late-flag persistence,
+  contribution-submit blocking + late-flag persistence) using a test-only
+  `X-Test-Now` clock-override header — gated behind an env var the test
+  harness sets and production never does, so the real submit routes always
+  use the real clock. Full suite: 32/32 passing. This is separate from the
+  pre-existing "Late-submission cut-offs" / escalation-trigger settings
+  just above it on the same Settings page, which govern something
+  different — per-tier grace periods used only to decide *when to escalate*
+  an overdue submission up the org hierarchy (see "Compliance &
+  Escalations"), not whether submitting is technically possible. The two
+  now sit side by side with overlapping "day-count" language; worth a look
+  if that reads as confusing in practice.
+  ⚠️ **Operational note:** under the default settings, a submission window
+  is only ever open for 3–9 days out of every month (the 25th through the
+  3rd of the next month) — everything else is "not open yet" or "closed".
+  If every period looks blocked right after this ships, that's expected
+  under the defaults, not a bug — adjust the open/close days in Settings,
+  or wait for the next window.
 
 ## What's simplified versus the original prototype
 
