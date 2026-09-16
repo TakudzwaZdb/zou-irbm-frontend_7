@@ -13,10 +13,12 @@ import { inJurisdiction, byId } from '../lib/scope.js';
 // forms. See OrgStructure.jsx (Organisation Maintenance) for the other one.
 export default function KpiManagement() {
   const { user, org, kpis, hasPerm } = useApp();
-  const canKpi = hasPerm('create_kpi');
+  const canCreateKpi = hasPerm('create_kpi');
+  const canEditKpi = canCreateKpi || hasPerm('edit_kpi');
+  const canDeleteKpi = canCreateKpi || hasPerm('delete_kpi');
   const canTargets = hasPerm('edit_targets');
 
-  if (!canKpi && !canTargets) {
+  if (!canCreateKpi && !canEditKpi && !canDeleteKpi && !canTargets) {
     return (
       <div>
         <div className="mb-5">
@@ -38,10 +40,8 @@ export default function KpiManagement() {
         <p className="text-[13px] text-ink-secondary">Create, edit, and remove KPIs across the catalogue.</p>
       </div>
 
-      {canKpi && <AddKpiForm />}
-      {canKpi && <KpiTemplatesSection />}
-      {(canKpi || canTargets) && <EditKpiForm user={user} kpis={kpis} org={org} canFullEdit={canKpi} />}
-      {canKpi && <RecentlyRemoved />}
+      {(canEditKpi || canDeleteKpi || canTargets) && <CreatedKpisTable kpis={kpis} canFullEdit={canEditKpi} canEditTargets={canTargets} canCreate={canCreateKpi} canDelete={canDeleteKpi} />}
+      {canDeleteKpi && <RecentlyRemoved />}
     </div>
   );
 }
@@ -159,7 +159,7 @@ function RecentlyRemoved() {
 // Unit-scoped pool is strictly more useful (one definition, any number of
 // people in that unit can adopt it) for the same intent.
 function AddKpiForm() {
-  const { org, reloadCore } = useApp();
+  const { org, reloadCore, reloadTemplates } = useApp();
   const toast = useToast();
   const [ownerType, setOwnerType] = useState('sub');
   const [ownerId, setOwnerId] = useState('');
@@ -205,7 +205,7 @@ function AddKpiForm() {
         toast(assigneeIds.length ? `KPI created and assigned to ${assigneeIds.length} custodian(s).` : 'KPI created.');
       }
       setName(''); setType(''); setMeasure(''); setBaseline(''); setTarget(''); setAssigneeIds([]);
-      await reloadCore();
+      await Promise.all([reloadCore(), ownerType === 'individual' ? reloadTemplates() : Promise.resolve()]);
     } catch (err) { toast(err.message, 'err'); }
     finally { setBusy(false); }
   }
@@ -263,6 +263,192 @@ function AddKpiForm() {
         )}
         <div><button className="btn btn-primary btn-sm" disabled={busy}>Create KPI</button></div>
       </form>
+    </div>
+  );
+}
+
+
+// Created KPI catalogue — hidden by default. Users click "Click to view created KPIs"
+// to reveal the table. A search filter is available only while the catalogue is open.
+function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDelete }) {
+  const { org, reloadCore } = useApp();
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const [busyId, setBusyId] = useState(null);
+
+  const activeKpis = (kpis || []).filter((k) => !k.deleted_at && !k.removed_at);
+
+  const filtered = activeKpis.filter((k) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+
+    return [
+      k.name,
+      k.type,
+      k.measure,
+      k.owner_type,
+      k.owner_name,
+      k.unit_name,
+      k.subprogramme_name,
+      k.subprogram_name,
+      k.programme_name,
+      ownerName(k),
+    ]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(q));
+  });
+
+  function ownerName(k) {
+    if (k.owner_name || k.subprogramme_name || k.subprogram_name || k.unit_name) {
+      return k.owner_name || k.subprogramme_name || k.subprogram_name || k.unit_name;
+    }
+    const owners = {
+      sub: org.subs,
+      unit: org.units,
+      individual: org.individuals,
+    };
+    return owners[k.owner_type]?.find((owner) => owner.id === k.owner_id)?.name;
+  }
+
+  function startEdit(k) {
+    setEditingId(k.id);
+    setDraft({ name: k.name || '', type: k.type || '', measure: k.measure || '', baseline: k.baseline ?? '', target: k.target ?? '' });
+  }
+
+  async function saveEdit(k) {
+    setBusyId(k.id);
+    try {
+      await api(`/kpis/${k.id}${canFullEdit ? '' : '/targets'}`, {
+        method: canFullEdit ? 'PUT' : 'PATCH',
+        body: canFullEdit
+          ? { ...draft, baseline: Number(draft.baseline), target: Number(draft.target) }
+          : { baseline: Number(draft.baseline), target: Number(draft.target) },
+      });
+      setEditingId(null);
+      setDraft(null);
+      toast('KPI updated.');
+      await reloadCore();
+    } catch (err) { toast(err.message, 'err'); }
+    finally { setBusyId(null); }
+  }
+
+  async function remove(k) {
+    if (!window.confirm(`Remove "${k.name}"? Its recorded values and history are kept and it can be restored later.`)) return;
+    setBusyId(k.id);
+    try {
+      await api(`/kpis/${k.id}`, { method: 'DELETE' });
+      toast(`"${k.name}" deleted.`);
+      await reloadCore();
+    } catch (err) { toast(err.message, 'err'); }
+    finally { setBusyId(null); }
+  }
+
+  function ownerLabel(k) {
+    const name = ownerName(k);
+    if (name) return name;
+    if (k.owner_type === 'sub') return 'Sub-programme';
+    if (k.owner_type === 'unit') return 'Unit';
+    if (k.owner_type === 'individual') return 'Individual';
+    return '—';
+  }
+
+  return (
+    <div className="card mt-4">
+      <button
+        type="button"
+        className="w-full flex items-center justify-between text-left"
+        onClick={() => {
+          setOpen((v) => !v);
+          if (open) setSearch('');
+        }}
+        aria-expanded={open}
+      >
+        <span className="font-display font-bold text-[14px] flex items-center gap-2">
+          Created KPIs
+          <span className="chip">{activeKpis.length}</span>
+        </span>
+        <span className="text-ink-muted text-[12px]">
+          {open ? 'Hide ▲' : 'Click to view ▼'}
+        </span>
+      </button>
+
+      <p className="text-[12px] text-ink-muted mt-1">
+        Created KPIs are hidden by default. Click to view the KPI catalogue and search the
+        KPIs you need.
+      </p>
+
+      {open && (
+        <div className="mt-3">
+          {canCreate && <AddKpiForm />}
+          <div className="mb-3">
+            <label className="field-label block mb-1">Search created KPIs</label>
+            <input
+              type="search"
+              className="field-input w-full"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by KPI name, type, measure, owner or programme…"
+              aria-label="Search created KPIs"
+            />
+          </div>
+
+          {filtered.length === 0 ? (
+            <div className="rounded-lg bg-sunken border border-line px-3 py-5 text-center text-[12px] text-ink-muted">
+              {activeKpis.length === 0
+                ? 'No created KPIs are currently available.'
+                : 'No KPIs match your search.'}
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-line">
+              <table className="w-full text-left text-[12px]">
+                <thead className="bg-sunken border-b border-line">
+                  <tr>
+                    <th className="px-3 py-2 font-bold whitespace-nowrap">KPI</th>
+                    <th className="px-3 py-2 font-bold whitespace-nowrap">Type</th>
+                    <th className="px-3 py-2 font-bold whitespace-nowrap">Measure</th>
+                    <th className="px-3 py-2 font-bold whitespace-nowrap">Owner</th>
+                    <th className="px-3 py-2 font-bold whitespace-nowrap">Baseline</th>
+                    <th className="px-3 py-2 font-bold whitespace-nowrap">Target</th>
+                    <th className="px-3 py-2 font-bold whitespace-nowrap">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((k) => (
+                    <tr key={k.id} className="border-b border-line last:border-b-0 hover:bg-sunken/60">
+                      <td className="px-3 py-2.5 font-semibold">{editingId === k.id && canFullEdit ? <input className="field-input min-w-32" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /> : (k.name || '—')}</td>
+                      <td className="px-3 py-2.5">{editingId === k.id && canFullEdit ? <input className="field-input min-w-28" value={draft.type} onChange={(e) => setDraft({ ...draft, type: e.target.value })} /> : (k.type || '—')}</td>
+                      <td className="px-3 py-2.5">{editingId === k.id && canFullEdit ? <input className="field-input min-w-28" value={draft.measure} onChange={(e) => setDraft({ ...draft, measure: e.target.value })} /> : (k.measure || '—')}</td>
+                      <td className="px-3 py-2.5">{ownerLabel(k)}</td>
+                      <td className="px-3 py-2.5 whitespace-nowrap">{editingId === k.id ? <input type="number" step="any" className="field-input w-24" value={draft.baseline} onChange={(e) => setDraft({ ...draft, baseline: e.target.value })} /> : (k.baseline ?? '—')}</td>
+                      <td className="px-3 py-2.5 whitespace-nowrap">{editingId === k.id ? <input type="number" step="any" className="field-input w-24" value={draft.target} onChange={(e) => setDraft({ ...draft, target: e.target.value })} /> : (k.target ?? '—')}</td>
+                      <td className="px-3 py-2.5 whitespace-nowrap">
+                        {editingId === k.id ? (
+                          <span className="flex gap-1">
+                            <button className="btn btn-sm btn-primary" disabled={busyId === k.id} onClick={() => saveEdit(k)}>Save</button>
+                            <button className="btn btn-sm" disabled={busyId === k.id} onClick={() => { setEditingId(null); setDraft(null); }}>Cancel</button>
+                          </span>
+                        ) : (
+                          <span className="flex gap-1">
+                            {(canFullEdit || canEditTargets) && <button className="btn btn-sm" onClick={() => startEdit(k)}>Edit</button>}
+                            {canDelete && <button className="btn btn-sm btn-danger" disabled={busyId === k.id} onClick={() => remove(k)}>Delete</button>}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="mt-2 text-[11px] text-ink-muted">
+            Showing {filtered.length} of {activeKpis.length} created KPI{activeKpis.length === 1 ? '' : 's'}.
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db');
-const { requireAuth, requirePerm } = require('../middleware/auth');
+const { requireAuth, requirePerm, requireAnyPerm } = require('../middleware/auth');
 const { canReadKpi } = require('../utils/scope');
 const { checkSubmissionWindow, wasLate, windowMessage, nowSqlString } = require('../utils/submissionWindow');
 
@@ -46,7 +46,7 @@ function kpiSubId(kpi) {
 // — "one of their duties" — without becoming its owner: approval still goes
 // to the Sub-programme Rep exactly as if the Unit Head had entered it.
 function isAssignedIndividual(user, kpi) {
-  if (kpi.owner_type !== 'unit' || user.role !== 'individual') return false;
+  if (kpi.owner_type !== 'unit' || user.role !== 'individual' || user.scope_type !== 'individual') return false;
   return !!db.prepare('SELECT 1 FROM kpi_assignments WHERE kpi_id = ? AND individual_id = ? AND deleted_at IS NULL').get(kpi.id, user.scope_id);
 }
 
@@ -58,7 +58,7 @@ function isAssignedIndividual(user, kpi) {
 function isOwner(user, kpi) {
   if (kpi.owner_type === 'sub') return user.role === 'rep' && user.scope_id === kpi.owner_id;
   if (kpi.owner_type === 'unit') return user.role === 'unithead' && user.scope_id === kpi.owner_id;
-  return user.role === 'individual' && user.scope_id === kpi.owner_id;
+  return user.role === 'individual' && user.scope_type === 'individual' && user.scope_id === kpi.owner_id;
 }
 
 // Is this user the Unit Head who owns this Unit-scoped KPI? (The only person
@@ -102,7 +102,15 @@ function inJurisdiction(user, kpi) {
     if (kpi.owner_type === 'individual') return individualUnitId(kpi.owner_id) === user.scope_id;
     return false;
   }
-  if (user.role === 'individual') return kpi.owner_type === 'individual' && kpi.owner_id === user.scope_id;
+  if (user.role === 'individual') {
+    if (user.scope_type === 'individual') return kpi.owner_type === 'individual' && kpi.owner_id === user.scope_id;
+    if (user.scope_type === 'unit') return kpi.owner_type === 'unit' && kpi.owner_id === user.scope_id || kpi.owner_type === 'individual' && individualUnitId(kpi.owner_id) === user.scope_id;
+    if (user.scope_type === 'sub') return kpiSubId(kpi) === user.scope_id;
+    if (user.scope_type === 'programme') {
+      const subId = kpiSubId(kpi);
+      return subId != null && db.prepare('SELECT programme_id FROM subs WHERE id = ?').get(subId)?.programme_id === user.scope_id;
+    }
+  }
   return false;
 }
 
@@ -736,7 +744,7 @@ router.patch('/:id/targets', requirePerm('edit_targets'), (req, res) => {
 // approval history and any live assignments/contributions against an owner
 // they were never actually recorded under — retiring it (delete) and
 // creating a fresh one under the right owner is the honest way to do that.
-router.put('/:id', requirePerm('create_kpi'), (req, res) => {
+router.put('/:id', requireAnyPerm('create_kpi', 'edit_kpi'), (req, res) => {
   const kpi = getKpiOr404(req, res); if (!kpi) return;
   if (!inJurisdiction(req.user, kpi)) return res.status(403).json({ error: 'This KPI is outside your scope.' });
   const { name, type, measure, baseline, target } = req.body || {};
@@ -766,7 +774,7 @@ router.put('/:id', requirePerm('create_kpi'), (req, res) => {
 // not just summarized in an audit_log line. Fully reversible: POST
 // /:id/restore below clears the stamp and the KPI reappears everywhere
 // exactly as it was, values and all.
-router.delete('/:id', requirePerm('create_kpi'), (req, res) => {
+router.delete('/:id', requireAnyPerm('create_kpi', 'delete_kpi'), (req, res) => {
   const kpi = getKpiOr404(req, res); if (!kpi) return;
   if (!inJurisdiction(req.user, kpi)) return res.status(403).json({ error: 'This KPI is outside your scope.' });
 
@@ -782,14 +790,14 @@ router.delete('/:id', requirePerm('create_kpi'), (req, res) => {
 // GET /api/org/removed already provides for the org structure, scoped to
 // this create_kpi holder's own jurisdiction so a Unit Head only sees KPIs
 // they could actually restore.
-router.get('/removed', requirePerm('create_kpi'), (req, res) => {
+router.get('/removed', requireAnyPerm('create_kpi', 'delete_kpi'), (req, res) => {
   const rows = db.prepare("SELECT * FROM kpis WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC").all();
   res.json({ kpis: rows.filter((k) => inJurisdiction(req.user, k)) });
 });
 
 // Restore a previously-removed KPI — clears deleted_at and it reappears in
 // every active list/lookup exactly as it was, values and all.
-router.post('/:id/restore', requirePerm('create_kpi'), (req, res) => {
+router.post('/:id/restore', requireAnyPerm('create_kpi', 'delete_kpi'), (req, res) => {
   const kpi = db.prepare('SELECT * FROM kpis WHERE id = ? AND deleted_at IS NOT NULL').get(req.params.id);
   if (!kpi) return res.status(404).json({ error: 'Removed KPI not found.' });
   if (!inJurisdiction(req.user, kpi)) return res.status(403).json({ error: 'This KPI is outside your scope.' });

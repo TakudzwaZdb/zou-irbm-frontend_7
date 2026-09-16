@@ -62,6 +62,76 @@ test('RBAC: ictadmin itself can reach the same route', async () => {
   assert.ok(Array.isArray(r.body.users) && r.body.users.length > 0);
 });
 
+test('permission grants are catalog-valid, returned immediately, and live on the next request', async () => {
+  const { token: adminToken } = await api.login('l.chikomo@zou.ac.zw');
+  const directory = await api.request('/api/users', { token: adminToken });
+  const target = directory.body.users.find((user) => user.role === 'individual');
+  assert.ok(target, 'expected an Individual account');
+
+  const grant = await api.request(`/api/users/${target.id}/permissions/view_audit/grant`, {
+    method: 'POST', token: adminToken,
+  });
+  assert.equal(grant.status, 200);
+  assert.ok(grant.body.user.permissions.includes('view_audit'));
+
+  const refreshed = await api.request('/api/users', { token: adminToken });
+  const refreshedTarget = refreshed.body.users.find((user) => user.id === target.id);
+  assert.ok(refreshedTarget.permissions.includes('view_audit'));
+
+  const { token: targetToken } = await api.login(target.email);
+  const targetMe = await api.request('/api/auth/me', { token: targetToken });
+  assert.equal(targetMe.status, 200);
+  assert.ok(targetMe.body.user.permissions.includes('view_audit'));
+  const targetReports = await api.request('/api/audit', { token: targetToken });
+  assert.equal(targetReports.status, 200, 'the granted permission must activate the protected capability for the target account');
+
+  const invalid = await api.request(`/api/users/${target.id}/permissions/not_a_real_permission/revoke`, {
+    method: 'POST', token: adminToken,
+  });
+  assert.equal(invalid.status, 404);
+
+  const revoke = await api.request(`/api/users/${target.id}/permissions/view_audit/revoke`, {
+    method: 'POST', token: adminToken,
+  });
+  assert.equal(revoke.status, 200);
+  assert.ok(!revoke.body.user.permissions.includes('view_audit'));
+});
+
+test('role changes reject an occupied post by name but allow the Individual role', async () => {
+  const { token } = await api.login('l.chikomo@zou.ac.zw');
+  const directory = await api.request('/api/users', { token });
+  assert.equal(directory.status, 200);
+  const occupier = directory.body.users
+    .filter((user) => user.role === 'unithead' && user.scope_type === 'unit')
+    .sort((a, b) => a.id - b.id)[0];
+  const target = directory.body.users.find((user) => user.role === 'individual' && user.id !== occupier?.id);
+  assert.ok(occupier && target, 'expected a Unit Head and a separate Individual account');
+
+  const occupied = await api.request(`/api/users/${target.id}/role`, {
+    method: 'PATCH',
+    token,
+    body: { role: 'unithead', scopeType: 'unit', scopeId: occupier.scope_id },
+  });
+  assert.equal(occupied.status, 400);
+  assert.match(occupied.body.error, new RegExp(`already occupied by ${occupier.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+
+  const missingIndividualScope = await api.request(`/api/users/${target.id}/role`, {
+    method: 'PATCH',
+    token,
+    body: { role: 'individual', scopeType: 'individual', scopeId: null },
+  });
+  assert.equal(missingIndividualScope.status, 400);
+  assert.match(missingIndividualScope.body.error, /scope selection is required/i);
+
+  const individual = await api.request(`/api/users/${target.id}/role`, {
+    method: 'PATCH',
+    token,
+    body: { role: 'individual', scopeType: 'individual', scopeId: target.scope_id },
+  });
+  assert.equal(individual.status, 200);
+  assert.equal(individual.body.user.role, 'individual');
+});
+
 test('sign out everywhere immediately invalidates the token that called it', async () => {
   const { token } = await api.login('n.moyana@zou.ac.zw');
   let r = await api.request('/api/auth/me', { token });

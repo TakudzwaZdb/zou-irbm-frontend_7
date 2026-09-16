@@ -10,11 +10,11 @@ import Approvals from './pages/Approvals.jsx';
 import Framework from './pages/Framework.jsx';
 import KpiManagement from './pages/KpiManagement.jsx';
 import OrganisationBuilder from './pages/OrganisationBuilder.jsx';
-import OrgStructure from './pages/OrgStructure.jsx';
 import Compliance from './pages/Compliance.jsx';
 import Audit from './pages/Audit.jsx';
 import Settings from './pages/Settings.jsx';
 import Users from './pages/Users.jsx';
+import Permissions from './pages/Permissions.jsx';
 import Profile from './pages/Profile.jsx';
 import Messages from './pages/Messages.jsx';
 
@@ -34,13 +34,13 @@ const PAGES = {
   framework: Framework,
   kpiManagement: KpiManagement,
   orgBuilder: OrganisationBuilder,
-  orgStructure: OrgStructure,
   planning: Planning,
   compliance: Compliance,
   reports: Reports,
   audit: Audit,
   settings: Settings,
   users: Users,
+  permissions: Permissions,
   profile: Profile,
   messages: Messages,
 };

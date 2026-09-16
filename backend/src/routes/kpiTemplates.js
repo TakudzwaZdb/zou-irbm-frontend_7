@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db');
-const { requireAuth, requirePerm } = require('../middleware/auth');
+const { requireAuth, requirePerm, requireAnyPerm } = require('../middleware/auth');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -43,7 +43,7 @@ router.get('/', (req, res) => {
 // routes/kpis.js's GET /removed and routes/org.js's GET /api/org/removed,
 // scoped to this one catalog so whoever can create a template can also see
 // (and restore) one they or someone else just took out of the pool.
-router.get('/removed', requirePerm('create_kpi'), (req, res) => {
+router.get('/removed', requireAnyPerm('create_kpi', 'delete_kpi'), (req, res) => {
   const templates = db.prepare(
     `SELECT t.*, u.name AS unit_name
      FROM kpi_templates t JOIN units u ON u.id = t.unit_id
@@ -82,7 +82,7 @@ router.post('/', requirePerm('create_kpi'), (req, res) => {
 // picked it up yet. Nothing is destroyed: a deleted_at stamp, not a real
 // DELETE (see db.js's softDeleteTables), so the definition itself — name,
 // type, measure, baseline, target — stays intact and restorable below.
-router.delete('/:id', requirePerm('create_kpi'), (req, res) => {
+router.delete('/:id', requireAnyPerm('create_kpi', 'delete_kpi'), (req, res) => {
   const template = db.prepare('SELECT * FROM kpi_templates WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!template) return res.status(404).json({ error: 'Template not found.' });
 
@@ -97,7 +97,7 @@ router.delete('/:id', requirePerm('create_kpi'), (req, res) => {
 // Restore a previously-removed template — clears deleted_at and it
 // reappears in the active pool exactly as it was, same pattern as every
 // other restore route in this app.
-router.post('/:id/restore', requirePerm('create_kpi'), (req, res) => {
+router.post('/:id/restore', requireAnyPerm('create_kpi', 'delete_kpi'), (req, res) => {
   const template = db.prepare('SELECT * FROM kpi_templates WHERE id = ? AND deleted_at IS NOT NULL').get(req.params.id);
   if (!template) return res.status(404).json({ error: 'Removed template not found.' });
 

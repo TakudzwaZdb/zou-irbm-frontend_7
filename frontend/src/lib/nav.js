@@ -28,13 +28,13 @@ export const NAV_ITEMS = {
   // Create/Update navigation then further narrows what a holder of just one
   // of them can actually do — see OrganisationBuilder.jsx).
   orgBuilder: { label: 'Organisation Setup', icon: '🏗', perm: ['manage_org_units', 'create_org_units', 'edit_org_units', 'add_individual'] },
-  orgStructure: { label: 'Organisation Maintenance', icon: '🏛', perm: ['manage_org_units', 'add_individual'] },
   planning: { label: 'Annual Plan & Budget', icon: '🧾' },
   compliance: { label: 'Compliance & Escalations', icon: '⏱' },
   reports: { label: 'Reports', icon: '▤', perm: 'view_reports' },
   audit: { label: 'Audit Log', icon: '≣', perm: 'view_audit' },
   settings: { label: 'Settings', icon: '⚙', perm: 'manage_settings' },
-  users: { label: 'Permissions', icon: '🔑', perm: 'manage_users' },
+  users: { label: 'User & Roles', icon: '🔑', perm: 'manage_users' },
+  permissions: { label: 'Permissions', icon: '☷', perm: 'manage_users' },
   // No `perm` gate — internal messaging is deliberately open to every
   // signed-in account regardless of role or permissions, since the whole
   // point is real communication reaching straight across tiers.
@@ -90,13 +90,13 @@ export const NAV_ITEMS = {
 export const ROLE_NAV_KEYS = {
   exec: ['overview', 'framework', 'planning', 'compliance', 'reports', 'messages'],
   individual: ['entry', 'overview', 'framework', 'messages'],
-  unithead: ['entry', 'approvals', 'overview', 'framework', 'orgBuilder', 'orgStructure', 'planning', 'messages'],
-  rep: ['entry', 'approvals', 'overview', 'framework', 'orgBuilder', 'orgStructure', 'planning', 'messages'],
-  cpu: ['overview', 'approvals', 'framework', 'kpiManagement', 'orgBuilder', 'orgStructure', 'planning', 'compliance', 'reports', 'audit', 'settings', 'messages'],
+  unithead: ['entry', 'approvals', 'overview', 'framework', 'orgBuilder', 'planning', 'messages'],
+  rep: ['entry', 'approvals', 'overview', 'framework', 'orgBuilder', 'planning', 'messages'],
+  cpu: ['overview', 'approvals', 'framework', 'kpiManagement', 'orgBuilder', 'planning', 'compliance', 'reports', 'audit', 'settings', 'messages'],
   // ICT System Administrator keeps 'framework' — the org chart read-only,
   // same as every other role — alongside the pages that act on the org
   // (KPI Management / Organisation Setup / Organisation Maintenance).
-  ictadmin: ['overview', 'framework', 'kpiManagement', 'orgBuilder', 'orgStructure', 'users', 'audit', 'messages'],
+  ictadmin: ['overview', 'framework', 'kpiManagement', 'orgBuilder', 'users', 'permissions', 'audit', 'messages'],
   // 'approvals' added: a Sub-programme's own KPI submission is approved by
   // its own Programme Head, finally (see lib/scope.js's isApprover /
   // routes/kpis.js) — CPU has no role in this cascade — so Programme Head
@@ -112,7 +112,12 @@ export const ROLE_NAV_KEYS = {
 };
 
 export function currentNav(user, hasPerm) {
-  const keys = ROLE_NAV_KEYS[user.role] || ['overview'];
+  const roleKeys = ROLE_NAV_KEYS[user.role] || ['overview'];
+  // A permission grant must be enough to make its page reachable, even when
+  // the recipient's role did not originally list that page. Role lists still
+  // control pages with no permission gate, such as Planning and Messages.
+  const grantedKeys = Object.keys(NAV_ITEMS).filter((key) => NAV_ITEMS[key].perm && !roleKeys.includes(key));
+  const keys = [...roleKeys, ...grantedKeys];
   return keys.filter((k) => {
     const item = NAV_ITEMS[k];
     if (!item.perm) return true;

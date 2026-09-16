@@ -65,17 +65,19 @@ export default function OrgTree({ setRoute, onNavigate }) {
 
   function visibleSubs(programmeId) {
     const subs = subsOfProgramme(org, programmeId);
+    if (user.role === 'individual' && forced?.kind === 'programme') return subs;
     if (['rep', 'unithead', 'individual'].includes(user.role)) return subs.filter((s) => s.id === ownSubId);
     return subs;
   }
   function visibleUnits(subId) {
     const units = unitsOfSub(org, subId);
+    if (user.role === 'individual' && ['programme', 'sub'].includes(forced?.kind)) return units;
     if (['unithead', 'individual'].includes(user.role)) return units.filter((u) => u.id === ownUnitId);
     return units;
   }
   function visibleIndividuals(unitId) {
     const inds = individualsOfUnit(org, unitId);
-    if (user.role === 'individual') return inds.filter((i) => i.id === forced.id);
+    if (user.role === 'individual' && forced?.kind === 'individual') return inds.filter((i) => i.id === forced.id);
     return inds;
   }
 

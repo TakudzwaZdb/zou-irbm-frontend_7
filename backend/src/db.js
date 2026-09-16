@@ -52,6 +52,13 @@ CREATE TABLE IF NOT EXISTS permissions (
   group_name TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS role_definitions (
+  key TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  built_in INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -225,6 +232,15 @@ CREATE TABLE IF NOT EXISTS kpi_contributions (
 );
 `);
 
+const roleDefinitions = [
+  ['exec', 'Executive'], ['cpu', 'Corporate Planning Unit'],
+  ['ictadmin', 'ICT Systems Administrator'], ['rep', 'Sub-programme Rep'],
+  ['unithead', 'Unit Head'], ['individual', 'Individual'],
+  ['programme', 'Programme Head'], ['council', 'University Council'],
+];
+const insertRoleDefinition = db.prepare('INSERT OR IGNORE INTO role_definitions (key, label, built_in) VALUES (?, ?, 1)');
+roleDefinitions.forEach(([key, label]) => insertRoleDefinition.run(key, label));
+
 // Migration: databases created before the profile-photo feature won't have
 // this column yet — CREATE TABLE IF NOT EXISTS above only applies to a
 // brand-new file, so add it here if it's missing from an existing one.
@@ -241,10 +257,12 @@ if (!userColumns.includes('avatar')) {
 // constraints can't be altered with ALTER TABLE, so an existing database
 // (whose users table was created before this feature) needs a rebuild:
 // create the table with the widened CHECK, copy every row across unchanged,
-// swap it in. Detected by looking at the stored CREATE TABLE text itself,
-// so this only ever runs once per database.
+// swap it in. Only tables that still have the old fixed role CHECK can need
+// this migration; the later custom-role migration deliberately removes that
+// CHECK altogether, so looking only for the literal 'programme' would make
+// every worker rebuild an already-migrated table on startup.
 const usersSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get()?.sql || '';
-if (!usersSql.includes("'programme'")) {
+if (usersSql.includes('CHECK(role IN') && !usersSql.includes("'programme'")) {
   console.log('Migrating users table to allow role/scope_type = "programme"...');
   db.exec('PRAGMA foreign_keys = OFF');
   db.exec(`
@@ -254,7 +272,7 @@ if (!usersSql.includes("'programme'")) {
       title TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
-      role TEXT NOT NULL CHECK(role IN ('exec','cpu','ictadmin','rep','unithead','individual','programme')),
+      role TEXT NOT NULL CHECK(role IN ('exec','cpu','ictadmin','rep','unithead','individual','programme','council')),
       scope_type TEXT CHECK(scope_type IN ('sub','unit','individual','programme') OR scope_type IS NULL),
       scope_id INTEGER,
       avatar TEXT,
@@ -424,12 +442,11 @@ if (!kpiValueOverrideColumns.includes('override_cleared_at')) {
 // routes/plans.js's POST /university/approve|return). Same rebuild
 // technique as the earlier 'programme' migration above (SQLite CHECK
 // constraints can't be altered in place), detected the same way — by
-// looking at the table's own stored CREATE TABLE text — so this only ever
-// runs once per database, and safely no-ops on a brand-new one (the CREATE
-// TABLE at the top of this file only ever runs before this check, so a
-// fresh database always ends up here needing the rebuild exactly once).
+// looking at the table's own stored CREATE TABLE text. Only a table that
+// still has the fixed role CHECK can need this rebuild; once the later
+// custom-role migration has removed that CHECK, workers must leave it alone.
 const usersSqlForCouncil = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get()?.sql || '';
-if (!usersSqlForCouncil.includes("'council'")) {
+if (usersSqlForCouncil.includes('CHECK(role IN') && !usersSqlForCouncil.includes("'council'")) {
   console.log('Migrating users table to allow role = "council"...');
   db.exec('PRAGMA foreign_keys = OFF');
   db.exec(`
@@ -682,6 +699,36 @@ softDeleteTables.forEach((table) => {
   }
 });
 
+// Appointment integrity: Individual accounts may be repeated, but every
+// other role may occur only once for the same organisation scope. Repair any
+// old duplicate rows before creating the database-level backstop. The first
+// active account keeps the appointment; duplicate accounts are demoted to
+// Individual rather than deleted.
+const duplicateAppointments = db.prepare(`
+  SELECT role, scope_type, scope_id, GROUP_CONCAT(id) AS ids
+  FROM users
+  WHERE deleted_at IS NULL AND role <> 'individual'
+  GROUP BY role, scope_type, scope_id
+  HAVING COUNT(*) > 1
+`).all();
+duplicateAppointments.forEach(({ ids }) => {
+  const userIds = String(ids).split(',').map(Number);
+  userIds.slice(1).forEach((userId) => {
+    db.prepare("UPDATE users SET role = 'individual', title = 'Individual', scope_type = 'individual', scope_id = NULL WHERE id = ?").run(userId);
+    db.prepare('UPDATE programmes SET head_user_id = NULL WHERE head_user_id = ?').run(userId);
+    db.prepare('UPDATE subs SET rep_user_id = NULL WHERE rep_user_id = ?').run(userId);
+    db.prepare('UPDATE units SET head_user_id = NULL WHERE head_user_id = ?').run(userId);
+  });
+});
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS users_unique_active_scoped_appointment
+  ON users (role, scope_type, scope_id)
+  WHERE deleted_at IS NULL AND role <> 'individual' AND scope_id IS NOT NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS users_unique_active_global_appointment
+  ON users (role)
+  WHERE deleted_at IS NULL AND role <> 'individual' AND scope_id IS NULL;
+`);
+
 // Migration: optional, self-contained TOTP-based MFA per account (see
 // utils/totp.js) — a real second factor an account can opt into, verified
 // on login the same way any authenticator-app-based site does, with no
@@ -700,6 +747,40 @@ if (!usersColumnsForMfa.includes('mfa_secret')) {
 }
 if (!usersColumnsForMfa.includes('mfa_enabled')) {
   db.exec('ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0');
+}
+
+// Custom role definitions are valid user roles too. Older databases used a
+// fixed CHECK constraint, so rebuild that table once after all user columns
+// have been added and preserved.
+const roleConstraintSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get()?.sql || '';
+if (roleConstraintSql.includes('CHECK(role IN')) {
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec(`
+    CREATE TABLE users_roles_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      title TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL,
+      scope_type TEXT,
+      scope_id INTEGER,
+      avatar TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      overview_limit TEXT,
+      is_executive_owner INTEGER NOT NULL DEFAULT 0,
+      token_version INTEGER NOT NULL DEFAULT 0,
+      must_change_password INTEGER NOT NULL DEFAULT 0,
+      mfa_secret TEXT,
+      mfa_enabled INTEGER NOT NULL DEFAULT 0,
+      deleted_at TEXT
+    );
+    INSERT INTO users_roles_new (id, name, title, email, password_hash, role, scope_type, scope_id, avatar, created_at, overview_limit, is_executive_owner, token_version, must_change_password, mfa_secret, mfa_enabled, deleted_at)
+      SELECT id, name, title, email, password_hash, role, scope_type, scope_id, avatar, created_at, overview_limit, is_executive_owner, token_version, must_change_password, mfa_secret, mfa_enabled, deleted_at FROM users;
+    DROP TABLE users;
+    ALTER TABLE users_roles_new RENAME TO users;
+  `);
+  db.exec('PRAGMA foreign_keys = ON');
 }
 
 // A one-time recovery code exists so losing an authenticator device (phone

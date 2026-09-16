@@ -10,6 +10,8 @@ const PERMISSIONS = [
   { key: 'apply_override', label: 'Apply manual overrides on automated KPIs', group: 'Data' },
   { key: 'edit_targets', label: 'Edit KPI baselines & targets', group: 'Framework' },
   { key: 'create_kpi', label: 'Create new KPIs', group: 'Framework' },
+  { key: 'edit_kpi', label: 'Edit KPI definitions', group: 'Framework' },
+  { key: 'delete_kpi', label: 'Delete KPIs', group: 'Framework' },
   { key: 'manage_org_units', label: 'Manage the org structure (create, update, remove, restore)', group: 'Framework' },
   // Deliberately separate, narrower siblings of manage_org_units — the same
   // "broad permission vs. one specific slice of it" pattern edit_targets is
@@ -27,11 +29,23 @@ const PERMISSIONS = [
   // where each is checked.
   { key: 'create_org_units', label: 'Create Programmes / Sub-programmes / Units (create only)', group: 'Framework' },
   { key: 'edit_org_units', label: 'Update existing Programmes / Sub-programmes / Units (edit only)', group: 'Framework' },
+  { key: 'create_programmes', label: 'Create Programmes', group: 'Framework' },
+  { key: 'edit_programmes', label: 'Edit Programmes', group: 'Framework' },
+  { key: 'delete_programmes', label: 'Delete Programmes', group: 'Framework' },
+  { key: 'create_subprogrammes', label: 'Create Sub-programmes', group: 'Framework' },
+  { key: 'edit_subprogrammes', label: 'Edit Sub-programmes', group: 'Framework' },
+  { key: 'delete_subprogrammes', label: 'Delete Sub-programmes', group: 'Framework' },
+  { key: 'create_units', label: 'Create Units / Departments / Regions', group: 'Framework' },
+  { key: 'edit_units', label: 'Edit Units / Departments / Regions', group: 'Framework' },
+  { key: 'delete_units', label: 'Delete Units / Departments / Regions', group: 'Framework' },
   // Deliberately separate from manage_org_units: lets ICT admin hand a Sub
   // Rep or Unit Head just the ability to add an Individual under their own
   // scope, without also granting them unit-creation. See routes/org.js for
   // the scope check this permission is bound by when granted on its own.
   { key: 'add_individual', label: 'Add an Individual (within own scope)', group: 'Framework' },
+  { key: 'create_individuals', label: 'Create Individuals', group: 'Framework' },
+  { key: 'edit_individuals', label: 'Edit Individuals', group: 'Framework' },
+  { key: 'delete_individuals', label: 'Delete Individuals', group: 'Framework' },
   { key: 'manage_framework', label: 'Propose structural changes', group: 'Framework' },
   { key: 'submit_annual_plan', label: 'Compile & submit the university annual plan', group: 'Framework' },
   // The University Council's own authority: the one gate the compiled
@@ -70,14 +84,14 @@ const PERMISSIONS = [
 // per-user in the database from then on, not hardcoded to role at request time.
 const DEFAULT_PERMS_BY_ROLE = {
   exec: ['view_reports', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
-  cpu: ['approve_own_tier', 'manage_settings', 'create_kpi', 'edit_targets', 'manage_org_units', 'manage_framework', 'submit_annual_plan', 'view_reports', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
+  cpu: ['approve_own_tier', 'manage_settings', 'create_kpi', 'edit_kpi', 'delete_kpi', 'edit_targets', 'manage_org_units', 'manage_framework', 'submit_annual_plan', 'view_reports', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
   // ICT System Administrators manage the organisational structure (units,
   // departments, faculties, regions, and individuals), the KPI catalogue
   // itself (creating new KPIs, not just editing targets on existing ones),
   // and overrides, by default, in addition to their exclusive
   // permission-management role — they don't have to grant these to
   // themselves first.
-  ictadmin: ['manage_users', 'manage_org_units', 'create_kpi', 'edit_targets', 'apply_override', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
+  ictadmin: ['manage_users', 'manage_org_units', 'create_kpi', 'edit_kpi', 'delete_kpi', 'edit_targets', 'apply_override', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
   rep: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
   unithead: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
   individual: ['data_entry', 'view_overview', 'view_framework'],
@@ -89,22 +103,16 @@ const DEFAULT_PERMS_BY_ROLE = {
   // compiling and submitting their Programme's plan once every
   // Sub-programme under them has been approved (see routes/plans.js's
   // isProgrammeHeadOwner). 'data_entry' is what gates that write, the same
-  // permission every other tier's plan-entry route already requires.
-  // 'approve_own_tier' is the SAME permission Sub Reps/Unit Heads already
-  // hold, now also granted here: a Sub-programme's own KPI performance
-  // submission (owner_type = 'sub') is approved once, finally, by its own
-  // Programme Head — no CPU sign-off in this cascade at all — see
-  // routes/kpis.js's isApprover and the single-stage 'submitted' ->
-  // 'approved' flow on kpi_values.status (the old 'programme_approved'
-  // intermediate stage has been retired; see db.js's migration).
-  programme: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework', 'view_reports'],
-  // University Council: the final sign-off tier above CPU's own compiled
-  // submission — read-only everywhere else in the app (no data_entry, no
-  // approve_own_tier — Council doesn't run any tier's day-to-day KPI
-  // cascade), but the one account type that can actually validate/approve
-  // or return the University Annual Plan once CPU has submitted it. See
-  // routes/plans.js.
-  council: ['view_reports', 'view_overview', 'view_framework', 'validate_annual_plan', 'view_institutional_performance'],
+  // permission every other tier's plan-entry route already checks.
+  programmehead: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
+  // University Council: holds explicit governance authority over the structural
+  // compilation. They can approve or return the completed Annual Plan layout via 
+  // the `validate_annual_plan` checkpoint, and have broad visibility over historical 
+  // reports, metrics, and institutional rollup pages.
+  council: ['validate_annual_plan', 'view_reports', 'view_overview', 'view_framework', 'view_institutional_performance']
 };
 
-module.exports = { PERMISSIONS, DEFAULT_PERMS_BY_ROLE };
+module.exports = {
+  PERMISSIONS,
+  DEFAULT_PERMS_BY_ROLE
+};

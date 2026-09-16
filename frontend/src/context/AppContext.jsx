@@ -148,6 +148,12 @@ export function AppProvider({ children }) {
     } catch (_) { /* non-critical — leave the last known count showing */ }
   }, []);
 
+  const reloadUser = useCallback(async () => {
+    const r = await api('/auth/me');
+    setUser(r.user);
+    return r.user;
+  }, []);
+
   const reloadHidden = useCallback(async () => {
     const r = await api('/kpis/hidden');
     setHiddenKpiIds(new Set(r.hidden));
@@ -196,7 +202,8 @@ export function AppProvider({ children }) {
   const refreshAll = useCallback(async () => {
     setSyncing(true);
     try {
-      const [orgRes, kpiRes, settingsRes, assignRes] = await Promise.all([api('/org'), api('/kpis'), api('/settings'), api('/kpis/assignments')]);
+      const [userRes, orgRes, kpiRes, settingsRes, assignRes] = await Promise.all([api('/auth/me'), api('/org'), api('/kpis'), api('/settings'), api('/kpis/assignments')]);
+      setUser(userRes.user);
       setOrg(orgRes); setKpis(kpiRes.kpis); setSettings(settingsRes.settings); setAssignments(assignRes.assignments);
       await Promise.all([loadValuesForPeriod(period), loadContributionsForPeriod(period), loadSubmissionWindow(period), loadPerfValues(perfPeriod), reloadUnread(), reloadHidden(), reloadTemplates()]);
     } finally {
@@ -220,12 +227,12 @@ export function AppProvider({ children }) {
     quickRefreshing.current = true;
     setQuickSyncing(true);
     try {
-      await Promise.all([loadValuesForPeriod(period), loadContributionsForPeriod(period), loadSubmissionWindow(period), loadPerfValues(perfPeriod), reloadUnread()]);
+      await Promise.all([reloadUser(), loadValuesForPeriod(period), loadContributionsForPeriod(period), loadSubmissionWindow(period), loadPerfValues(perfPeriod), reloadUnread()]);
     } finally {
       setQuickSyncing(false);
       quickRefreshing.current = false;
     }
-  }, [period, perfPeriod, loadValuesForPeriod, loadContributionsForPeriod, loadSubmissionWindow, loadPerfValues, reloadUnread]);
+  }, [period, perfPeriod, loadValuesForPeriod, loadContributionsForPeriod, loadSubmissionWindow, loadPerfValues, reloadUnread, reloadUser]);
 
   const changePeriod = useCallback((p) => {
     setPeriod(p);
@@ -296,18 +303,14 @@ export function AppProvider({ children }) {
     await applyAuthResult(r);
   }, [applyAuthResult]);
 
-  const refreshUser = useCallback(async () => {
-    const r = await api('/auth/me');
-    setUser(r.user);
-    return r.user;
-  }, []);
+  const refreshUser = reloadUser;
 
   useEffect(() => {
     (async () => {
       if (!tokenRef.current) { setBooting(false); return; }
       setToken(tokenRef.current);
       try {
-        const u = await refreshUser();
+        const u = await reloadUser();
         if (!u.must_change_password) {
           await loadCore(currentPeriod());
         }

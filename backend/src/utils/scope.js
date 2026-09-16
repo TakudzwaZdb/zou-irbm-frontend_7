@@ -37,6 +37,7 @@ function individualUnitId(individualId) {
 function subProgrammeId(subId) {
   return db.prepare('SELECT programme_id FROM subs WHERE id = ?').get(subId)?.programme_id ?? null;
 }
+function individualScopeType(user) { return user.scope_type || 'individual'; }
 
 // Which Sub-programme does this KPI ultimately roll up under, whichever
 // tier actually owns it?
@@ -55,7 +56,7 @@ function kpiProgrammeId(kpi) {
 // imported from routes/kpis.js) to keep this module dependency-free of the
 // route files that consume it.
 function isAssignedIndividual(user, kpi) {
-  if (kpi.owner_type !== 'unit' || user.role !== 'individual') return false;
+  if (kpi.owner_type !== 'unit' || user.role !== 'individual' || individualScopeType(user) !== 'individual') return false;
   return !!db.prepare(
     'SELECT 1 FROM kpi_assignments WHERE kpi_id = ? AND individual_id = ? AND deleted_at IS NULL'
   ).get(kpi.id, user.scope_id);
@@ -72,8 +73,13 @@ function canReadKpi(user, kpi) {
     return false;
   }
   if (user.role === 'individual') {
-    if (kpi.owner_type === 'individual' && kpi.owner_id === user.scope_id) return true;
-    return isAssignedIndividual(user, kpi);
+    if (individualScopeType(user) === 'individual') {
+      if (kpi.owner_type === 'individual' && kpi.owner_id === user.scope_id) return true;
+      return isAssignedIndividual(user, kpi);
+    }
+    if (individualScopeType(user) === 'unit') return kpi.owner_type === 'unit' && kpi.owner_id === user.scope_id || kpi.owner_type === 'individual' && individualUnitId(kpi.owner_id) === user.scope_id;
+    if (individualScopeType(user) === 'sub') return kpiSubId(kpi) === user.scope_id;
+    if (individualScopeType(user) === 'programme') return kpiProgrammeId(kpi) === user.scope_id;
   }
   return false;
 }
@@ -88,7 +94,12 @@ function canReadSub(user, subId) {
   if (user.role === 'programme') return subProgrammeId(subId) === user.scope_id;
   if (user.role === 'rep') return user.scope_id === subId;
   if (user.role === 'unithead') return unitSubId(user.scope_id) === subId;
-  if (user.role === 'individual') return unitSubId(individualUnitId(user.scope_id)) === subId;
+  if (user.role === 'individual') {
+    if (individualScopeType(user) === 'individual') return unitSubId(individualUnitId(user.scope_id)) === subId;
+    if (individualScopeType(user) === 'unit') return unitSubId(user.scope_id) === subId;
+    if (individualScopeType(user) === 'sub') return user.scope_id === subId;
+    if (individualScopeType(user) === 'programme') return subProgrammeId(subId) === user.scope_id;
+  }
   return false;
 }
 
@@ -98,7 +109,12 @@ function canReadSub(user, subId) {
 function canReadUnit(user, unitId) {
   if (isGlobalReader(user)) return true;
   if (user.role === 'unithead') return user.scope_id === unitId;
-  if (user.role === 'individual') return individualUnitId(user.scope_id) === unitId;
+  if (user.role === 'individual') {
+    if (individualScopeType(user) === 'individual') return individualUnitId(user.scope_id) === unitId;
+    if (individualScopeType(user) === 'unit') return user.scope_id === unitId;
+    if (individualScopeType(user) === 'sub') return unitSubId(unitId) === user.scope_id;
+    if (individualScopeType(user) === 'programme') return subProgrammeId(unitSubId(unitId)) === user.scope_id;
+  }
   const subId = unitSubId(unitId);
   if (subId == null) return false;
   return canReadSub(user, subId);
@@ -111,7 +127,12 @@ function canReadProgramme(user, programmeId) {
   if (user.role === 'programme') return user.scope_id === programmeId;
   if (user.role === 'rep') return subProgrammeId(user.scope_id) === programmeId;
   if (user.role === 'unithead') return subProgrammeId(unitSubId(user.scope_id)) === programmeId;
-  if (user.role === 'individual') return subProgrammeId(unitSubId(individualUnitId(user.scope_id))) === programmeId;
+  if (user.role === 'individual') {
+    if (individualScopeType(user) === 'individual') return subProgrammeId(unitSubId(individualUnitId(user.scope_id))) === programmeId;
+    if (individualScopeType(user) === 'unit') return subProgrammeId(unitSubId(user.scope_id)) === programmeId;
+    if (individualScopeType(user) === 'sub') return subProgrammeId(user.scope_id) === programmeId;
+    if (individualScopeType(user) === 'programme') return user.scope_id === programmeId;
+  }
   return false;
 }
 

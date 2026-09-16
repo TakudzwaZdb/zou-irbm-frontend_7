@@ -14,6 +14,8 @@ export const ROLE_LABEL = {
   rep: 'Sub-programme Rep', unithead: 'Unit Head', individual: 'Individual', programme: 'Programme Head',
   council: 'University Council',
 };
+const ROLE_SCOPE_TYPES = { rep: 'sub', unithead: 'unit', programme: 'programme' };
+const UNIT_KIND_OPTIONS = ['All organisation units', 'Unit', 'Department', 'Faculty', 'Region', 'Regional Campus'];
 const OVERVIEW_LIMIT_LABEL = {
   '': 'No restriction — the overall structure',
   programme: 'Up to Programme level only',
@@ -22,17 +24,13 @@ const OVERVIEW_LIMIT_LABEL = {
 };
 
 export default function Users() {
-  const { user: me, org, refreshUser } = useApp();
+  const { user: me, org, refreshUser, reloadCore } = useApp();
   const toast = useToast();
   const [users, setUsers] = useState(null);
-  const [catalog, setCatalog] = useState([]);
   const [busyId, setBusyId] = useState(null);
   const [roleDraft, setRoleDraft] = useState({});
-  // Which Programme to scope a "Programme Head" role-change to — only
-  // relevant while the drafted role for that row is 'programme'; every
-  // other role's scope is left untouched by a role change (unchanged
-  // behaviour), since only Programme Head needs a picker here at all.
-  const [programmeScopeDraft, setProgrammeScopeDraft] = useState({});
+  const [scopeDraft, setScopeDraft] = useState({});
+  const [unitKindDraft, setUnitKindDraft] = useState({});
   const [q, setQ] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [profileDraft, setProfileDraft] = useState({ name: '', title: '', email: '' });
@@ -42,11 +40,13 @@ export default function Users() {
   const [removedUsers, setRemovedUsers] = useState([]);
   const [removedOpen, setRemovedOpen] = useState(false);
   const [restoreBusyId, setRestoreBusyId] = useState(null);
+  const [managementUser, setManagementUser] = useState(null);
+  const [accountControlUser, setAccountControlUser] = useState(null);
+  const [usersOpen, setUsersOpen] = useState(false);
 
   async function load() {
     const r = await api('/users');
     setUsers(r.users);
-    setCatalog(r.catalog);
   }
   async function loadRemoved() {
     try { setRemovedUsers((await api('/users/removed')).users); } catch (err) { toast(err.message, 'err'); }
@@ -78,14 +78,6 @@ export default function Users() {
     });
   }, [users, q, org]);
 
-  async function toggle(userId, permKey, on) {
-    try {
-      await api(`/users/${userId}/permissions/${permKey}/${on ? 'revoke' : 'grant'}`, { method: 'POST' });
-      toast((on ? 'Revoked ' : 'Granted ') + permKey + '.');
-      await load();
-    } catch (err) { toast(err.message, 'err'); }
-  }
-
   function startEdit(u) {
     setEditingId(u.id);
     setProfileDraft({ name: u.name, title: u.title || '', email: u.email });
@@ -105,22 +97,29 @@ export default function Users() {
 
   async function changeRole(u) {
     const role = roleDraft[u.id] ?? u.role;
-    if (role === u.role) return;
-    let scopeType = u.scope_type;
-    let scopeId = u.scope_id;
-    if (role === 'programme') {
-      const programmeId = programmeScopeDraft[u.id] ?? org.programmes[0]?.id;
-      if (!programmeId) { toast('No Programmes exist to scope this account to.', 'err'); return; }
-      scopeType = 'programme';
-      scopeId = Number(programmeId);
-    }
-    const programmeName = role === 'programme' ? ` (${org.programmes.find((p) => p.id === scopeId)?.name})` : '';
-    if (!window.confirm(`Change ${u.name}'s role from "${u.role}" to "${role}"${programmeName}? Their existing permission grants are left as-is — review them below afterwards.`)) return;
+    const scope = scopeDraft[u.id] || { type: u.scope_type || '', id: u.scope_id || '' };
+    if (role === u.role && String(scope.type || '') === String(u.scope_type || '') && String(scope.id || '') === String(u.scope_id || '')) return;
+    const scopeName = scopeLabel(scope.type, scope.id, org);
+    if (!window.confirm(`Change ${u.name}'s role from "${u.role}" to "${role}"${scopeName ? ` and scope them to ${scopeName}` : ''}?`)) return;
     setBusyId(u.id);
     try {
-      await api(`/users/${u.id}/role`, { method: 'PATCH', body: { role, scopeType, scopeId } });
+      await api(`/users/${u.id}/role`, { method: 'PATCH', body: { role, scopeType: scope.type || null, scopeId: scope.id ? Number(scope.id) : null } });
       toast(`${u.name}'s role changed to ${role}.`);
       await load();
+      setManagementUser(null);
+    } catch (err) { toast(err.message, 'err'); }
+    finally { setBusyId(null); }
+  }
+
+  async function removeIndividual(u) {
+    if (!u.scope_id) return;
+    if (!window.confirm(`Remove ${u.name} and their Individual record? Their account, KPIs, and history will be deactivated but can be restored from Organisation Maintenance's Recently Removed.`)) return;
+    setBusyId(u.id);
+    try {
+      await api(`/org/individuals/${u.scope_id}`, { method: 'DELETE' });
+      toast(`${u.name}'s Individual record was removed.`);
+      await Promise.all([load(), reloadCore()]);
+      setManagementUser(null);
     } catch (err) { toast(err.message, 'err'); }
     finally { setBusyId(null); }
   }
@@ -204,10 +203,10 @@ export default function Users() {
     <div>
       <div className="flex justify-between gap-4 flex-wrap items-start mb-5">
         <div>
-          <h1 className="text-xl font-bold mb-0.5">Permissions &amp; User Directory</h1>
+          <h1 className="text-xl font-bold mb-0.5">User &amp; Roles</h1>
           <p className="text-[13px] text-ink-secondary max-w-[62ch]">
             Every account in the system, with its full profile. Only ICT System Administrators can update a
-            profile, reset a forgotten password, grant/revoke permissions, change a role, or remove an account.
+            profile, reset a forgotten password, change a role, or remove an account.
           </p>
         </div>
         <input
@@ -227,13 +226,37 @@ export default function Users() {
 
       {filtered?.length === 0 && <div className="card text-center text-ink-muted py-8">No accounts match that search.</div>}
 
+      <div className="card mt-4">
+        <button type="button" className="w-full flex items-center justify-between text-left" onClick={() => setUsersOpen((value) => !value)} aria-expanded={usersOpen}>
+          <span className="font-display font-bold text-[14px] flex items-center gap-2">
+            Users
+            <span className="chip">{filtered?.length || 0}</span>
+          </span>
+          <span className="text-ink-muted text-[12px]">{usersOpen ? 'Hide ▲' : 'Click to view ▼'}</span>
+        </button>
+        {usersOpen && <>
+          <p className="text-[12px] text-ink-muted mt-1">Select an account to open its management popup.</p>
+          <div className="mt-3 overflow-x-auto rounded-lg border border-line">
+          <table className="w-full text-left text-[12px]">
+            <thead className="bg-sunken border-b border-line">
+              <tr>
+                <th className="px-3 py-2 font-bold">User</th>
+                <th className="px-3 py-2 font-bold">Email</th>
+                <th className="px-3 py-2 font-bold">Title</th>
+                <th className="px-3 py-2 font-bold">Role</th>
+                <th className="px-3 py-2 font-bold">Organisation scope</th>
+                <th className="px-3 py-2 font-bold">Manage</th>
+              </tr>
+            </thead>
+            <tbody>
       {(filtered || []).map((u) => {
         const isSelf = u.id === me.id;
         const isEditing = editingId === u.id;
         const breadcrumb = scopeBreadcrumb(org, u);
         return (
-          <details key={u.id} className="rounded-xl border border-line bg-surface px-3.5 py-2.5 mb-2" open={isEditing || undefined}>
-            <summary className="cursor-pointer flex items-center gap-2.5 text-[12.8px] font-semibold select-none">
+          <>
+          <tr key={`${u.id}-summary`} className="border-b border-line">
+            <td className="px-3 py-2.5 min-w-44">
               {u.avatar ? (
                 <button
                   type="button"
@@ -253,10 +276,37 @@ export default function Users() {
                 </span>
               )}
               <span className="truncate">{u.name}</span>
-              <span className="text-ink-muted font-normal text-[12px]">({ROLE_LABEL[u.role]}{isSelf ? ' · you' : ''})</span>
-              {u.mfa_enabled && <span className="chip chip-st-approved" title="Two-factor authentication is enabled">2FA</span>}
-              <span className="ml-auto chip chip-tag">{u.permissions.length} of {catalog.length} granted</span>
+            </td>
+            <td className="px-3 py-2.5 text-ink-secondary">{u.email}</td>
+            <td className="px-3 py-2.5 text-ink-secondary">{u.title || '—'}</td>
+            <td className="px-3 py-2.5">{ROLE_LABEL[u.role] || u.role}{isSelf ? ' · you' : ''}</td>
+            <td className="px-3 py-2.5 text-ink-secondary">{breadcrumb?.join(' › ') || 'No scope'}</td>
+            <td className="px-3 py-2.5 whitespace-nowrap">
+              <button
+                type="button"
+                className="btn btn-sm btn-primary"
+                onClick={() => {
+                  setManagementUser(u);
+                  setRoleDraft((draft) => ({ ...draft, [u.id]: u.role }));
+                  setScopeDraft((draft) => ({ ...draft, [u.id]: { type: u.scope_type || '', id: u.scope_id || '' } }));
+                  const unit = org.units.find((item) => item.id === Number(u.scope_id));
+                  setUnitKindDraft((draft) => ({ ...draft, [u.id]: unit?.kind || 'All organisation units' }));
+                }}
+              >
+                Select user
+              </button>
+            </td>
+          </tr>
+          <tr key={`${u.id}-details`} className="border-b border-line last:border-b-0">
+            <td colSpan="6" className="p-0">
+          <details className={accountControlUser === u.id ? 'fixed inset-4 m-auto z-50 bg-surface border border-line rounded-xl shadow-xl w-auto max-w-3xl max-h-[85vh] overflow-y-auto p-4' : 'bg-surface px-3.5 py-2.5'} open={accountControlUser === u.id}>
+            <summary
+              className="cursor-pointer text-[12px] font-semibold select-none text-ink-secondary"
+              onClick={(e) => { e.preventDefault(); setAccountControlUser((current) => current === u.id ? null : u.id); }}
+            >
+              {accountControlUser === u.id ? 'Close account controls' : `View account controls for ${u.name}`}
             </summary>
+            {accountControlUser === u.id && <div className="flex justify-end mt-2"><button type="button" className="btn btn-sm" onClick={() => setAccountControlUser(null)}>Close</button></div>}
             <div className="text-[11.3px] text-ink-muted mt-1.5">
               {u.email} · {u.title || '—'}
               {breadcrumb && breadcrumb.length > 0 && <span> · {breadcrumb.join(' › ')}</span>}
@@ -317,21 +367,6 @@ export default function Users() {
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-1.5 mt-2.5">
-              {catalog.map((p) => {
-                const on = u.permissions.includes(p.key);
-                return (
-                  <button
-                    key={p.key}
-                    onClick={() => toggle(u.id, p.key, on)}
-                    className={`chip border cursor-pointer font-semibold ${on ? 'bg-good-soft text-good border-transparent' : 'bg-sunken text-ink-muted border-line'}`}
-                  >
-                    {p.label}
-                  </button>
-                );
-              })}
-            </div>
-
             <div className="flex flex-wrap items-end gap-2.5 mt-3.5 pt-3 border-t border-line">
               <div className="space-y-1">
                 <label className="field-label">Overview navigation limit</label>
@@ -356,37 +391,20 @@ export default function Users() {
               </label>
             </div>
 
-            {!isSelf && (
-              <div className="flex flex-wrap items-end gap-2.5 mt-3.5 pt-3 border-t border-line">
-                <div className="space-y-1">
-                  <label className="field-label">Role</label>
-                  <select
-                    className="field-input py-1.5"
-                    value={roleDraft[u.id] ?? u.role}
-                    onChange={(e) => setRoleDraft((d) => ({ ...d, [u.id]: e.target.value }))}
-                  >
-                    {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
-                  </select>
-                </div>
-                {(roleDraft[u.id] ?? u.role) === 'programme' && (
-                  <div className="space-y-1">
-                    <label className="field-label">Programme</label>
-                    <select
-                      className="field-input py-1.5"
-                      value={programmeScopeDraft[u.id] ?? (u.scope_type === 'programme' ? u.scope_id : org.programmes[0]?.id) ?? ''}
-                      onChange={(e) => setProgrammeScopeDraft((d) => ({ ...d, [u.id]: Number(e.target.value) }))}
-                    >
-                      {org.programmes.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
-                  </div>
-                )}
-                <button className="btn btn-sm" disabled={busyId === u.id} onClick={() => changeRole(u)}>Change role</button>
-                <button className="btn btn-sm btn-danger ml-auto" disabled={busyId === u.id} onClick={() => removeAccount(u)}>Remove account</button>
-              </div>
-            )}
+            {!isSelf && <div className="flex justify-end mt-3.5 pt-3 border-t border-line">
+              <button className="btn btn-sm btn-danger" disabled={busyId === u.id} onClick={() => removeAccount(u)}>Remove account</button>
+            </div>}
           </details>
+            </td>
+          </tr>
+          </>
         );
       })}
+            </tbody>
+          </table>
+          </div>
+        </>}
+      </div>
 
       <div className="card mt-4">
         <button className="w-full flex items-center justify-between text-left" onClick={() => setRemovedOpen((v) => !v)}>
@@ -420,7 +438,140 @@ export default function Users() {
         )}
       </div>
 
+      {managementUser && <UserManagementDialog
+        user={managementUser}
+        me={me}
+        org={org}
+        roleDraft={roleDraft}
+        setRoleDraft={setRoleDraft}
+        scopeDraft={scopeDraft}
+        setScopeDraft={setScopeDraft}
+        unitKindDraft={unitKindDraft}
+        setUnitKindDraft={setUnitKindDraft}
+        busy={busyId === managementUser.id}
+        onApply={changeRole}
+        onRemoveIndividual={removeIndividual}
+        onClose={() => setManagementUser(null)}
+      />}
+
       {viewingUser && <PhotoLightbox src={viewingUser.avatar} name={viewingUser.name} onClose={() => setViewingUser(null)} />}
     </div>
   );
+}
+
+function UserManagementDialog({ user, me, org, roleDraft, setRoleDraft, scopeDraft, setScopeDraft, unitKindDraft, setUnitKindDraft, busy, onApply, onRemoveIndividual, onClose }) {
+  const selectedRole = roleDraft[user.id] ?? user.role;
+  const currentScope = scopeDraft[user.id] || { type: user.scope_type || '', id: user.scope_id || '' };
+  const changed = selectedRole !== user.role
+    || String(currentScope.type || '') !== String(user.scope_type || '')
+    || String(currentScope.id || '') !== String(user.scope_id || '');
+  const isSelf = user.id === me.id;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="user-management-dialog-title">
+      <div className="bg-surface border border-line rounded-xl shadow-xl w-full max-w-2xl p-4">
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div>
+            <h2 id="user-management-dialog-title" className="font-display font-bold text-[16px]">Manage {user.name}</h2>
+            <p className="text-[12px] text-ink-muted">Change role and organisation scope here.</p>
+          </div>
+          <button type="button" className="btn btn-sm" onClick={onClose}>Close</button>
+        </div>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <label className="field-label">Role</label>
+            <select
+              className="field-input"
+              value={selectedRole}
+              disabled={isSelf || busy}
+              onChange={(e) => {
+                const nextRole = e.target.value;
+                setRoleDraft((draft) => ({ ...draft, [user.id]: nextRole }));
+                const nextType = ROLE_SCOPE_TYPES[nextRole] || (nextRole === 'individual' && ['programme', 'sub', 'unit', 'individual'].includes(user.scope_type) ? user.scope_type : nextRole === 'individual' ? 'unit' : '');
+                setScopeDraft((draft) => ({ ...draft, [user.id]: { type: nextType, id: nextType === user.scope_type ? user.scope_id : '' } }));
+              }}
+              aria-label={`Role for ${user.name}`}
+            >
+              {ROLES.map((role) => <option key={role} value={role}>{ROLE_LABEL[role]}</option>)}
+            </select>
+          </div>
+          <ScopePicker
+            user={user}
+            org={org}
+            scopeDraft={scopeDraft}
+            setScopeDraft={setScopeDraft}
+            unitKindDraft={unitKindDraft}
+            setUnitKindDraft={setUnitKindDraft}
+            disabled={isSelf || busy}
+          />
+        </div>
+        <div className="flex items-center justify-between gap-2 flex-wrap mt-5 pt-3 border-t border-line">
+          {user.role === 'individual' ? (
+            <button className="btn btn-sm btn-danger" disabled={isSelf || busy} onClick={() => onRemoveIndividual(user)}>Remove Individual</button>
+          ) : <span />}
+          <div className="flex gap-2">
+            <button type="button" className="btn btn-sm" onClick={onClose}>Cancel</button>
+            <button className="btn btn-sm btn-primary" disabled={isSelf || !changed || busy} onClick={() => onApply(user)}>Apply changes</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ScopePicker({ user, org, scopeDraft, setScopeDraft, unitKindDraft, setUnitKindDraft, disabled = false }) {
+  const current = scopeDraft[user.id] || { type: user.scope_type || '', id: user.scope_id || '' };
+  const selectedUnit = org.units.find((unit) => unit.id === Number(current.id));
+  const selectedKind = unitKindDraft[user.id] || selectedUnit?.kind || 'All organisation units';
+  const options = current.type === 'programme' ? org.programmes
+    : current.type === 'sub' ? org.subs
+      : current.type === 'unit' ? org.units.filter((unit) => selectedKind === 'All organisation units' || unit.kind === selectedKind)
+        : current.type === 'individual' ? org.individuals
+          : [];
+  function update(key, value) {
+    setScopeDraft((draft) => ({ ...draft, [user.id]: { ...current, [key]: value } }));
+  }
+  return <div className="space-y-1">
+    <label className="field-label">Organisation scope</label>
+    <div className="flex gap-1.5 flex-wrap">
+      <select className="field-input py-1.5" value={current.type} disabled={disabled} onChange={(e) => update('type', e.target.value)}>
+        <option value="">No scope</option>
+        <option value="unit">Unit / Department / Faculty / Region</option>
+        <option value="programme">Programme</option>
+        <option value="sub">Sub-programme</option>
+        <option value="individual">Individual</option>
+      </select>
+      {current.type === 'unit' && <select
+        className="field-input py-1.5"
+        value={selectedKind}
+        disabled={disabled}
+        onChange={(e) => {
+          setUnitKindDraft((draft) => ({ ...draft, [user.id]: e.target.value }));
+          update('id', '');
+        }}
+        aria-label={`Organisation unit kind for ${user.name}`}
+      >
+        {UNIT_KIND_OPTIONS.map((kind) => <option key={kind} value={kind}>{kind}</option>)}
+      </select>}
+      {current.type && <select className="field-input py-1.5" value={current.id} disabled={disabled} onChange={(e) => update('id', e.target.value)}>
+        <option value="">Select scope</option>
+        {options.map((item) => <option key={item.id} value={item.id}>{current.type === 'individual' ? individualScopeLabel(item, org) : item.kind ? `${item.kind} — ${item.name}` : item.name}</option>)}
+      </select>}
+    </div>
+  </div>;
+}
+
+function individualScopeLabel(individual, org) {
+  const unit = org.units.find((item) => item.id === individual.unit_id);
+  const sub = unit && org.subs.find((item) => item.id === unit.sub_id);
+  const programme = sub && org.programmes.find((item) => item.id === sub.programme_id);
+  const unitLabel = unit ? `${unit.kind || 'Unit'} — ${unit.name}` : 'Unit not found';
+  return `${individual.name} · ${programme?.name || 'Programme not found'} / ${sub?.name || 'Sub-programme not found'} / ${unitLabel}`;
+}
+
+function scopeLabel(type, id, org) {
+  if (!type || !id) return '';
+  const items = type === 'programme' ? org.programmes : type === 'sub' ? org.subs : type === 'unit' ? org.units : org.individuals;
+  const item = items.find((entry) => entry.id === Number(id));
+  return item ? `${type} "${item.name}"` : '';
 }

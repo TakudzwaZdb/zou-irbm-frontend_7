@@ -245,11 +245,10 @@ function AllProgrammesView({ onSelect }) {
 }
 
 // One node's drill-down: its own breadcrumb, its own headline stats, its
-// own-tier KPIs in full (KpiCard, read-only — data entry happens on My Data
-// Entry, never here), and its children one click further in.
+// own-tier KPIs (read-only — data entry happens on My Data Entry, never here),
+// with one section-level Show/Hide control, and its children one click further in.
 function NodeView({ node, onHome, onSelect }) {
-  const { org, kpis, values, settings, period, perfValues, user, hiddenKpiIds } = useApp();
-  const [showHidden, setShowHidden] = useState(false);
+  const { org, kpis, values, settings, period, perfValues, user } = useApp();
   const { kind, id } = node;
   const entity =
     kind === 'programme' ? byId(org.programmes, id) :
@@ -267,15 +266,6 @@ function NodeView({ node, onHome, onSelect }) {
   // record also gets their Unit's KPIs shown, read-only, beneath their own.
   const isOwnIndividualNode = kind === 'individual' && user.role === 'individual' && id === user.scope_id;
   const unitKpisForContext = isOwnIndividualNode ? nodeOwnKpis(org, kpis, 'unit', entity.unit_id) : [];
-  // A personal declutter, never a data change — the headline stats/RAG
-  // chart above still read from the FULL ownKpis list (see below), so
-  // hiding something never makes this node's real, shared numbers look
-  // different to anyone. Only the actual list of cards rendered is
-  // filtered, and only for the person who chose to hide them.
-  const ownKpisVisible = showHidden ? ownKpis : ownKpis.filter((k) => !hiddenKpiIds.has(k.id));
-  const ownKpisHiddenCount = ownKpis.length - ownKpis.filter((k) => !hiddenKpiIds.has(k.id)).length;
-  const unitKpisVisible = showHidden ? unitKpisForContext : unitKpisForContext.filter((k) => !hiddenKpiIds.has(k.id));
-  const unitKpisHiddenCount = unitKpisForContext.length - unitKpisForContext.filter((k) => !hiddenKpiIds.has(k.id)).length;
   const counts = { draft: 0, submitted: 0, approved: 0, none: 0, returned: 0 };
   const ragCounts = { green: 0, amber: 0, red: 0, none: 0 };
   ownKpis.forEach((k) => {
@@ -364,19 +354,10 @@ function NodeView({ node, onHome, onSelect }) {
       )}
 
       {ownKpis.length > 0 && (
-        <>
-          <div className="flex justify-between items-center gap-2 flex-wrap mb-2.5">
-            <h2 className="font-display font-bold text-[14.5px]">
-              {kind === 'individual' ? 'Individual KPIs' : `KPIs in this ${KIND_LABEL[kind]}`}
-            </h2>
-            {ownKpisHiddenCount > 0 && (
-              <button className="text-[11.5px] text-accent-500 hover:underline" onClick={() => setShowHidden((v) => !v)}>
-                {showHidden ? 'Hide the ones you hid again' : `${ownKpisHiddenCount} hidden from your view — show`}
-              </button>
-            )}
-          </div>
-          {ownKpisVisible.map((k) => <KpiCard key={k.id} kpi={k} mode="readOnly" allowHide />)}
-        </>
+        <KpiSection
+          title={kind === 'individual' ? 'Individual KPIs' : `KPIs in this ${KIND_LABEL[kind]}`}
+          kpis={ownKpis}
+        />
       )}
 
       {/* An Individual lands here by default on their own record — also show
@@ -388,17 +369,11 @@ function NodeView({ node, onHome, onSelect }) {
           this — it's their own personal targets you're looking at, not a
           detour back into the whole unit. */}
       {unitKpisForContext.length > 0 && (
-        <>
-          <div className="flex justify-between items-center gap-2 flex-wrap mt-6 mb-2.5">
-            <h2 className="font-display font-bold text-[14.5px]">Your Unit's KPIs</h2>
-            {unitKpisHiddenCount > 0 && (
-              <button className="text-[11.5px] text-accent-500 hover:underline" onClick={() => setShowHidden((v) => !v)}>
-                {showHidden ? 'Hide the ones you hid again' : `${unitKpisHiddenCount} hidden from your view — show`}
-              </button>
-            )}
-          </div>
-          {unitKpisVisible.map((k) => <KpiCard key={k.id} kpi={k} mode="readOnly" allowHide />)}
-        </>
+        <KpiSection
+          title="Your Unit's KPIs"
+          kpis={unitKpisForContext}
+          className="mt-6"
+        />
       )}
 
       {kind === 'sub' && (canDrillToKind(user, 'unit')
@@ -415,6 +390,41 @@ function NodeView({ node, onHome, onSelect }) {
         <div className="card text-center text-ink-muted py-10">No KPIs recorded for this individual yet.</div>
       )}
     </div>
+  );
+}
+
+// Reusable KPI section visibility control.
+//
+// IMPORTANT: This controls the whole KPI section, not individual KPI cards.
+// The state is local to this mounted view, so navigating away and returning
+// starts with the KPI cards hidden again. KPI calculations still receive the
+// complete `kpis` array from the caller.
+function KpiSection({ title, kpis, className = '' }) {
+  const [showKpis, setShowKpis] = useState(false);
+
+  return (
+    <section className={className}>
+      <div className="flex justify-between items-center gap-2 flex-wrap mb-2.5">
+        <h2 className="font-display font-bold text-[14.5px]">{title}</h2>
+
+        <button
+          type="button"
+          className="text-[11.5px] text-accent-500 hover:underline"
+          onClick={() => setShowKpis((visible) => !visible)}
+          aria-expanded={showKpis}
+        >
+          {showKpis ? 'Hide KPIs' : 'Click to view KPIs'}
+        </button>
+      </div>
+
+      {showKpis && (
+        <div>
+          {kpis.map((k) => (
+            <KpiCard key={k.id} kpi={k} mode="readOnly" />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 

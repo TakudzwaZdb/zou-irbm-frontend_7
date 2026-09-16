@@ -38,9 +38,11 @@ import { byId } from '../lib/scope.js';
 export default function OrganisationBuilder() {
   const { user, org, hasPerm } = useApp();
   const canManage = hasPerm('manage_org_units');
-  const canCreateUnits = canManage || hasPerm('create_org_units');
-  const canEditUnits = canManage || hasPerm('edit_org_units');
-  const canAddIndividual = canManage || hasPerm('add_individual');
+  const canCreateUnits = canManage || hasPerm('create_org_units') || hasPerm('create_programmes') || hasPerm('create_subprogrammes') || hasPerm('create_units');
+  const canEditUnits = canManage || hasPerm('edit_org_units') || hasPerm('edit_programmes') || hasPerm('edit_subprogrammes') || hasPerm('edit_units');
+  const canAddIndividual = canManage || hasPerm('add_individual') || hasPerm('create_individuals');
+  const canEditIndividual = canManage || hasPerm('add_individual') || hasPerm('edit_individuals');
+  const canDeleteAny = canManage || hasPerm('delete_programmes') || hasPerm('delete_subprogrammes') || hasPerm('delete_units') || hasPerm('delete_individuals');
 
   const createEntities = [
     canCreateUnits && { key: 'programme', label: 'Programme' },
@@ -68,7 +70,7 @@ export default function OrganisationBuilder() {
     if (mode && !mode.entities.some((e) => e.key === entityKey)) setEntityKey(mode.entities[0]?.key);
   }, [modeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (modes.length === 0) {
+  if (modes.length === 0 && !canDeleteAny) {
     return (
       <div>
         <div className="mb-5">
@@ -95,31 +97,186 @@ export default function OrganisationBuilder() {
         </p>
       </div>
 
-      {modes.length > 1 && (
-        <NavRow>
-          {modes.map((m) => (
-            <NavButton key={m.key} active={m.key === modeKey} onClick={() => setModeKey(m.key)}>{m.label}</NavButton>
-          ))}
-        </NavRow>
-      )}
+      <OrganisationTable
+        org={org}
+        user={user}
+        canManage={canManage}
+        canCreateUnits={canCreateUnits}
+        canEditUnits={canEditUnits}
+        canAddIndividual={canAddIndividual}
+        canEditIndividual={canEditIndividual}
+        hasPerm={hasPerm}
+      />
+    </div>
+  );
+}
 
-      {mode && mode.entities.length > 1 && (
-        <NavRow sub>
-          {mode.entities.map((e) => (
-            <NavButton key={e.key} active={e.key === entityKey} sub onClick={() => setEntityKey(e.key)}>{e.label}</NavButton>
-          ))}
-        </NavRow>
-      )}
+function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits, canAddIndividual, canEditIndividual, hasPerm }) {
+  const toast = useToast();
+  const { reloadCore } = useApp();
+  const entities = [
+    canCreateUnits || canEditUnits || canManage ? { key: 'programme', label: 'Programmes' } : null,
+    canCreateUnits || canEditUnits || canManage ? { key: 'sub', label: 'Sub-programmes' } : null,
+    canCreateUnits || canEditUnits || canManage ? { key: 'unit', label: 'Units/Departments/Faculties/Regions' } : null,
+    canAddIndividual || canManage ? { key: 'individual', label: 'Individuals' } : null,
+  ].filter(Boolean);
+  const [entityKey, setEntityKey] = useState(entities[0]?.key);
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [busyId, setBusyId] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
 
-      <div className="max-w-2xl">
-        {modeKey === 'create' && entityKey === 'programme' && <CreateProgrammeForm />}
-        {modeKey === 'create' && entityKey === 'sub' && <CreateSubForm />}
-        {modeKey === 'create' && entityKey === 'unit' && <CreateUnitForm />}
-        {modeKey === 'create' && entityKey === 'individual' && <AddIndividualForm restrictToOwnScope={!canManage} />}
-        {modeKey === 'update' && entityKey === 'programme' && <UpdateProgrammeForm />}
-        {modeKey === 'update' && entityKey === 'sub' && <UpdateSubForm />}
-        {modeKey === 'update' && entityKey === 'unit' && <UpdateUnitForm />}
-      </div>
+  const canCreate = entityKey === 'individual' ? canAddIndividual : entityKey === 'programme' ? canManage || hasPerm('create_programmes') || hasPerm('create_org_units') : entityKey === 'sub' ? canManage || hasPerm('create_subprogrammes') || hasPerm('create_org_units') : canManage || hasPerm('create_units') || hasPerm('create_org_units');
+  const canEdit = entityKey === 'individual' ? canEditIndividual : entityKey === 'programme' ? canManage || hasPerm('edit_programmes') || hasPerm('edit_org_units') : entityKey === 'sub' ? canManage || hasPerm('edit_subprogrammes') || hasPerm('edit_org_units') : canManage || hasPerm('edit_units') || hasPerm('edit_org_units');
+  const canDelete = entityKey === 'programme' ? canManage || hasPerm('delete_programmes') : entityKey === 'sub' ? canManage || hasPerm('delete_subprogrammes') : entityKey === 'unit' ? canManage || hasPerm('delete_units') : canManage || hasPerm('delete_individuals');
+  const rows = org[entityKey === 'sub' ? 'subs' : `${entityKey}s`] || [];
+  const filteredRows = rows.filter((row) => {
+    const parent = parentLabel(row);
+    const values = [row.name, row.head, row.role_title, row.kind, row.unit_label, parent];
+    return values.some((value) => String(value || '').toLowerCase().includes(search.trim().toLowerCase()));
+  });
+  const eligibleUnits = canManage
+    ? org.units
+    : user.role === 'unithead'
+      ? org.units.filter((u) => u.id === user.scope_id)
+      : org.units.filter((u) => u.sub_id === user.scope_id);
+
+  function parentLabel(row) {
+    if (entityKey === 'sub') return byId(org.programmes, row.programme_id)?.name || '—';
+    if (entityKey === 'unit') return byId(org.subs, row.sub_id)?.name || '—';
+    if (entityKey === 'individual') return byId(org.units, row.unit_id)?.name || '—';
+    return '—';
+  }
+
+  function emptyDraft() {
+    if (entityKey === 'programme') return { name: '', head: '' };
+    if (entityKey === 'sub') return { programmeId: org.programmes[0]?.id || '', name: '', head: '', unitLabel: 'Unit' };
+    if (entityKey === 'unit') return { subId: org.subs[0]?.id || '', name: '', kind: 'Unit', head: '' };
+    return { unitId: eligibleUnits[0]?.id || '', name: '', roleTitle: '' };
+  }
+
+  function startCreate() {
+    setEditingId(null);
+    setDraft(emptyDraft());
+    setCreating(true);
+  }
+
+  function startEdit(row) {
+    if (!canEdit) return;
+    if (entityKey === 'programme') setDraft({ name: row.name, head: row.head });
+    if (entityKey === 'sub') setDraft({ programmeId: row.programme_id, name: row.name, head: row.head, unitLabel: row.unit_label || 'Unit' });
+    if (entityKey === 'unit') setDraft({ subId: row.sub_id, name: row.name, kind: row.kind || 'Unit', head: row.head });
+    if (entityKey === 'individual') setDraft({ unitId: row.unit_id, name: row.name, roleTitle: row.role_title });
+    setCreating(false);
+    setEditingId(row.id);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setDraft(null);
+    setCreating(false);
+  }
+
+  async function save(row) {
+    setBusyId(row?.id || 'new');
+    try {
+      const endpoint = entityKey === 'programme' ? '/org/programmes'
+        : entityKey === 'sub' ? '/org/subs'
+          : entityKey === 'unit' ? '/org/units' : '/org/individuals';
+      const body = entityKey === 'individual'
+        ? { unitId: Number(draft.unitId), name: draft.name, roleTitle: draft.roleTitle }
+        : entityKey === 'unit'
+          ? { subId: Number(draft.subId), name: draft.name, kind: draft.kind, head: draft.head }
+          : entityKey === 'sub'
+            ? { programmeId: Number(draft.programmeId), name: draft.name, head: draft.head, unitLabel: draft.unitLabel }
+            : { name: draft.name, head: draft.head };
+      const result = await api(row ? `${endpoint}/${row.id}` : endpoint, { method: row ? 'PATCH' : 'POST', body });
+      const account = result.headAccount || result.repAccount || result.account;
+      toast(row ? `"${draft.name}" updated.` : `${draft.name} created${account ? `. Account: ${account.email} (${account.note})` : '.'}`);
+      cancelEdit();
+      await reloadCore();
+    } catch (err) { toast(err.message, 'err'); }
+    finally { setBusyId(null); }
+  }
+
+  async function remove(row) {
+    if (!canDelete) return;
+    if (!window.confirm(`Remove "${row.name}"? This is recoverable from Recently Removed.`)) return;
+    setBusyId(row.id);
+    try {
+      await api(`/org/${entityKey === 'sub' ? 'subs' : `${entityKey}s`}/${row.id}`, { method: 'DELETE' });
+      toast(`"${row.name}" removed.`);
+      await reloadCore();
+    } catch (err) { toast(err.message, 'err'); }
+    finally { setBusyId(null); }
+  }
+
+  function updateDraft(key, value) { setDraft((current) => ({ ...current, [key]: value })); }
+
+  function input(key, type = 'text') {
+    return <input required className="field-input min-w-32" type={type} value={draft[key] ?? ''} onChange={(e) => updateDraft(key, e.target.value)} />;
+  }
+
+  function select(key, options) {
+    return <select className="field-input min-w-36" value={draft[key] ?? ''} onChange={(e) => updateDraft(key, e.target.value)}>
+      {options.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+    </select>;
+  }
+
+  function cells(row) {
+    const isEditing = editingId === row.id;
+    const values = isEditing ? draft : row;
+    return (
+      <>
+        <td className="px-3 py-2.5 font-semibold">{isEditing ? input('name') : row.name}</td>
+        <td className="px-3 py-2.5">{isEditing && entityKey !== 'programme' ? (
+          entityKey === 'sub' ? select('programmeId', org.programmes) : entityKey === 'unit' ? select('subId', org.subs) : select('unitId', eligibleUnits)
+        ) : parentLabel(row)}</td>
+        <td className="px-3 py-2.5">{isEditing ? input(entityKey === 'individual' ? 'roleTitle' : 'head') : (values.head || values.role_title || '—')}</td>
+        <td className="px-3 py-2.5">{isEditing && entityKey === 'unit' ? input('kind') : (row.kind || '—')}</td>
+        <td className="px-3 py-2.5 whitespace-nowrap">
+          {isEditing ? <span className="flex gap-1"><button className="btn btn-sm btn-primary" disabled={busyId === row.id} onClick={() => save(row)}>Save</button><button className="btn btn-sm" onClick={cancelEdit}>Cancel</button></span> : <span className="flex gap-1"><button className="btn btn-sm" disabled={!canEdit} onClick={() => startEdit(row)}>Edit</button>{canDelete && <button className="btn btn-sm btn-danger" disabled={busyId === row.id} onClick={() => remove(row)}>Delete</button>}</span>}
+        </td>
+      </>
+    );
+  }
+
+  const createCells = draft && (
+    <tr className="border-b border-line bg-sunken">
+      <td className="px-3 py-2.5 font-semibold">{input('name')}</td>
+      <td className="px-3 py-2.5">{entityKey === 'programme' ? '—' : entityKey === 'sub' ? select('programmeId', org.programmes) : entityKey === 'unit' ? select('subId', org.subs) : select('unitId', eligibleUnits)}</td>
+      <td className="px-3 py-2.5">{input(entityKey === 'individual' ? 'roleTitle' : 'head')}</td>
+      <td className="px-3 py-2.5">{entityKey === 'sub' ? select('unitLabel', UNIT_KINDS.map((name) => ({ id: name, name }))) : entityKey === 'unit' ? input('kind') : '—'}</td>
+      <td className="px-3 py-2.5 whitespace-nowrap"><span className="flex gap-1"><button className="btn btn-sm btn-primary" disabled={busyId === 'new'} onClick={() => save()}>Create</button><button className="btn btn-sm" onClick={cancelEdit}>Cancel</button></span></td>
+    </tr>
+  );
+
+  return (
+    <div className="card mt-4">
+      <button type="button" className="w-full flex items-center justify-between text-left" onClick={() => { setOpen((value) => !value); if (open) { cancelEdit(); setSearch(''); } }} aria-expanded={open}>
+        <span className="font-display font-bold text-[14px]">Organisation structure <span className="chip">{rows.length}</span></span>
+        <span className="text-ink-muted text-[12px]">{open ? 'Hide ▲' : 'Click to view ▼'}</span>
+      </button>
+      <p className="text-[12px] text-ink-muted mt-1">The organisation table is hidden by default. Click to view and manage records.</p>
+      {open && <div className="mt-3">
+        <div className="flex items-end justify-between gap-3 flex-wrap mb-3">
+          <div className="flex gap-1.5 flex-wrap">{entities.map((entity) => <NavButton key={entity.key} active={entity.key === entityKey} onClick={() => { cancelEdit(); setEntityKey(entity.key); }}>{entity.label}</NavButton>)}</div>
+          {canCreate && <button className="btn btn-primary btn-sm" onClick={startCreate}>Create {entities.find((entity) => entity.key === entityKey)?.label.slice(0, -1)}</button>}
+        </div>
+        <div className="mb-3">
+          <label className="field-label block mb-1">Search organisation records</label>
+          <input type="search" className="field-input w-full" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name, parent, head, role or type…" aria-label="Search organisation records" />
+        </div>
+        <div className="overflow-x-auto rounded-lg border border-line">
+          <table className="w-full text-left text-[12px]">
+            <thead className="bg-sunken border-b border-line"><tr><th className="px-3 py-2 font-bold">Name</th><th className="px-3 py-2 font-bold">Parent / Unit</th><th className="px-3 py-2 font-bold">Head / Role</th><th className="px-3 py-2 font-bold">Type</th><th className="px-3 py-2 font-bold">Actions</th></tr></thead>
+            <tbody>{creating && createCells}{filteredRows.length === 0 && !creating ? <tr><td colSpan="5" className="px-3 py-6 text-center text-ink-muted">{rows.length === 0 ? `No ${entities.find((entity) => entity.key === entityKey)?.label.toLowerCase()} yet.` : 'No records match your search.'}</td></tr> : filteredRows.map((row) => <tr key={row.id} className="border-b border-line last:border-b-0 hover:bg-sunken/60">{cells(row)}</tr>)}</tbody>
+          </table>
+        </div>
+        <div className="mt-2 text-[11px] text-ink-muted">Showing {filteredRows.length} of {rows.length} {entities.find((entity) => entity.key === entityKey)?.label.toLowerCase()}.</div>
+      </div>}
     </div>
   );
 }

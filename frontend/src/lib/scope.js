@@ -19,7 +19,7 @@ export function kpiSubId(org, kpi) {
 export function isOwner(user, kpi) {
   if (kpi.owner_type === 'sub') return user.role === 'rep' && user.scope_id === kpi.owner_id;
   if (kpi.owner_type === 'unit') return user.role === 'unithead' && user.scope_id === kpi.owner_id;
-  return user.role === 'individual' && user.scope_id === kpi.owner_id;
+  return user.role === 'individual' && user.scope_type === 'individual' && user.scope_id === kpi.owner_id;
 }
 // Mirrors backend/src/routes/kpis.js's isApprover exactly: single-stage,
 // one real approver per tier — Individual-owned by its Unit Head,
@@ -42,7 +42,12 @@ export function inJurisdiction(org, user, kpi) {
     if (kpi.owner_type === 'individual') return individualUnitId(org, kpi.owner_id) === user.scope_id;
     return false;
   }
-  if (user.role === 'individual') return kpi.owner_type === 'individual' && kpi.owner_id === user.scope_id;
+  if (user.role === 'individual') {
+    if (user.scope_type === 'individual') return kpi.owner_type === 'individual' && kpi.owner_id === user.scope_id;
+    if (user.scope_type === 'unit') return kpi.owner_type === 'unit' && kpi.owner_id === user.scope_id || kpi.owner_type === 'individual' && individualUnitId(org, kpi.owner_id) === user.scope_id;
+    if (user.scope_type === 'sub') return kpiSubId(org, kpi) === user.scope_id;
+    if (user.scope_type === 'programme') return byId(org.subs, kpiSubId(org, kpi))?.programme_id === user.scope_id;
+  }
   // A Programme Head's jurisdiction is read-only oversight of every KPI
   // owned anywhere within their own Programme's Sub-programmes (a Programme
   // never owns KPIs directly) — the same "everything beneath my own branch,
@@ -180,7 +185,7 @@ export function nodeAncestryChain(org, kind, id) {
 // Individual's own record. Global roles (cpu/exec/ictadmin) have none —
 // their default is "All Programmes", driven entirely by selNode.
 export function defaultNodeForRole(user) {
-  if (user.role === 'individual') return { kind: 'individual', id: user.scope_id };
+  if (user.role === 'individual') return { kind: user.scope_type || 'individual', id: user.scope_id };
   if (user.role === 'unithead') return { kind: 'unit', id: user.scope_id };
   if (user.role === 'rep') return { kind: 'sub', id: user.scope_id };
   if (user.role === 'programme') return { kind: 'programme', id: user.scope_id };
@@ -195,10 +200,10 @@ export function defaultNodeForRole(user) {
 export function relevantKpis(org, kpis, user) {
   if (['cpu', 'exec', 'ictadmin', 'council'].includes(user.role)) return kpis;
   if (user.role === 'individual') {
-    const unitId = individualUnitId(org, user.scope_id);
+    const unitId = user.scope_type === 'unit' ? user.scope_id : individualUnitId(org, user.scope_id);
     return kpis.filter((k) =>
       isOwner(user, k) || isApprover(org, user, k) || inJurisdiction(org, user, k) ||
-      (k.owner_type === 'unit' && k.owner_id === unitId)
+      (unitId != null && k.owner_type === 'unit' && k.owner_id === unitId)
     );
   }
   return kpis.filter((k) => isOwner(user, k) || isApprover(org, user, k) || inJurisdiction(org, user, k));
@@ -294,6 +299,23 @@ export function scopeBreadcrumb(org, user) {
     return [programme?.name, sub?.name, unit.name].filter(Boolean);
   }
   if (user.role === 'individual') {
+    if (user.scope_type === 'programme') {
+      const programme = byId(org.programmes, user.scope_id);
+      return programme ? [programme.name] : null;
+    }
+    if (user.scope_type === 'sub') {
+      const sub = byId(org.subs, user.scope_id);
+      if (!sub) return null;
+      const programme = byId(org.programmes, sub.programme_id);
+      return [programme?.name, sub.name].filter(Boolean);
+    }
+    if (user.scope_type === 'unit') {
+      const unit = byId(org.units, user.scope_id);
+      if (!unit) return null;
+      const sub = byId(org.subs, unit.sub_id);
+      const programme = sub ? byId(org.programmes, sub.programme_id) : null;
+      return [programme?.name, sub?.name, `${unit.kind || 'Unit'}: ${unit.name}`].filter(Boolean);
+    }
     const ind = byId(org.individuals, user.scope_id);
     if (!ind) return null;
     const unit = byId(org.units, ind.unit_id);

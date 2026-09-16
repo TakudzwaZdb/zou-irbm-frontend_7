@@ -2,7 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { requireAuth, requireRole } = require('../middleware/auth');
-const { PERMISSIONS } = require('../utils/permissions');
+const { PERMISSIONS, DEFAULT_PERMS_BY_ROLE } = require('../utils/permissions');
 const { generateTempPassword } = require('../utils/password');
 
 const router = express.Router();
@@ -38,22 +38,29 @@ router.post('/:id/permissions/:key/grant', (req, res) => {
   if (!PERMISSIONS.some((p) => p.key === key)) return res.status(404).json({ error: 'Unknown permission key.' });
   const target = db.prepare('SELECT id, name FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
-  db.prepare('INSERT OR IGNORE INTO user_permissions (user_id, permission_key) VALUES (?, ?)').run(id, key);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'permission_grant', 'user', id, `Granted "${key}" to ${target.name}.`
-  );
-  res.json({ ok: true });
+  db.transaction(() => {
+    db.prepare('INSERT OR IGNORE INTO user_permissions (user_id, permission_key) VALUES (?, ?)').run(id, key);
+    db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+      req.user.id, 'permission_grant', 'user', id, `Granted "${key}" to ${target.name}.`
+    );
+  })();
+  const permissions = db.prepare('SELECT permission_key FROM user_permissions WHERE user_id = ? ORDER BY permission_key').all(id).map((row) => row.permission_key);
+  res.json({ ok: true, user: { id: Number(id), permissions } });
 });
 
 router.post('/:id/permissions/:key/revoke', (req, res) => {
   const { id, key } = req.params;
+  if (!PERMISSIONS.some((p) => p.key === key)) return res.status(404).json({ error: 'Unknown permission key.' });
   const target = db.prepare('SELECT id, name FROM users WHERE id = ?').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
-  db.prepare('DELETE FROM user_permissions WHERE user_id = ? AND permission_key = ?').run(id, key);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'permission_revoke', 'user', id, `Revoked "${key}" from ${target.name}.`
-  );
-  res.json({ ok: true });
+  db.transaction(() => {
+    db.prepare('DELETE FROM user_permissions WHERE user_id = ? AND permission_key = ?').run(id, key);
+    db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+      req.user.id, 'permission_revoke', 'user', id, `Revoked "${key}" from ${target.name}.`
+    );
+  })();
+  const permissions = db.prepare('SELECT permission_key FROM user_permissions WHERE user_id = ? ORDER BY permission_key').all(id).map((row) => row.permission_key);
+  res.json({ ok: true, user: { id: Number(id), permissions } });
 });
 
 // Update a user's profile fields — name, title, email. Separate from role
@@ -134,9 +141,9 @@ router.post('/:id/mfa/disable', (req, res) => {
   res.json({ ok: true });
 });
 
-const ROLES = ['exec', 'cpu', 'ictadmin', 'rep', 'unithead', 'individual', 'programme', 'council'];
 const OVERVIEW_LIMITS = ['programme', 'sub', 'unit'];
 const SCOPE_TYPES = ['sub', 'unit', 'individual', 'programme'];
+const ROLE_SCOPE_TYPES = { rep: 'sub', unithead: 'unit', programme: 'programme' };
 
 // Change a user's role/scope — e.g. reassigning a Unit Head to a different
 // unit, or promoting someone into a new role. ICT admin only (this whole
@@ -148,13 +155,88 @@ router.patch('/:id/role', (req, res) => {
   const { id } = req.params;
   const { role, scopeType, scopeId } = req.body || {};
   if (Number(id) === req.user.id) return res.status(400).json({ error: 'You cannot change your own role.' });
-  if (!ROLES.includes(role)) return res.status(400).json({ error: 'Invalid role.' });
+  const roleDefinition = db.prepare('SELECT key, label FROM role_definitions WHERE key = ?').get(role);
+  if (!roleDefinition) return res.status(400).json({ error: 'Invalid role.' });
+  const requiredScopeType = ROLE_SCOPE_TYPES[role];
+  if (requiredScopeType && scopeType !== requiredScopeType) {
+    return res.status(400).json({ error: `${roleDefinition.label} accounts must be assigned to a ${requiredScopeType} scope.` });
+  }
+  if (!requiredScopeType && role !== 'individual' && (scopeType != null || scopeId != null)) {
+    return res.status(400).json({ error: `${roleDefinition.label} accounts use a university-wide scope.` });
+  }
   if (scopeType != null && !SCOPE_TYPES.includes(scopeType)) return res.status(400).json({ error: 'Invalid scope type.' });
+  if (scopeType && !scopeId) return res.status(400).json({ error: 'A scope selection is required.' });
+  if (role === 'individual' && !['programme', 'sub', 'unit', 'individual'].includes(scopeType)) {
+    return res.status(400).json({ error: 'Individual accounts must be assigned to a Programme, Sub-programme, Unit / Department / Faculty / Region, or Individual scope.' });
+  }
+  if (scopeType) {
+    const scopeTables = { programme: 'programmes', sub: 'subs', unit: 'units', individual: 'individuals' };
+    const scope = db.prepare(`SELECT id FROM ${scopeTables[scopeType]} WHERE id = ? AND deleted_at IS NULL`).get(scopeId);
+    if (!scope) return res.status(400).json({ error: 'The selected organisation scope was not found.' });
+  }
+  if (role === 'individual' && scopeType === 'individual') {
+    const individual = db.prepare(`
+      SELECT i.id, i.user_id, u.id AS unit_id, u.deleted_at AS unit_deleted_at,
+        s.id AS sub_id, s.deleted_at AS sub_deleted_at,
+        p.id AS programme_id, p.deleted_at AS programme_deleted_at
+      FROM individuals i
+      JOIN units u ON u.id = i.unit_id
+      JOIN subs s ON s.id = u.sub_id
+      JOIN programmes p ON p.id = s.programme_id
+      WHERE i.id = ? AND i.deleted_at IS NULL
+    `).get(scopeId);
+    if (!individual || individual.unit_deleted_at || individual.sub_deleted_at || individual.programme_deleted_at) {
+      return res.status(400).json({ error: 'An Individual must be assigned to an active Programme, Sub-programme, and Unit / Department / Faculty / Region.' });
+    }
+  }
   const target = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
 
-  db.prepare('UPDATE users SET role = ?, scope_type = ?, scope_id = ? WHERE id = ?')
-    .run(role, scopeType || null, scopeId || null, id);
+  // A role represents a single occupied appointment at its scope. Global
+  // roles have one university-wide appointment; scoped roles have one
+  // appointment per selected Programme, Sub-programme, or Unit. Individual
+  // is deliberately exempt because multiple Individual accounts are valid.
+  if (role !== 'individual') {
+    const occupied = scopeType
+      ? db.prepare('SELECT name FROM users WHERE role = ? AND scope_type = ? AND scope_id = ? AND deleted_at IS NULL AND id != ? ORDER BY id LIMIT 1')
+        .get(role, scopeType, scopeId, id)
+      : db.prepare('SELECT name FROM users WHERE role = ? AND scope_type IS NULL AND scope_id IS NULL AND deleted_at IS NULL AND id != ? ORDER BY id LIMIT 1')
+        .get(role, id);
+    if (occupied) {
+      return res.status(400).json({ error: `That ${roleDefinition.label} role is already occupied by ${occupied.name}.` });
+    }
+
+    const appointment = role === 'programme'
+      ? db.prepare('SELECT u.name FROM programmes p JOIN users u ON u.id = p.head_user_id WHERE p.id = ? AND p.deleted_at IS NULL AND u.deleted_at IS NULL AND p.head_user_id != ?').get(scopeId, id)
+      : role === 'rep'
+        ? db.prepare('SELECT u.name FROM subs s JOIN users u ON u.id = s.rep_user_id WHERE s.id = ? AND s.deleted_at IS NULL AND u.deleted_at IS NULL AND s.rep_user_id != ?').get(scopeId, id)
+        : role === 'unithead'
+          ? db.prepare('SELECT u.name FROM units n JOIN users u ON u.id = n.head_user_id WHERE n.id = ? AND n.deleted_at IS NULL AND u.deleted_at IS NULL AND n.head_user_id != ?').get(scopeId, id)
+          : null;
+    if (appointment) {
+      return res.status(400).json({ error: `That ${roleDefinition.label} appointment is already occupied by ${appointment.name}.` });
+    }
+  }
+
+  const change = db.transaction(() => {
+    db.prepare('UPDATE individuals SET user_id = NULL WHERE user_id = ?').run(id);
+    db.prepare('UPDATE programmes SET head_user_id = NULL WHERE head_user_id = ?').run(id);
+    db.prepare('UPDATE subs SET rep_user_id = NULL WHERE rep_user_id = ?').run(id);
+    db.prepare('UPDATE units SET head_user_id = NULL WHERE head_user_id = ?').run(id);
+    db.prepare('UPDATE users SET role = ?, title = ?, scope_type = ?, scope_id = ? WHERE id = ?')
+      .run(role, roleDefinition.label, scopeType || null, scopeId || null, id);
+    if (role === 'individual' && scopeType === 'individual') db.prepare('UPDATE individuals SET user_id = ? WHERE id = ?').run(id, scopeId);
+    if (role === 'programme') db.prepare('UPDATE programmes SET head_user_id = ? WHERE id = ?').run(id, scopeId);
+    if (role === 'rep') db.prepare('UPDATE subs SET rep_user_id = ? WHERE id = ?').run(id, scopeId);
+    if (role === 'unithead') db.prepare('UPDATE units SET head_user_id = ? WHERE id = ?').run(id, scopeId);
+    // A tier change changes the account's authority everywhere, not just its
+    // label. Replace the previous tier's default grants so old access cannot
+    // leak into the new role.
+    db.prepare('DELETE FROM user_permissions WHERE user_id = ?').run(id);
+    const addPermission = db.prepare('INSERT INTO user_permissions (user_id, permission_key) VALUES (?, ?)');
+    (DEFAULT_PERMS_BY_ROLE[role] || []).forEach((permission) => addPermission.run(id, permission));
+  });
+  change();
   db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'change_role', 'user', id, `${target.name}: role changed from "${target.role}" to "${role}".`
   );

@@ -172,11 +172,53 @@ router.get('/', (req, res) => {
   res.json({ programmes, subs, units, individuals, executiveOwner });
 });
 
+// Role definitions are maintained alongside the organisational structure.
+// Built-in roles remain protected because authorization and navigation use
+// their keys; custom definitions are safe to create, rename, and remove.
+router.get('/roles', requirePerm('manage_users'), (req, res) => {
+  res.json({ roles: db.prepare('SELECT key, label, built_in FROM role_definitions ORDER BY built_in DESC, label').all() });
+});
+
+router.post('/roles', requirePerm('manage_users'), (req, res) => {
+  const key = String(req.body?.key || '').trim().toLowerCase();
+  const label = String(req.body?.label || '').trim();
+  if (!/^[a-z][a-z0-9_]{1,30}$/.test(key)) return res.status(400).json({ error: 'Role key must use 2-31 lowercase letters, numbers, or underscores.' });
+  if (!label) return res.status(400).json({ error: 'Role label is required.' });
+  try {
+    db.prepare('INSERT INTO role_definitions (key, label) VALUES (?, ?)').run(key, label);
+  } catch (err) {
+    if (String(err.message).includes('UNIQUE')) return res.status(400).json({ error: 'That role key already exists.' });
+    throw err;
+  }
+  res.status(201).json({ role: db.prepare('SELECT key, label, built_in FROM role_definitions WHERE key = ?').get(key) });
+});
+
+router.patch('/roles/:key', requirePerm('manage_users'), (req, res) => {
+  const key = String(req.params.key || '').trim().toLowerCase();
+  const label = String(req.body?.label || '').trim();
+  if (!label) return res.status(400).json({ error: 'Role label is required.' });
+  const role = db.prepare('SELECT key, built_in FROM role_definitions WHERE key = ?').get(key);
+  if (!role) return res.status(404).json({ error: 'Role not found.' });
+  db.prepare('UPDATE role_definitions SET label = ? WHERE key = ?').run(label, key);
+  res.json({ role: db.prepare('SELECT key, label, built_in FROM role_definitions WHERE key = ?').get(key) });
+});
+
+router.delete('/roles/:key', requirePerm('manage_users'), (req, res) => {
+  const key = String(req.params.key || '').trim().toLowerCase();
+  const role = db.prepare('SELECT key, built_in FROM role_definitions WHERE key = ?').get(key);
+  if (!role) return res.status(404).json({ error: 'Role not found.' });
+  if (role.built_in) return res.status(400).json({ error: 'Built-in roles cannot be deleted.' });
+  const users = db.prepare('SELECT COUNT(*) AS count FROM users WHERE role = ? AND deleted_at IS NULL').get(key).count;
+  if (users) return res.status(400).json({ error: 'Reassign all users with this role before deleting it.' });
+  db.prepare('DELETE FROM role_definitions WHERE key = ?').run(key);
+  res.json({ ok: true });
+});
+
 // The soft-removed side of the four tables above — what an ICT System
 // Administrator or CPU sees under "Recently removed" so removal is
 // genuinely traceable, not just a database column nobody can act on.
 // Ordered most-recently-removed first.
-router.get('/removed', requirePerm('manage_org_units'), (req, res) => {
+router.get('/removed', requireAnyPerm('manage_org_units', 'delete_programmes', 'delete_subprogrammes', 'delete_units', 'delete_individuals'), (req, res) => {
   const programmes = db.prepare('SELECT * FROM programmes WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC').all();
   const subs = db.prepare('SELECT * FROM subs WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC').all();
   const units = db.prepare('SELECT * FROM units WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC').all();
@@ -188,7 +230,7 @@ router.get('/removed', requirePerm('manage_org_units'), (req, res) => {
 // pattern as Unit/Sub-programme creation below: provisions a real Programme
 // Head account (role='programme', scope_type='programme') so the new head
 // can sign in immediately. Used by the "Organisation Structure" admin page.
-router.post('/programmes', requireAnyPerm('manage_org_units', 'create_org_units'), (req, res) => {
+router.post('/programmes', requireAnyPerm('manage_org_units', 'create_org_units', 'create_programmes'), (req, res) => {
   const { name, head } = req.body || {};
   if (!name || !head) return res.status(400).json({ error: 'name and head are required.' });
 
@@ -225,7 +267,7 @@ router.post('/programmes', requireAnyPerm('manage_org_units', 'create_org_units'
 // step with the org-chart record, so "who's signed in" and "who the org
 // chart says leads this Programme" never drift apart the way they could
 // before that fix existed for Individuals.
-router.patch('/programmes/:id', requireAnyPerm('manage_org_units', 'edit_org_units'), (req, res) => {
+router.patch('/programmes/:id', requireAnyPerm('manage_org_units', 'edit_org_units', 'edit_programmes'), (req, res) => {
   const programme = db.prepare('SELECT * FROM programmes WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!programme) return res.status(404).json({ error: 'Programme not found.' });
   const { name, head } = req.body || {};
@@ -250,7 +292,7 @@ router.patch('/programmes/:id', requireAnyPerm('manage_org_units', 'edit_org_uni
 // above). Nothing is actually destroyed: every row is stamped deleted_at
 // and simply stops appearing in active views. Fully reversible from
 // "Recently Removed" (POST /programmes/:id/restore below).
-router.delete('/programmes/:id', requirePerm('manage_org_units'), (req, res) => {
+router.delete('/programmes/:id', requireAnyPerm('manage_org_units', 'delete_programmes'), (req, res) => {
   const programme = db.prepare('SELECT * FROM programmes WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!programme) return res.status(404).json({ error: 'Programme not found.' });
 
@@ -285,7 +327,7 @@ router.post('/programmes/:id/restore', requirePerm('manage_org_units'), (req, re
 // Live creation of a Sub-programme under a Programme — requires
 // 'manage_org_units'. Provisions a real Sub-programme Rep account, same
 // pattern as Unit creation below.
-router.post('/subs', requireAnyPerm('manage_org_units', 'create_org_units'), (req, res) => {
+router.post('/subs', requireAnyPerm('manage_org_units', 'create_org_units', 'create_subprogrammes'), (req, res) => {
   const { programmeId, name, head, unitLabel } = req.body || {};
   if (!programmeId || !name || !head) {
     return res.status(400).json({ error: 'programmeId, name, and head are required.' });
@@ -320,7 +362,7 @@ router.post('/subs', requireAnyPerm('manage_org_units', 'create_org_units'), (re
 
 // Update a Sub-programme's own name/head (and unit_label) — same rationale
 // and same account-sync pattern as PATCH /programmes/:id above.
-router.patch('/subs/:id', requireAnyPerm('manage_org_units', 'edit_org_units'), (req, res) => {
+router.patch('/subs/:id', requireAnyPerm('manage_org_units', 'edit_org_units', 'edit_subprogrammes'), (req, res) => {
   const sub = db.prepare('SELECT * FROM subs WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!sub) return res.status(404).json({ error: 'Sub-programme not found.' });
   const { name, head, unitLabel } = req.body || {};
@@ -344,7 +386,7 @@ router.patch('/subs/:id', requireAnyPerm('manage_org_units', 'edit_org_units'), 
 // it, every KPI any of those (or the Sub-programme itself) own, and every
 // login account that only exists because of them. Stamped, not deleted —
 // see cascadeSoftDeleteSub above and POST /subs/:id/restore below.
-router.delete('/subs/:id', requirePerm('manage_org_units'), (req, res) => {
+router.delete('/subs/:id', requireAnyPerm('manage_org_units', 'delete_subprogrammes'), (req, res) => {
   const sub = db.prepare('SELECT * FROM subs WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!sub) return res.status(404).json({ error: 'Sub-programme not found.' });
 
@@ -375,7 +417,7 @@ router.post('/subs/:id/restore', requirePerm('manage_org_units'), (req, res) => 
 // account with a real derived email + a demo password, so the new head can
 // sign in immediately (an ICT Systems Administrator can extend/adjust their
 // permissions afterwards from the Permissions page).
-router.post('/units', requireAnyPerm('manage_org_units', 'create_org_units'), (req, res) => {
+router.post('/units', requireAnyPerm('manage_org_units', 'create_org_units', 'create_units'), (req, res) => {
   const { subId, name, head, kind } = req.body || {};
   if (!subId || !name || !head) {
     return res.status(400).json({ error: 'subId, name, and head are required.' });
@@ -415,7 +457,7 @@ router.post('/units', requireAnyPerm('manage_org_units', 'create_org_units'), (r
 
 // Update a Unit/Department/Faculty/Region's own name/head/kind — same
 // rationale and same account-sync pattern as the two PATCH routes above.
-router.patch('/units/:id', requireAnyPerm('manage_org_units', 'edit_org_units'), (req, res) => {
+router.patch('/units/:id', requireAnyPerm('manage_org_units', 'edit_org_units', 'edit_units'), (req, res) => {
   const unit = db.prepare('SELECT * FROM units WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!unit) return res.status(404).json({ error: 'Unit not found.' });
   const { name, head, kind } = req.body || {};
@@ -440,7 +482,7 @@ router.patch('/units/:id', requireAnyPerm('manage_org_units', 'edit_org_units'),
 // every login account that only exists because of them. Stamped, not
 // deleted — see cascadeSoftDeleteUnit above and POST /units/:id/restore
 // below.
-router.delete('/units/:id', requirePerm('manage_org_units'), (req, res) => {
+router.delete('/units/:id', requireAnyPerm('manage_org_units', 'delete_units'), (req, res) => {
   const unit = db.prepare('SELECT * FROM units WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!unit) return res.status(404).json({ error: 'Unit not found.' });
 
@@ -474,7 +516,7 @@ router.post('/units/:id/restore', requirePerm('manage_org_units'), (req, res) =>
 // a Sub-programme Rep only into a unit within their own sub-programme —
 // granting add_individual to anyone else (no org scope of their own) is a
 // no-op, since there's no sensible scope left to restrict them to.
-router.post('/individuals', requireAnyPerm('manage_org_units', 'add_individual'), (req, res) => {
+router.post('/individuals', requireAnyPerm('manage_org_units', 'add_individual', 'create_individuals'), (req, res) => {
   const { unitId, name, roleTitle } = req.body || {};
   if (!unitId || !name || !roleTitle) {
     return res.status(400).json({ error: 'unitId, name, and roleTitle are all required.' });
@@ -524,7 +566,7 @@ router.post('/individuals', requireAnyPerm('manage_org_units', 'add_individual')
 // signed in" and "who the org chart / KPI ownership says this is". Same
 // permission scoping as adding one (broad manage_org_units, or the
 // narrower add_individual within your own unit/sub-programme).
-router.patch('/individuals/:id', requireAnyPerm('manage_org_units', 'add_individual'), (req, res) => {
+router.patch('/individuals/:id', requireAnyPerm('manage_org_units', 'add_individual', 'edit_individuals'), (req, res) => {
   const individual = db.prepare('SELECT * FROM individuals WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!individual) return res.status(404).json({ error: 'Individual not found.' });
   const unit = db.prepare('SELECT * FROM units WHERE id = ?').get(individual.unit_id);
@@ -562,7 +604,7 @@ router.patch('/individuals/:id', requireAnyPerm('manage_org_units', 'add_individ
 // person, their account, their audit history, and everything they ever
 // submitted stays in the database and is fully recoverable — see
 // POST /individuals/:id/restore below.
-router.delete('/individuals/:id', requirePerm('manage_org_units'), (req, res) => {
+router.delete('/individuals/:id', requireAnyPerm('manage_org_units', 'delete_individuals'), (req, res) => {
   const individual = db.prepare('SELECT * FROM individuals WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!individual) return res.status(404).json({ error: 'Individual not found.' });
 
