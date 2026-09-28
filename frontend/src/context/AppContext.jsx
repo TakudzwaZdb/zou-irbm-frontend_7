@@ -278,6 +278,36 @@ export function AppProvider({ children }) {
     }
   }, [applyAuthResult]);
 
+  // Completes a "Sign in with Microsoft" round trip — see routes/auth.js's
+  // GET /azure/login -> /azure/callback. The backend does the actual Entra
+  // ID exchange server-side and redirects the browser back here with the
+  // real app token in the URL fragment (never sent to any server's access
+  // log, unlike a query string) rather than a page this SPA would need its
+  // own route for. Login.jsx's effect below is what actually calls this,
+  // right after reading that fragment off window.location.hash.
+  const completeAzureLogin = useCallback(async (token) => {
+    setLoginError(null);
+    try {
+      setToken(token);
+      const r = await api('/auth/me');
+      await applyAuthResult({ token, user: r.user });
+      return true;
+    } catch (err) {
+      setLoginError(err.message || 'Microsoft sign-in failed.');
+      return false;
+    }
+  }, [applyAuthResult]);
+
+  // The failure half of the same round trip — GET /azure/callback redirects
+  // back with #azure_error=<message> instead of a token when Microsoft
+  // sign-in didn't complete (no matching account, wrong tenant, etc.); this
+  // just surfaces that exact server-given reason the same way a normal
+  // failed login shows loginError, without pretending a token exchange was
+  // attempted.
+  const reportAzureLoginError = useCallback((message) => {
+    setLoginError(message || 'Microsoft sign-in failed.');
+  }, []);
+
   // Step 2 of an MFA sign-in: the mfaToken login() just handed back, plus
   // the 6-digit code (or a recovery code) the person entered. Same
   // apply-then-load-core transition every other successful auth action uses.
@@ -339,7 +369,7 @@ export function AppProvider({ children }) {
   }, [logout]);
 
   const value = {
-    booting, user, loginError, login, verifyMfa, logout, logoutEverywhere, completePasswordChange, hasPerm, refreshUser,
+    booting, user, loginError, login, verifyMfa, logout, logoutEverywhere, completePasswordChange, completeAzureLogin, reportAzureLoginError, hasPerm, refreshUser,
     org, kpis, settings, values, period, changePeriod,
     submissionWindow,
     assignments, reloadAssignments,

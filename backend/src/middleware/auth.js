@@ -11,19 +11,58 @@ if (!JWT_SECRET) {
   throw new Error('JWT_SECRET is not set. Set a long random value in backend/.env before starting the server (see .env.example).');
 }
 
-function getUserPermissions(userId) {
-  return db
-    .prepare('SELECT permission_key FROM user_permissions WHERE user_id = ?')
-    .all(userId)
-    .map((r) => r.permission_key);
+async function getUserPermissions(userId) {
+  const rows = await db
+    .prepare(`
+      SELECT permission_key FROM (
+        SELECT permission_key FROM user_permissions WHERE user_id = ?
+        UNION
+        SELECT rp.permission_key
+        FROM role_permissions rp
+        JOIN users u ON u.id = ? AND u.role = rp.role_key
+      )
+      ORDER BY permission_key
+    `)
+    .all(userId, userId);
+  return rows.map((r) => r.permission_key);
 }
 
-function loadUser(userId) {
-  const user = db.prepare('SELECT id, name, title, email, role, scope_type, scope_id, avatar, overview_limit, is_executive_owner, must_change_password, mfa_enabled FROM users WHERE id = ?').get(userId);
+async function permissionsForRole(roleKey) {
+  const rows = await db
+    .prepare('SELECT permission_key FROM role_permissions WHERE role_key = ? ORDER BY permission_key')
+    .all(roleKey);
+  return rows.map((r) => r.permission_key);
+}
+
+async function applyRolePermissions(userId, role) {
+  const insert = db.prepare('INSERT OR IGNORE INTO user_permissions (user_id, permission_key) VALUES (?, ?)');
+  const keys = await permissionsForRole(role);
+  for (const key of keys) {
+    // eslint-disable-next-line no-await-in-loop
+    await insert.run(userId, key);
+  }
+}
+
+async function listRolesWithPermissions() {
+  const roles = await db.prepare('SELECT key, label, built_in FROM role_definitions ORDER BY built_in DESC, label').all();
+  const rows = await db.prepare('SELECT role_key, permission_key FROM role_permissions').all();
+  const byRole = {};
+  rows.forEach((row) => {
+    (byRole[row.role_key] = byRole[row.role_key] || []).push(row.permission_key);
+  });
+  roles.forEach((role) => {
+    role.built_in = !!role.built_in;
+    role.permissions = byRole[role.key] || [];
+  });
+  return roles;
+}
+
+async function loadUser(userId) {
+  const user = await db.prepare('SELECT id, name, title, email, role, scope_type, scope_id, avatar, overview_limit, is_executive_owner, must_change_password, mfa_enabled FROM users WHERE id = ?').get(userId);
   if (!user) return null;
   user.must_change_password = !!user.must_change_password;
   user.mfa_enabled = !!user.mfa_enabled;
-  user.permissions = getUserPermissions(user.id);
+  user.permissions = await getUserPermissions(user.id);
   return user;
 }
 
@@ -36,7 +75,7 @@ const PASSWORD_CHANGE_EXEMPT_PATHS = new Set(['/api/auth/me', '/api/auth/change-
 
 // Requires a valid bearer token; attaches req.user (with fresh permissions
 // pulled from the DB on every request — never cached in the token).
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'Missing bearer token.' });
@@ -59,7 +98,7 @@ function requireAuth(req, res, next) {
   // password reset, or "sign out everywhere" bumps the column and every
   // token minted before that bump stops working immediately, rather than
   // staying valid for up to the remaining 12h of its natural expiry.
-  const versionRow = db.prepare('SELECT token_version, deleted_at FROM users WHERE id = ?').get(payload.sub);
+  const versionRow = await db.prepare('SELECT token_version, deleted_at FROM users WHERE id = ?').get(payload.sub);
   if (!versionRow) return res.status(401).json({ error: 'Account no longer exists.' });
   // A token minted before the account was removed from the org structure
   // (see routes/org.js's deactivateUserAccount) must stop working the
@@ -70,7 +109,7 @@ function requireAuth(req, res, next) {
   if (Number(payload.tv || 0) !== Number(versionRow.token_version || 0)) {
     return res.status(401).json({ error: 'This session was signed out. Please sign in again.' });
   }
-  const user = loadUser(payload.sub);
+  const user = await loadUser(payload.sub);
   if (!user) return res.status(401).json({ error: 'Account no longer exists.' });
   req.user = user;
   if (user.must_change_password && !PASSWORD_CHANGE_EXEMPT_PATHS.has(req.originalUrl.split('?')[0])) {
@@ -115,4 +154,15 @@ function requireRole(...roles) {
   };
 }
 
-module.exports = { requireAuth, requirePerm, requireAnyPerm, requireRole, loadUser, getUserPermissions, JWT_SECRET };
+module.exports = {
+  requireAuth,
+  requirePerm,
+  requireAnyPerm,
+  requireRole,
+  loadUser,
+  getUserPermissions,
+  permissionsForRole,
+  applyRolePermissions,
+  listRolesWithPermissions,
+  JWT_SECRET,
+};

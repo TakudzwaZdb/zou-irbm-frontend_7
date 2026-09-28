@@ -287,14 +287,14 @@ export default function Settings() {
       ========================================== */}
       <div className="card overflow-hidden">
 
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto max-h-[65vh] overflow-y-auto">
 
           <table className="w-full text-sm">
 
             {/* =====================================
                 TABLE HEADER
             ====================================== */}
-            <thead>
+            <thead className="sticky top-0 z-10">
               <tr className="border-b border-border bg-surface-muted">
 
                 {/* SETTING COLUMN */}
@@ -374,6 +374,13 @@ export default function Settings() {
 
                     {/* =================================
                         COLLAPSIBLE SECTION HEADER
+
+                        Keyboard-accessible the same way as every other
+                        clickable table row in this app (Users & Roles'
+                        account rows, Permissions' role rows): a real
+                        role="button" with tabIndex and an Enter/Space
+                        handler, not just an onClick a mouse can reach but
+                        a keyboard or screen-reader user cannot.
                     ================================== */}
                     <tr
                       className="
@@ -384,9 +391,16 @@ export default function Settings() {
                         hover:bg-gray-100
                         select-none
                       "
-                      onClick={() =>
-                        toggleSection(section.title)
-                      }
+                      onClick={() => toggleSection(section.title)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                        event.preventDefault();
+                        toggleSection(section.title);
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={isOpen}
+                      aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${section.title}`}
                     >
                       <td
                         colSpan={4}

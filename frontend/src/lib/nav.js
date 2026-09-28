@@ -79,9 +79,10 @@ export const NAV_ITEMS = {
 // whose DEFAULT permission set (utils/permissions.js, backend) can hold
 // create_kpi/edit_targets/manage_org_units/add_individual, plus
 // rep/unithead for orgBuilder/orgStructure specifically — add_individual is
-// designed to be grantable to a Sub Rep or Unit Head for their own scope
-// (see its comment in OrganisationBuilder.jsx's AddIndividualForm), so
-// their nav needs the key present for that grant to ever become reachable.
+// grantable to a Sub Rep or Unit Head same as anyone else (see the note
+// above OrganisationBuilder.jsx's Field component for why there's no
+// own-scope restriction on it), so their nav needs the key present for
+// that grant to ever become reachable.
 // orgBuilder is always placed immediately before orgStructure — build it,
 // then maintain it — wherever both appear. Same convention every other
 // permissioned nav key here already follows (e.g. 'settings' only in cpu's

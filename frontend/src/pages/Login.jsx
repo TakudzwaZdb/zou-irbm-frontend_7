@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { api } from '../lib/api.js';
 
@@ -13,7 +13,7 @@ const DEMO_ACCOUNTS = [
 ];
 
 export default function Login() {
-  const { login, verifyMfa, loginError } = useApp();
+  const { login, verifyMfa, loginError, completeAzureLogin, reportAzureLoginError } = useApp();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -22,6 +22,33 @@ export default function Login() {
   // instead of navigating anywhere, so a wrong/expired code just re-shows
   // this same screen rather than bouncing back to re-enter the password.
   const [mfaToken, setMfaToken] = useState(null);
+  // True while this screen is finishing a "Sign in with Microsoft" round
+  // trip (see the effect below) — the backend redirected back here with the
+  // real token already in hand, so this is a brief moment, not a form.
+  const [azureBusy, setAzureBusy] = useState(false);
+
+  // Picks up after GET /api/auth/azure/callback redirects the whole browser
+  // back to this app's own origin with #azure_token=... (success) or
+  // #azure_error=... (failure) — see AppContext's completeAzureLogin. Runs
+  // once, on mount: whichever screen the SPA happens to render at that URL
+  // sees this same hash, and Login.jsx is the one that's showing right
+  // before a sign-in completes. The hash is cleared immediately after
+  // reading it so a page refresh doesn't try to replay it.
+  useEffect(() => {
+    const hash = window.location.hash || '';
+    if (!hash.includes('azure_token=') && !hash.includes('azure_error=')) return;
+    const params = new URLSearchParams(hash.replace(/^#/, ''));
+    const token = params.get('azure_token');
+    const errorMsg = params.get('azure_error');
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    if (token) {
+      setAzureBusy(true);
+      completeAzureLogin(token).finally(() => setAzureBusy(false));
+    } else if (errorMsg) {
+      reportAzureLoginError(errorMsg);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -64,10 +91,25 @@ export default function Login() {
               className="field-input" value={password} onChange={(e) => setPassword(e.target.value)}
             />
           </div>
-          <button type="submit" disabled={busy} className="btn btn-primary w-full justify-center py-2 text-[13px]">
+          <button type="submit" disabled={busy || azureBusy} className="btn btn-primary w-full justify-center py-2 text-[13px]">
             {busy ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
+
+        {/* A "default" (read-only, no department) Individual account never has
+            a password at all — see routes/org.js's POST /individuals — so it
+            can only ever get in through Microsoft, never the form above. */}
+        <div className="my-2.5 flex items-center gap-2 text-[10.5px] text-ink-muted">
+          <div className="h-px flex-1 bg-line" /> or <div className="h-px flex-1 bg-line" />
+        </div>
+        <a
+          href="/api/auth/azure/login"
+          className="btn w-full justify-center py-2 text-[13px] gap-2"
+          aria-disabled={azureBusy}
+          onClick={(e) => { if (azureBusy) e.preventDefault(); }}
+        >
+          {azureBusy ? 'Completing Microsoft sign-in…' : 'Sign in with Microsoft'}
+        </a>
 
         <ForgotPassword />
 

@@ -4,8 +4,9 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const db = require('../db');
-const { requireAuth, JWT_SECRET } = require('../middleware/auth');
+const { requireAuth, getUserPermissions, JWT_SECRET } = require('../middleware/auth');
 const { generateSecret, verifyTotp, otpauthUrl } = require('../utils/totp');
+const azureAuth = require('../utils/azureAuth');
 
 const router = express.Router();
 
@@ -160,14 +161,22 @@ function publicUser(user, permissions) {
 
 // Real credential check against a bcrypt hash stored in the database — not a
 // hardcoded shared string checked in client-side JavaScript.
-router.post('/login', ipLoginLimiter, accountLoginLimiter, (req, res) => {
+router.post('/login', ipLoginLimiter, accountLoginLimiter, async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) {
     return res.status(400).json({ error: 'Enter both your email address and password.' });
   }
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(String(email).trim().toLowerCase());
+  const user = await db.prepare('SELECT * FROM users WHERE email = ?').get(String(email).trim().toLowerCase());
   const genericError = () => res.status(401).json({ error: 'Incorrect email or password.' });
   if (!user) return genericError();
+  // An auth_provider='azure' account (see routes/org.js's POST
+  // /individuals) has no password_hash at all — it signs in exclusively
+  // through "Sign in with Microsoft" (GET /azure/login below). A distinct,
+  // helpful message here, not the generic wrong-password one, since this
+  // isn't a wrong guess — this account was never given a password to guess.
+  if (user.auth_provider === 'azure' || !user.password_hash) {
+    return res.status(401).json({ error: 'This account signs in with Microsoft — use "Sign in with Microsoft" instead of a password.', code: 'USE_AZURE_LOGIN' });
+  }
   const ok = bcrypt.compareSync(password, user.password_hash);
   if (!ok) return genericError();
   // A deactivated account (deleted_at set — see routes/org.js's
@@ -189,12 +198,7 @@ router.post('/login', ipLoginLimiter, accountLoginLimiter, (req, res) => {
   }
 
   const token = signToken(user);
-  const permissions = db
-    .prepare('SELECT permission_key FROM user_permissions WHERE user_id = ?')
-    .all(user.id)
-    .map((r) => r.permission_key);
-
-  res.json({ token, user: publicUser(user, permissions) });
+  res.json({ token, user: publicUser(user, await getUserPermissions(user.id)) });
 });
 
 // The second step for an MFA-enabled account: the mfaToken from /login
@@ -203,7 +207,7 @@ router.post('/login', ipLoginLimiter, accountLoginLimiter, (req, res) => {
 // codes (see db.js's mfa_recovery_codes — for a lost/replaced device).
 // Issues the exact same { token, user } shape /login does on success, so
 // the frontend's post-login handling doesn't need two separate paths.
-router.post('/mfa/verify', ipLoginLimiter, mfaIpLimiter, mfaAccountLimiter, (req, res) => {
+router.post('/mfa/verify', ipLoginLimiter, mfaIpLimiter, mfaAccountLimiter, async (req, res) => {
   const { mfaToken, code } = req.body || {};
   if (!mfaToken || !code) return res.status(400).json({ error: 'A verification code is required.' });
   let payload;
@@ -214,7 +218,7 @@ router.post('/mfa/verify', ipLoginLimiter, mfaIpLimiter, mfaAccountLimiter, (req
   }
   if (!payload.mfaPending) return res.status(401).json({ error: 'Invalid verification session.' });
 
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(payload.sub);
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(payload.sub);
   if (!user || user.deleted_at || !user.mfa_enabled || !user.mfa_secret) {
     return res.status(401).json({ error: 'Invalid verification session.' });
   }
@@ -226,22 +230,21 @@ router.post('/mfa/verify', ipLoginLimiter, mfaIpLimiter, mfaAccountLimiter, (req
     // Recovery codes are stored bcrypt-hashed, exactly like passwords, so a
     // leaked database row can't be replayed to sign in — the same
     // never-store-it-plain rule this app already applies everywhere else.
-    const unused = db.prepare('SELECT * FROM mfa_recovery_codes WHERE user_id = ? AND used_at IS NULL').all(user.id);
+    const unused = await db.prepare('SELECT * FROM mfa_recovery_codes WHERE user_id = ? AND used_at IS NULL').all(user.id);
     const match = unused.find((r) => bcrypt.compareSync(trimmedCode.toUpperCase(), r.code_hash));
     if (match) { ok = true; usedRecoveryCodeId = match.id; }
   }
   if (!ok) return res.status(401).json({ error: 'Incorrect or expired code.' });
 
   if (usedRecoveryCodeId) {
-    db.prepare("UPDATE mfa_recovery_codes SET used_at = datetime('now') WHERE id = ?").run(usedRecoveryCodeId);
-    db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+    await db.prepare("UPDATE mfa_recovery_codes SET used_at = datetime('now') WHERE id = ?").run(usedRecoveryCodeId);
+    await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
       user.id, 'mfa_recovery_code_used', 'user', user.id, `${user.name} signed in using a one-time MFA recovery code.`
     );
   }
 
   const token = signToken(user);
-  const permissions = db.prepare('SELECT permission_key FROM user_permissions WHERE user_id = ?').all(user.id).map((r) => r.permission_key);
-  res.json({ token, user: publicUser(user, permissions) });
+  res.json({ token, user: publicUser(user, await getUserPermissions(user.id)) });
 });
 
 router.get('/me', requireAuth, (req, res) => {
@@ -259,7 +262,7 @@ router.get('/me', requireAuth, (req, res) => {
 // open session the moment the real owner sets their own password), and a
 // freshly-signed token is returned so THIS session keeps working without
 // having to sign in again right after.
-router.post('/change-password', requireAuth, (req, res) => {
+router.post('/change-password', requireAuth, async (req, res) => {
   const { currentPassword, newPassword } = req.body || {};
   if (!currentPassword || !newPassword) {
     return res.status(400).json({ error: 'Enter your current password and a new password.' });
@@ -267,20 +270,22 @@ router.post('/change-password', requireAuth, (req, res) => {
   if (String(newPassword).length < 8) {
     return res.status(400).json({ error: 'New password must be at least 8 characters.' });
   }
-  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  const row = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (row.auth_provider === 'azure' || !row.password_hash) {
+    return res.status(400).json({ error: 'This account signs in with Microsoft — there is no password to change here.' });
+  }
   if (!bcrypt.compareSync(currentPassword, row.password_hash)) {
     return res.status(401).json({ error: 'Current password is incorrect.' });
   }
   const hash = bcrypt.hashSync(newPassword, 10);
-  db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0, token_version = token_version + 1 WHERE id = ?')
+  await db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0, token_version = token_version + 1 WHERE id = ?')
     .run(hash, req.user.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'change_password', 'user', req.user.id, `${row.name} changed their own password.`
   );
 
-  const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
-  const permissions = db.prepare('SELECT permission_key FROM user_permissions WHERE user_id = ?').all(req.user.id).map((r) => r.permission_key);
-  res.json({ token: signToken(updated), user: publicUser(updated, permissions) });
+  const updated = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  res.json({ token: signToken(updated), user: publicUser(updated, await getUserPermissions(updated.id)) });
 });
 
 // Self-service "sign out everywhere" — bumps token_version with no password
@@ -290,9 +295,9 @@ router.post('/change-password', requireAuth, (req, res) => {
 // shared computer" or "my laptop was stolen" without waiting out a token's
 // remaining 12h life. The caller's own client is expected to clear its
 // stored token and return to the sign-in screen right after this succeeds.
-router.post('/logout-everywhere', requireAuth, (req, res) => {
-  db.prepare('UPDATE users SET token_version = token_version + 1 WHERE id = ?').run(req.user.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+router.post('/logout-everywhere', requireAuth, async (req, res) => {
+  await db.prepare('UPDATE users SET token_version = token_version + 1 WHERE id = ?').run(req.user.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'logout_everywhere', 'user', req.user.id, `${req.user.name} signed out of every session.`
   );
   res.json({ ok: true });
@@ -311,9 +316,12 @@ router.get('/mfa/status', requireAuth, (req, res) => {
 // prove they actually captured it correctly via POST /mfa/enable below.
 // Calling this again before confirming simply overwrites the pending
 // secret with a new one, which is fine — nothing was live yet.
-router.post('/mfa/setup', requireAuth, (req, res) => {
+router.post('/mfa/setup', requireAuth, async (req, res) => {
+  if (req.user.role === 'default') {
+    return res.status(400).json({ error: 'This account signs in with Microsoft — two-factor is managed through your Microsoft account, not here.' });
+  }
   const secret = generateSecret();
-  db.prepare('UPDATE users SET mfa_secret = ? WHERE id = ?').run(secret, req.user.id);
+  await db.prepare('UPDATE users SET mfa_secret = ? WHERE id = ?').run(secret, req.user.id);
   res.json({ secret, otpauthUrl: otpauthUrl({ secret, accountName: req.user.email }) });
 });
 
@@ -322,19 +330,22 @@ router.post('/mfa/setup', requireAuth, (req, res) => {
 // code does MFA actually become live — and ten recovery codes are
 // generated and returned exactly once here, before they're needed, the
 // same way a password is only ever shown once at creation.
-router.post('/mfa/enable', requireAuth, (req, res) => {
+router.post('/mfa/enable', requireAuth, async (req, res) => {
   const { code } = req.body || {};
-  const row = db.prepare('SELECT mfa_secret FROM users WHERE id = ?').get(req.user.id);
+  const row = await db.prepare('SELECT mfa_secret FROM users WHERE id = ?').get(req.user.id);
   if (!row?.mfa_secret) return res.status(400).json({ error: 'Start MFA setup first.' });
   if (!verifyTotp(row.mfa_secret, code)) {
     return res.status(400).json({ error: 'That code did not match. Check your authenticator app and try again.' });
   }
-  db.prepare('UPDATE users SET mfa_enabled = 1 WHERE id = ?').run(req.user.id);
-  db.prepare('DELETE FROM mfa_recovery_codes WHERE user_id = ?').run(req.user.id); // clear any codes from a previous enrollment
+  await db.prepare('UPDATE users SET mfa_enabled = 1 WHERE id = ?').run(req.user.id);
+  await db.prepare('DELETE FROM mfa_recovery_codes WHERE user_id = ?').run(req.user.id); // clear any codes from a previous enrollment
   const codes = generateRecoveryCodes();
   const insert = db.prepare('INSERT INTO mfa_recovery_codes (user_id, code_hash) VALUES (?, ?)');
-  codes.forEach((c) => insert.run(req.user.id, bcrypt.hashSync(c, 10)));
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  for (const c of codes) {
+    // eslint-disable-next-line no-await-in-loop
+    await insert.run(req.user.id, bcrypt.hashSync(c, 10));
+  }
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'mfa_enabled', 'user', req.user.id, `${req.user.name} enabled two-factor authentication.`
   );
   res.json({ enabled: true, recoveryCodes: codes });
@@ -344,15 +355,18 @@ router.post('/mfa/enable', requireAuth, (req, res) => {
 // pattern as POST /change-password above) so a person who steps away from
 // an already-open session can't turn off someone else's MFA. Clears the
 // secret and every recovery code together; nothing is left half-configured.
-router.post('/mfa/disable', requireAuth, (req, res) => {
+router.post('/mfa/disable', requireAuth, async (req, res) => {
   const { password } = req.body || {};
-  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  const row = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (row.auth_provider === 'azure' || !row.password_hash) {
+    return res.status(400).json({ error: 'This account signs in with Microsoft — two-factor is managed through your Microsoft account, not here.' });
+  }
   if (!password || !bcrypt.compareSync(password, row.password_hash)) {
     return res.status(401).json({ error: 'Your current password is required to disable two-factor authentication.' });
   }
-  db.prepare('UPDATE users SET mfa_enabled = 0, mfa_secret = NULL WHERE id = ?').run(req.user.id);
-  db.prepare('DELETE FROM mfa_recovery_codes WHERE user_id = ?').run(req.user.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE users SET mfa_enabled = 0, mfa_secret = NULL WHERE id = ?').run(req.user.id);
+  await db.prepare('DELETE FROM mfa_recovery_codes WHERE user_id = ?').run(req.user.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'mfa_disabled', 'user', req.user.id, `${req.user.name} disabled two-factor authentication.`
   );
   res.json({ enabled: false });
@@ -367,7 +381,7 @@ router.post('/mfa/disable', requireAuth, (req, res) => {
 // the database — the frontend also downsizes the image client-side before
 // it ever reaches this request.
 const MAX_AVATAR_DATA_URL_LENGTH = 2_000_000; // ~1.4MB of actual image data once base64 overhead is backed out
-router.put('/me/avatar', requireAuth, (req, res) => {
+router.put('/me/avatar', requireAuth, async (req, res) => {
   const { avatarDataUrl } = req.body || {};
   if (!avatarDataUrl || typeof avatarDataUrl !== 'string' || !avatarDataUrl.startsWith('data:image/')) {
     return res.status(400).json({ error: 'A valid image is required.' });
@@ -375,12 +389,12 @@ router.put('/me/avatar', requireAuth, (req, res) => {
   if (avatarDataUrl.length > MAX_AVATAR_DATA_URL_LENGTH) {
     return res.status(400).json({ error: 'That image is too large — please use a smaller photo.' });
   }
-  db.prepare('UPDATE users SET avatar = ? WHERE id = ?').run(avatarDataUrl, req.user.id);
+  await db.prepare('UPDATE users SET avatar = ? WHERE id = ?').run(avatarDataUrl, req.user.id);
   res.json({ avatar: avatarDataUrl });
 });
 
-router.delete('/me/avatar', requireAuth, (req, res) => {
-  db.prepare('UPDATE users SET avatar = NULL WHERE id = ?').run(req.user.id);
+router.delete('/me/avatar', requireAuth, async (req, res) => {
+  await db.prepare('UPDATE users SET avatar = NULL WHERE id = ?').run(req.user.id);
   res.json({ ok: true });
 });
 
@@ -396,8 +410,79 @@ router.delete('/me/avatar', requireAuth, (req, res) => {
 // signing in) and deliberately narrow: only name/title/email for the
 // ictadmin role, the same fields already visible to any signed-in account
 // via GET /api/messages/directory, just reachable one step earlier.
-router.get('/ict-admins', (req, res) => {
-  const admins = db.prepare("SELECT name, title, email FROM users WHERE role = 'ictadmin' ORDER BY name").all();
+// ---- Microsoft Entra ID (Azure AD) sign-in ---------------------------
+// The only sign-in path for an auth_provider='azure' account (see
+// routes/org.js's POST /individuals and db.js's users.auth_provider) — an
+// admin adds the person's name + email through Organisation Builder first
+// (a "pre-approved email"), and this is how they actually complete their
+// own sign-in afterwards. See AZURE_SETUP.md for the one-time Azure Portal
+// setup (App Registration, redirect URI, client secret) these two routes
+// depend on.
+//
+// Deliberately NOT behind requireAuth — this is the sign-in step itself,
+// reached from the Login screen before any token exists.
+router.get('/azure/login', (req, res) => {
+  if (!azureAuth.isConfigured()) {
+    return res.status(503).json({ error: 'Microsoft sign-in has not been set up on this server yet. See AZURE_SETUP.md.' });
+  }
+  // A short-lived signed nonce, not a server-side session — this process
+  // (and any of its cluster siblings — see server.js's WEB_CONCURRENCY)
+  // never has to remember it; the callback below just re-verifies the same
+  // token Microsoft hands back unchanged. Standard CSRF protection for the
+  // OAuth "state" parameter without needing shared session storage.
+  const state = jwt.sign({ azureState: crypto.randomUUID() }, JWT_SECRET, { expiresIn: '10m' });
+  azureAuth.getAuthCodeUrl(state)
+    .then((url) => res.redirect(url))
+    .catch((err) => {
+      console.error('Azure getAuthCodeUrl failed:', err.message);
+      res.status(502).json({ error: 'Could not reach Microsoft sign-in. Please try again shortly.' });
+    });
+});
+
+router.get('/azure/callback', async (req, res) => {
+  const redirectBase = azureAuth.AZURE_POST_LOGIN_REDIRECT;
+  const fail = (message) => res.redirect(`${redirectBase}#azure_error=${encodeURIComponent(message)}`);
+
+  if (!azureAuth.isConfigured()) return fail('Microsoft sign-in has not been set up on this server yet.');
+  const { code, state, error_description: errorDescription } = req.query;
+  if (errorDescription) return fail(String(errorDescription));
+  if (!code || !state) return fail('Microsoft sign-in did not complete. Please try again.');
+  try {
+    jwt.verify(state, JWT_SECRET);
+  } catch {
+    return fail('Your Microsoft sign-in session expired. Please try again.');
+  }
+
+  let claims;
+  try {
+    claims = await azureAuth.acquireTokenByCode(String(code));
+  } catch (err) {
+    console.error('Azure acquireTokenByCode failed:', err.message);
+    return fail('Microsoft sign-in failed. Please try again.');
+  }
+  if (!claims.email) return fail('Your Microsoft account did not provide an email address.');
+
+  const user = await db.prepare('SELECT * FROM users WHERE email = ?').get(claims.email);
+  if (!user || user.deleted_at) {
+    return fail('No account is set up for this email address. Ask an administrator to add you first.');
+  }
+  if (user.auth_provider !== 'azure') {
+    return fail('This account signs in with a password, not Microsoft.');
+  }
+
+  if (claims.oid && claims.oid !== user.azure_oid) {
+    await db.prepare('UPDATE users SET azure_oid = ? WHERE id = ?').run(claims.oid, user.id);
+  }
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+    user.id, 'azure_sign_in', 'user', user.id, `${user.name} signed in with Microsoft.`
+  );
+
+  const token = signToken(user);
+  res.redirect(`${redirectBase}#azure_token=${encodeURIComponent(token)}`);
+});
+
+router.get('/ict-admins', async (req, res) => {
+  const admins = await db.prepare("SELECT name, title, email FROM users WHERE role = 'ictadmin' ORDER BY name").all();
   res.json({ admins });
 });
 

@@ -91,8 +91,6 @@ function ManageOptions({ org, isIctAdmin }) {
   const [subId, setSubId] = useState(org.subs[0]?.id || '');
   const [unitId, setUnitId] = useState(org.units[0]?.id || '');
   const [peopleUnitId, setPeopleUnitId] = useState(org.units[0]?.id || '');
-  const [editingId, setEditingId] = useState(null);
-  const [draft, setDraft] = useState({ name: '', roleTitle: '' });
   const [roleDraft, setRoleDraft] = useState({});
 
   // "Recently Removed" — the live, restorable list backing every "This
@@ -183,22 +181,6 @@ function ManageOptions({ org, isIctAdmin }) {
     finally { setBusyKey(null); }
   }
 
-  function startEdit(ind) {
-    setEditingId(ind.id);
-    setDraft({ name: ind.name, roleTitle: ind.role_title });
-  }
-
-  async function saveEdit(ind) {
-    setBusyKey(`i${ind.id}`);
-    try {
-      await api(`/org/individuals/${ind.id}`, { method: 'PATCH', body: { name: draft.name, roleTitle: draft.roleTitle } });
-      toast(`${draft.name} updated.`);
-      setEditingId(null);
-      await reloadCore();
-    } catch (err) { toast(err.message, 'err'); }
-    finally { setBusyKey(null); }
-  }
-
   async function removeIndividual(ind) {
     if (!window.confirm(`Remove ${ind.name} and deactivate their account? Nothing is deleted — they, their KPIs, and their history stay intact and restorable from "Recently Removed" below.`)) return;
     setBusyKey(`i${ind.id}`);
@@ -228,6 +210,7 @@ function ManageOptions({ org, isIctAdmin }) {
 
   const peopleUnit = byId(org.units, Number(peopleUnitId));
   const peopleInds = peopleUnit ? org.individuals.filter((i) => i.unit_id === peopleUnit.id) : [];
+  const noDeptIndividuals = org.individuals.filter((i) => i.unit_id == null);
 
   return (
     <div className="grid gap-3.5 sm:grid-cols-2 mb-4">
@@ -298,48 +281,31 @@ function ManageOptions({ org, isIctAdmin }) {
             </Field>
             <div className="mt-3 space-y-1.5">
               {peopleInds.map((i) => (
-                <div key={i.id} className="text-[12.5px]">
-                  {editingId === i.id ? (
-                    <div className="flex gap-2 flex-wrap items-center bg-sunken rounded-lg px-2.5 py-2 max-w-xl">
-                      <input className="field-input py-1.5 flex-1 min-w-[120px]" value={draft.name}
-                        onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} placeholder="Name" />
-                      <input className="field-input py-1.5 flex-1 min-w-[120px]" value={draft.roleTitle}
-                        onChange={(e) => setDraft((d) => ({ ...d, roleTitle: e.target.value }))} placeholder="Role / job title" />
-                      <button className="btn btn-sm btn-primary" disabled={busyKey === `i${i.id}` || !draft.name.trim() || !draft.roleTitle.trim()} onClick={() => saveEdit(i)}>Save</button>
-                      <button className="btn btn-sm" disabled={busyKey === `i${i.id}`} onClick={() => setEditingId(null)}>Cancel</button>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2 flex-wrap text-ink-muted">
-                      <span>• {i.name} — {i.role_title || ''}</span>
-                      <button onClick={() => startEdit(i)} className="text-accent-600 hover:underline">edit</button>
-                      <button onClick={() => removeIndividual(i)} disabled={busyKey === `i${i.id}`} className="text-critical hover:underline disabled:opacity-40">remove</button>
-                      {isIctAdmin && i.user_id && (
-                        <span className="flex items-center gap-1.5">
-                          <select
-                            className="field-input py-0.5 text-[11px] w-auto"
-                            value={roleDraft[i.id] ?? 'individual'}
-                            disabled={busyKey === `i${i.id}`}
-                            onChange={(e) => setRoleDraft((d) => ({ ...d, [i.id]: e.target.value }))}
-                          >
-                            {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
-                          </select>
-                          <button
-                            className="text-accent-600 hover:underline disabled:opacity-40"
-                            disabled={busyKey === `i${i.id}` || !roleDraft[i.id] || roleDraft[i.id] === 'individual'}
-                            onClick={() => changeRole(i)}
-                          >
-                            update role
-                          </button>
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
+                <IndividualRow key={i.id} i={i} isIctAdmin={isIctAdmin} busyKey={busyKey} roleDraft={roleDraft} setRoleDraft={setRoleDraft} onRemove={removeIndividual} onChangeRole={changeRole} />
               ))}
               {peopleInds.length === 0 && <p className="text-ink-muted text-[11.5px]">No individuals in this unit yet.</p>}
             </div>
           </>
         )}
+      </div>
+
+      {/* Individuals added with no department at all (see Organisation
+          Setup's Individual form) — deliberately outside the per-unit
+          picker above, since unit_id is NULL for every one of these and
+          they'd otherwise be invisible to every "pick a unit" workflow on
+          this page. Read-only, real login accounts — see routes/org.js's
+          POST /individuals — delete-only here, same as any other Individual. */}
+      <div className="card sm:col-span-2">
+        <h3 className="font-display font-bold text-[14px] mb-1">Individuals with no department</h3>
+        <p className="text-[12px] text-ink-muted mb-2.5">
+          Added directly with just a name and a Microsoft sign-in email, no unit assigned — read-only accounts.
+        </p>
+        <div className="space-y-1.5">
+          {noDeptIndividuals.map((i) => (
+            <IndividualRow key={i.id} i={i} isIctAdmin={isIctAdmin} busyKey={busyKey} roleDraft={roleDraft} setRoleDraft={setRoleDraft} onRemove={removeIndividual} onChangeRole={changeRole} />
+          ))}
+          {noDeptIndividuals.length === 0 && <p className="text-ink-muted text-[11.5px]">None yet.</p>}
+        </div>
       </div>
 
       <RecentlyRemoved
@@ -350,6 +316,41 @@ function ManageOptions({ org, isIctAdmin }) {
         busyKey={busyKey}
         onRestore={restoreEntity}
       />
+    </div>
+  );
+}
+
+// One Individual's row wherever ManageOptions lists them (within a unit, or
+// in the no-department list) — remove-only (there is no edit; see routes/
+// org.js's big comment above POST /individuals) plus, for an ICT System
+// Administrator only, the same standalone role-change control Users.jsx's
+// own account-level role change already uses.
+function IndividualRow({ i, isIctAdmin, busyKey, roleDraft, setRoleDraft, onRemove, onChangeRole }) {
+  return (
+    <div className="text-[12.5px]">
+      <div className="flex items-center gap-2 flex-wrap text-ink-muted">
+        <span>• {i.name} — {i.role_title || ''}</span>
+        <button onClick={() => onRemove(i)} disabled={busyKey === `i${i.id}`} className="text-critical hover:underline disabled:opacity-40">remove</button>
+        {isIctAdmin && i.user_id && (
+          <span className="flex items-center gap-1.5">
+            <select
+              className="field-input py-0.5 text-[11px] w-auto"
+              value={roleDraft[i.id] ?? 'individual'}
+              disabled={busyKey === `i${i.id}`}
+              onChange={(e) => setRoleDraft((d) => ({ ...d, [i.id]: e.target.value }))}
+            >
+              {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+            </select>
+            <button
+              className="text-accent-600 hover:underline disabled:opacity-40"
+              disabled={busyKey === `i${i.id}` || !roleDraft[i.id] || roleDraft[i.id] === 'individual'}
+              onClick={() => onChangeRole(i)}
+            >
+              update role
+            </button>
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -420,7 +421,7 @@ function RecentlyRemoved({ org, removed, removedOpen, setRemovedOpen, busyKey, o
             {individuals.length > 0 && (
               <RemovedGroup title="Individuals">
                 {individuals.map((i) => (
-                  <RemovedRow key={`i${i.id}`} label={`${unitName(i.unit_id)} — ${i.name} (${i.role_title || ''})`} busy={busyKey === `restore-individuals-${i.id}`}
+                  <RemovedRow key={`i${i.id}`} label={`${i.unit_id == null ? 'No department' : unitName(i.unit_id)} — ${i.name} (${i.role_title || ''})`} busy={busyKey === `restore-individuals-${i.id}`}
                     onRestore={() => onRestore('individuals', i.id, i.name)} />
                 ))}
               </RemovedGroup>
@@ -456,38 +457,23 @@ function RemovedRow({ label, busy, onRestore }) {
 // (not manage_org_units): they can't create/delete Programmes/Subs/Units
 // and can't change anyone's role, so showing them the ENTIRE org tree again
 // (they already see it, read-only, on Framework) would just repeat it.
-// Instead: their own unit(s) only, with the same inline edit the full tree
-// offers (the backend allows this — see routes/org.js's PATCH /individuals/
-// :id own-scope check) but no remove/role controls, since the server
-// would reject those from this permission level anyway.
+// Instead: their own unit(s) only — a pure read-only roster now. There is
+// no Edit any more for any Individual account, anywhere (see routes/org.js's
+// big comment above POST /individuals), and this permission level never had
+// remove/role controls to begin with (the server would reject those from
+// add_individual alone — see requireAnyPerm on DELETE /individuals/:id and
+// PATCH /users/:id/role). An Individual added with no department at all
+// (Organisation Setup's Individual form no longer requires a unit) doesn't
+// belong to any of this caller's own units either way, so it isn't listed
+// here — ManageOptions' "Individuals with no department" panel is the only
+// place one of those is visible, which in practice means an ICT System
+// Administrator or CPU holder (manage_org_units).
 function OwnScopeTeam({ org, user }) {
-  const { reloadCore } = useApp();
-  const toast = useToast();
-  const [editingId, setEditingId] = useState(null);
-  const [draft, setDraft] = useState({ name: '', roleTitle: '' });
-  const [busyId, setBusyId] = useState(null);
-
   const ownUnits = user.role === 'unithead'
     ? org.units.filter((u) => u.id === user.scope_id)
     : user.role === 'rep'
       ? org.units.filter((u) => u.sub_id === user.scope_id)
       : [];
-
-  function startEdit(ind) {
-    setEditingId(ind.id);
-    setDraft({ name: ind.name, roleTitle: ind.role_title });
-  }
-
-  async function saveEdit(ind) {
-    setBusyId(ind.id);
-    try {
-      await api(`/org/individuals/${ind.id}`, { method: 'PATCH', body: { name: draft.name, roleTitle: draft.roleTitle } });
-      toast(`${draft.name} updated.`);
-      setEditingId(null);
-      await reloadCore();
-    } catch (err) { toast(err.message, 'err'); }
-    finally { setBusyId(null); }
-  }
 
   if (ownUnits.length === 0) {
     return <div className="card text-center text-ink-muted py-8">No unit/sub-programme of your own yet.</div>;
@@ -502,23 +488,7 @@ function OwnScopeTeam({ org, user }) {
             <div><b>{u.name}</b> <span className="text-ink-muted text-[12px]">({u.kind} · Head: {u.head})</span></div>
             <div className="mt-1.5 space-y-1">
               {inds.map((i) => (
-                <div key={i.id} className="text-[12.5px]">
-                  {editingId === i.id ? (
-                    <div className="flex gap-2 flex-wrap items-center bg-sunken rounded-lg px-2.5 py-2 max-w-xl">
-                      <input className="field-input py-1 flex-1 min-w-[120px]" value={draft.name}
-                        onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} placeholder="Name" />
-                      <input className="field-input py-1 flex-1 min-w-[120px]" value={draft.roleTitle}
-                        onChange={(e) => setDraft((d) => ({ ...d, roleTitle: e.target.value }))} placeholder="Role / job title" />
-                      <button className="btn btn-sm btn-primary" disabled={busyId === i.id || !draft.name.trim() || !draft.roleTitle.trim()} onClick={() => saveEdit(i)}>Save</button>
-                      <button className="btn btn-sm" disabled={busyId === i.id} onClick={() => setEditingId(null)}>Cancel</button>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2 flex-wrap text-ink-muted">
-                      <span>• {i.name} — {i.role_title || ''}</span>
-                      <button onClick={() => startEdit(i)} className="text-accent-600 hover:underline">edit</button>
-                    </div>
-                  )}
-                </div>
+                <div key={i.id} className="text-[12.5px] text-ink-muted">• {i.name} — {i.role_title || ''}</div>
               ))}
               {inds.length === 0 && <div className="text-ink-muted text-[11.5px]">No individuals yet.</div>}
             </div>

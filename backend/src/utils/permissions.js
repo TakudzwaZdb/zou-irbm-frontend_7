@@ -95,6 +95,10 @@ const DEFAULT_PERMS_BY_ROLE = {
   rep: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
   unithead: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
   individual: ['data_entry', 'view_overview', 'view_framework'],
+  // A bare, scope-less, read-only account (see routes/org.js's POST
+  // /individuals) — identical to 'individual' minus 'data_entry', so
+  // nothing about it can enter, submit, or edit anything; it can only look.
+  default: ['view_overview', 'view_framework'],
   // Programme Head: oversees one whole Programme — every Sub-programme
   // beneath it, read-only for the KPI/appraisal side (a Programme never
   // owns KPIs directly — see kpis.owner_type's CHECK constraint — so
@@ -104,6 +108,7 @@ const DEFAULT_PERMS_BY_ROLE = {
   // Sub-programme under them has been approved (see routes/plans.js's
   // isProgrammeHeadOwner). 'data_entry' is what gates that write, the same
   // permission every other tier's plan-entry route already checks.
+  programme: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
   programmehead: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
   // University Council: holds explicit governance authority over the structural
   // compilation. They can approve or return the completed Annual Plan layout via 
@@ -112,7 +117,12 @@ const DEFAULT_PERMS_BY_ROLE = {
   council: ['validate_annual_plan', 'view_reports', 'view_overview', 'view_framework', 'view_institutional_performance']
 };
 
+function defaultPermsForRole(role) {
+  return DEFAULT_PERMS_BY_ROLE[role] || [];
+}
+
 module.exports = {
   PERMISSIONS,
-  DEFAULT_PERMS_BY_ROLE
+  DEFAULT_PERMS_BY_ROLE,
+  defaultPermsForRole,
 };

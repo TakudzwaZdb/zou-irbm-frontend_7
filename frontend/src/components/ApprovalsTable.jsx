@@ -64,9 +64,9 @@ export default function ApprovalsTable({ kpis, interactive }) {
   if (kpis.length === 0) return null;
 
   return (
-    <div className="card p-0 overflow-x-auto">
+    <div className="card p-0 overflow-x-auto max-h-[65vh] overflow-y-auto">
       <table className="w-full text-[12.3px] border-collapse">
-        <thead>
+        <thead className="sticky top-0 z-10 bg-surface">
           <tr className="border-b border-line text-left text-ink-muted text-[10.8px] uppercase tracking-wide">
             <th className="px-3 py-2.5 min-w-[220px]">KPI</th>
             <th className="px-3 py-2.5">Status</th>
@@ -78,7 +78,7 @@ export default function ApprovalsTable({ kpis, interactive }) {
             <th className="px-3 py-2.5">Pace</th>
             <th className="px-3 py-2.5 min-w-[140px] max-w-[200px]">Note</th>
             {interactive && (
-              <th className="px-3 py-2.5 min-w-[190px] sticky right-0 bg-surface border-l border-line z-10">Decision</th>
+              <th className="px-3 py-2.5 min-w-[190px] sticky right-0 bg-surface border-l border-line z-20">Decision</th>
             )}
           </tr>
         </thead>
@@ -225,16 +225,16 @@ export function TeamApprovalsTable({ kpis }) {
   if (kpis.length === 0) return null;
 
   return (
-    <div className="card p-0 overflow-x-auto">
+    <div className="card p-0 overflow-x-auto max-h-[65vh] overflow-y-auto">
       <table className="w-full text-[12.3px] border-collapse">
-        <thead>
+        <thead className="sticky top-0 z-10 bg-surface">
           <tr className="border-b border-line text-left text-ink-muted text-[10.8px] uppercase tracking-wide">
             <th className="px-3 py-2.5 min-w-[220px]">KPI</th>
             <th className="px-3 py-2.5 text-right">Current</th>
             <th className="px-3 py-2.5">Score</th>
             <th className="px-3 py-2.5">Pace</th>
             <th className="px-3 py-2.5">Team submissions</th>
-            <th className="px-3 py-2.5 min-w-[110px] sticky right-0 bg-surface border-l border-line z-10" />
+            <th className="px-3 py-2.5 min-w-[110px] sticky right-0 bg-surface border-l border-line z-20" />
           </tr>
         </thead>
         <tbody>
@@ -317,9 +317,9 @@ export function FeedbackTable({ kpis }) {
         {visible ? '▾' : '▸'} Return feedback ({withFeedback.length}) {visible ? '— hide' : '— show'}
       </button>
       {visible && (
-        <div className="card p-0 overflow-x-auto mt-2">
+        <div className="card p-0 overflow-x-auto max-h-[50vh] overflow-y-auto mt-2">
           <table className="w-full text-[12.3px] border-collapse">
-            <thead>
+            <thead className="sticky top-0 z-10 bg-surface">
               <tr className="border-b border-line text-left text-ink-muted text-[10.8px] uppercase tracking-wide">
                 <th className="px-3 py-2.5 min-w-[180px]">KPI</th>
                 <th className="px-3 py-2.5 min-w-[140px]">Owner</th>

@@ -1,20 +1,25 @@
-// Real, restorable SQLite backups of the live database — safe to run while
-// the server is up and serving writes.
+// Real, restorable PostgreSQL backups of the live database — safe to run
+// while the server is up and serving writes.
 //
-// Why VACUUM INTO rather than `cp`/`fs.copyFile`: the live DB runs in WAL
-// mode (see db.js), which means the file on disk at any instant can be
-// missing recently-committed data still sitting in the -wal side file, or —
-// worse — mid-write, torn. A plain file copy of *just* zou.db, taken while
-// the server is running, is not a reliable snapshot. `VACUUM INTO` is
-// SQLite's own online-backup primitive: it opens a read transaction against
-// the live database and streams a complete, consistent, single-file copy to
-// a new path, without blocking writers (WAL's whole point) and without the
-// server needing to pause, restart, or even know a backup is happening.
+// Uses `pg_dump` in custom format (-Fc): Postgres's own consistent-snapshot
+// backup primitive — it opens one transaction at the REPEATABLE READ
+// isolation level against the live database and streams out everything
+// visible as of that instant, without blocking concurrent readers or
+// writers and without the server needing to pause, restart, or even know a
+// backup is happening. Custom format (as opposed to plain SQL text) is
+// compressed, and is what `pg_restore` (including the --list/-l table-of-
+// contents read this file uses to verify a backup, and a real restore into
+// a scratch database to prove it's actually usable) expects.
 //
 // Usage:
-//   node src/backup.js                 → data/backups/zou-<timestamp>.db
-//   node src/backup.js /custom/out.db  → that exact path
-//   npm run backup                     → same as the no-arg form
+//   node src/backup.js                    → data/backups/zou-<timestamp>.dump
+//   node src/backup.js /custom/out.dump   → that exact path
+//   npm run backup                        → same as the no-arg form
+//
+// Restoring a backup (into an EXISTING, empty database — pg_restore never
+// creates the database itself):
+//   createdb zou_restored
+//   pg_restore --no-owner --no-privileges -d zou_restored data/backups/zou-<timestamp>.dump
 //
 // Retention: keeps the most recent KEEP backups made by this script in the
 // default directory and deletes older ones — set BACKUP_KEEP=0 to disable
@@ -23,17 +28,43 @@
 require('dotenv').config();
 const path = require('path');
 const fs = require('fs');
-const { DatabaseSync } = require('node:sqlite');
+const { execFile } = require('child_process');
+const { Client } = require('pg');
 
-// Read from the environment at call time, not at module-require time: this
-// module is required once and reused (by the CLI entry point below, and by
-// the test suite, which points it at a different disposable DB per test by
-// setting DB_FILE just before calling backup()) — a module-level constant
-// would freeze in whatever DB_FILE happened to be set when this file was
-// first `require`d, which is not always the same as when backup() runs.
-function resolveDbFile() {
-  return process.env.DB_FILE || path.join(__dirname, '..', 'data', 'zou.db');
+function run(cmd, args, env) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { env, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        err.stdout = stdout;
+        err.stderr = stderr;
+        return reject(err);
+      }
+      resolve({ stdout, stderr });
+    });
+  });
 }
+
+// Same PG* env var resolution db.js uses (kept independent of db.js itself
+// — this script must work even when db.js's own pool can't connect, e.g.
+// while diagnosing a connection problem).
+function resolvePgConfig() {
+  if (process.env.DATABASE_URL) {
+    return { connectionString: process.env.DATABASE_URL };
+  }
+  return {
+    host: process.env.PGHOST || process.env.DB_HOST || '127.0.0.1',
+    port: String(process.env.PGPORT || process.env.DB_PORT || 5432),
+    user: process.env.PGUSER || process.env.DB_USER || 'postgres',
+    password: process.env.PGPASSWORD || process.env.DB_PASSWORD || '',
+    database: process.env.PGDATABASE || process.env.DB_NAME || 'zou_irbm',
+  };
+}
+
+// Read at call time, not module-require time — resolvePgConfig() above (and
+// this) must reflect whatever env vars are set right before backup() runs
+// (the test suite points this at a different disposable database per test
+// by setting PG* env vars just before calling backup()), not whatever was
+// set when this module was first `require`d.
 function resolveBackupDir() {
   return process.env.BACKUP_DIR || path.join(__dirname, '..', 'data', 'backups');
 }
@@ -62,7 +93,7 @@ function pruneOldBackups(dir, keep) {
   let entries;
   try {
     entries = fs.readdirSync(dir)
-      .filter((f) => /^zou-.*\.db$/.test(f))
+      .filter((f) => /^zou-.*\.dump$/.test(f))
       .map((f) => ({ f, full: path.join(dir, f), mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime);
   } catch {
@@ -73,70 +104,131 @@ function pruneOldBackups(dir, keep) {
   return toDelete.map((e) => e.f);
 }
 
-function backup(destArg) {
-  const DB_FILE = resolveDbFile();
-  if (!fs.existsSync(DB_FILE)) {
-    throw new Error(`No database file at ${DB_FILE} — nothing to back up. (Run \`npm run seed\` first, or check DB_FILE.)`);
+// pg_dump/pg_restore take connection details as flags + PGPASSWORD in the
+// environment (never on the command line, where it would leak into `ps`
+// output or shell history) rather than in a connection string, so the same
+// flags work whether or not DATABASE_URL is set.
+function pgEnvAndArgs(cfg) {
+  if (cfg.connectionString) {
+    return { args: [cfg.connectionString], env: { ...process.env } };
+  }
+  return {
+    args: ['-h', cfg.host, '-p', cfg.port, '-U', cfg.user, cfg.database],
+    env: { ...process.env, PGPASSWORD: cfg.password },
+  };
+}
+
+async function backup(destArg) {
+  const cfg = resolvePgConfig();
+
+  // Fail fast with a clear message if the source database itself isn't
+  // reachable at all, rather than letting a much less legible pg_dump
+  // stderr blob be the only signal.
+  const probe = new Client(cfg.connectionString ? { connectionString: cfg.connectionString } : {
+    host: cfg.host, port: Number(cfg.port), user: cfg.user, password: cfg.password, database: cfg.database,
+  });
+  try {
+    await probe.connect();
+  } catch (err) {
+    throw new Error(`Could not reach database "${cfg.database || '(from DATABASE_URL)'}" to back it up: ${err.message}`);
+  } finally {
+    await probe.end().catch(() => {});
   }
 
   const dest = destArg
     ? path.resolve(destArg)
-    : path.join(resolveBackupDir(), `zou-${timestamp()}.db`);
+    : path.join(resolveBackupDir(), `zou-${timestamp()}.dump`);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
 
   if (fs.existsSync(dest)) {
     throw new Error(`Destination already exists, refusing to overwrite: ${dest}`);
   }
 
-  // Open the LIVE file read/write (VACUUM INTO needs a real connection, but
-  // issues no writes of its own to the source) — this runs safely alongside
-  // the server process the same way any other WAL reader would.
-  const src = new DatabaseSync(DB_FILE);
+  const { args: connArgs, env } = pgEnvAndArgs(cfg);
   try {
-    src.exec('PRAGMA busy_timeout = 5000');
-    // Parameter binding isn't supported for VACUUM INTO's filename in
-    // node:sqlite, so the path is escaped and inlined instead of using a
-    // prepared statement — dest is always ours (either derived from a fixed
-    // timestamp or a path the operator passed on the command line), never
-    // user/request input, so this is not an injection surface.
-    src.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
-  } finally {
-    src.close();
+    await run('pg_dump', [...connArgs, '-F', 'c', '-f', dest], env);
+  } catch (err) {
+    throw new Error(`pg_dump failed: ${err.stderr || err.message}`);
   }
 
-  // Sanity-check the copy is actually a valid, complete SQLite database
-  // before calling this a successful backup — silently shipping a truncated
-  // or corrupt file would be worse than no backup at all.
-  const check = new DatabaseSync(dest);
+  // Verify the archive is real and complete two ways: (1) pg_restore can at
+  // least read its table of contents (catches a truncated/corrupt file
+  // immediately, cheaply), and (2) an actual restore into a scratch
+  // database, queried back, proving the backup is genuinely usable — not
+  // just structurally well-formed. Shipping a backup nobody can actually
+  // restore from would be worse than no backup at all.
+  let tableOfContents;
   try {
-    const [{ integrity_check: result }] = check.prepare('PRAGMA integrity_check').all();
-    if (result !== 'ok') {
-      throw new Error(`Backup written but failed integrity_check: ${result}`);
-    }
-    const [{ n }] = check.prepare('SELECT COUNT(*) AS n FROM users').get
-      ? [check.prepare('SELECT COUNT(*) AS n FROM users').get()]
-      : [{ n: null }];
-    return { dest, size: fs.statSync(dest).size, userCount: n };
-  } finally {
-    check.close();
+    ({ stdout: tableOfContents } = await run('pg_restore', ['--list', dest], { ...process.env }));
+  } catch (err) {
+    fs.unlinkSync(dest);
+    throw new Error(`Backup written but pg_restore could not read it (corrupt archive): ${err.stderr || err.message}`);
   }
+  if (!/TABLE DATA public users/.test(tableOfContents)) {
+    fs.unlinkSync(dest);
+    throw new Error('Backup written but its table of contents is missing the users table — refusing to call this a valid backup.');
+  }
+
+  const verifyDbName = `zou_backup_verify_${process.pid}_${Date.now()}`;
+  const maintenance = new Client(cfg.connectionString ? { connectionString: cfg.connectionString } : {
+    host: cfg.host, port: Number(cfg.port), user: cfg.user, password: cfg.password, database: 'postgres',
+  });
+  let userCount = null;
+  await maintenance.connect();
+  try {
+    await maintenance.query(`CREATE DATABASE "${verifyDbName}"`);
+    try {
+      // pg_restore takes the target database as `-h/-p/-U ... -d dbname`
+      // (or a connection string in place of all four) followed by the
+      // dump file itself as the one positional argument.
+      const restoreArgs = cfg.connectionString
+        ? [cfg.connectionString.replace(/\/[^/?]+(\?|$)/, `/${verifyDbName}$1`)]
+        : ['-h', cfg.host, '-p', cfg.port, '-U', cfg.user, '-d', verifyDbName];
+      await run('pg_restore', [...restoreArgs, '--no-owner', '--no-privileges', dest], env);
+      const verifyClient = new Client(cfg.connectionString ? { connectionString: cfg.connectionString } : {
+        host: cfg.host, port: Number(cfg.port), user: cfg.user, password: cfg.password, database: verifyDbName,
+      });
+      await verifyClient.connect();
+      try {
+        const { rows } = await verifyClient.query('SELECT COUNT(*)::int AS n FROM users');
+        userCount = rows[0].n;
+      } finally {
+        await verifyClient.end();
+      }
+    } finally {
+      await maintenance.query(
+        'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()',
+        [verifyDbName],
+      ).catch(() => {});
+      await maintenance.query(`DROP DATABASE IF EXISTS "${verifyDbName}"`).catch(() => {});
+    }
+  } catch (err) {
+    fs.unlinkSync(dest);
+    throw new Error(`Backup written but failed restore verification: ${err.stderr || err.message}`);
+  } finally {
+    await maintenance.end();
+  }
+
+  return { dest, size: fs.statSync(dest).size, userCount };
 }
 
 if (require.main === module) {
-  try {
-    const destArg = process.argv[2];
-    const result = backup(destArg);
-    console.log(`✓ Backup written: ${result.dest} (${formatBytes(result.size)}${result.userCount != null ? `, ${result.userCount} users` : ''})`);
-    console.log('✓ Integrity check passed.');
-    if (!destArg) {
-      const keep = resolveKeep();
-      const deleted = pruneOldBackups(resolveBackupDir(), keep);
-      if (deleted.length) console.log(`✓ Pruned ${deleted.length} older backup(s) beyond retention of ${keep}: ${deleted.join(', ')}`);
+  (async () => {
+    try {
+      const destArg = process.argv[2];
+      const result = await backup(destArg);
+      console.log(`✓ Backup written: ${result.dest} (${formatBytes(result.size)}${result.userCount != null ? `, ${result.userCount} users` : ''})`);
+      console.log('✓ Restore verification passed (restored into a scratch database and queried back).');
+      if (!destArg) {
+        const keep = resolveKeep();
+        const deleted = pruneOldBackups(resolveBackupDir(), keep);
+        if (deleted.length) console.log(`✓ Pruned ${deleted.length} older backup(s) beyond retention of ${keep}: ${deleted.join(', ')}`);
+      }
+    } catch (err) {
+      console.error(`✗ Backup failed: ${err.message}`);
+      process.exit(1);
     }
-  } catch (err) {
-    console.error(`✗ Backup failed: ${err.message}`);
-    process.exit(1);
-  }
+  })();
 }
 
 module.exports = { backup, pruneOldBackups };

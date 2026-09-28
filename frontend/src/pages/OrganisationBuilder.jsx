@@ -31,10 +31,15 @@ import { byId } from '../lib/scope.js';
 // someone exactly one slice of control instead of all of it:
 //   - create_org_units — Create tab's Programme/Sub-programme/Unit forms
 //   - edit_org_units   — the entire Update tab
-//   - add_individual   — Create tab's Individual form, scoped to the
-//                         holder's own unit/sub-programme unless they also
-//                         hold manage_org_units
-// manage_org_units alone still covers all of the above, same as before.
+//   - add_individual   — Create tab's Individual form: name + the email
+//                         they'll sign in with via Microsoft, no unit/
+//                         department (none is ever assigned) and no
+//                         own-scope restriction any more, since there's no
+//                         unit left to scope against — see routes/org.js's
+//                         POST /individuals.
+// manage_org_units alone still covers all of the above, same as before. An
+// Individual is delete-only once created — there is no Edit form for one,
+// anywhere in this app (see Organisation Maintenance too).
 export default function OrganisationBuilder() {
   const { user, org, hasPerm } = useApp();
   const canManage = hasPerm('manage_org_units');
@@ -91,8 +96,9 @@ export default function OrganisationBuilder() {
       <div className="mb-5">
         <h1 className="text-xl font-bold mb-0.5">Organisation Setup</h1>
         <p className="text-[13px] text-ink-secondary max-w-[72ch]">
-          Pick Create or Update, then what you're working on. Removing something, restoring something you removed,
-          or editing/re-assigning an existing Individual's role happens on{' '}
+          Pick Create or Update, then what you're working on. An Individual, once added, can only be removed — not
+          edited — from here or anywhere else; add a fresh one instead if a detail needs correcting. Removing
+          something, restoring something you removed, or re-assigning an existing account's role happens on{' '}
           <span className="font-semibold text-ink-secondary">Organisation Maintenance</span>.
         </p>
       </div>
@@ -129,7 +135,12 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
   const [search, setSearch] = useState('');
 
   const canCreate = entityKey === 'individual' ? canAddIndividual : entityKey === 'programme' ? canManage || hasPerm('create_programmes') || hasPerm('create_org_units') : entityKey === 'sub' ? canManage || hasPerm('create_subprogrammes') || hasPerm('create_org_units') : canManage || hasPerm('create_units') || hasPerm('create_org_units');
-  const canEdit = entityKey === 'individual' ? canEditIndividual : entityKey === 'programme' ? canManage || hasPerm('edit_programmes') || hasPerm('edit_org_units') : entityKey === 'sub' ? canManage || hasPerm('edit_subprogrammes') || hasPerm('edit_org_units') : canManage || hasPerm('edit_units') || hasPerm('edit_org_units');
+  // An Individual is delete-only, always — there is no PATCH /org/
+  // individuals/:id route any more (see routes/org.js's big comment above
+  // POST /individuals), regardless of what edit_individuals/add_individual
+  // grants say. canEditIndividual is accepted as a prop for backward
+  // compatibility with callers but deliberately never drives this.
+  const canEdit = entityKey === 'individual' ? false : entityKey === 'programme' ? canManage || hasPerm('edit_programmes') || hasPerm('edit_org_units') : entityKey === 'sub' ? canManage || hasPerm('edit_subprogrammes') || hasPerm('edit_org_units') : canManage || hasPerm('edit_units') || hasPerm('edit_org_units');
   const canDelete = entityKey === 'programme' ? canManage || hasPerm('delete_programmes') : entityKey === 'sub' ? canManage || hasPerm('delete_subprogrammes') : entityKey === 'unit' ? canManage || hasPerm('delete_units') : canManage || hasPerm('delete_individuals');
   const rows = org[entityKey === 'sub' ? 'subs' : `${entityKey}s`] || [];
   const filteredRows = rows.filter((row) => {
@@ -154,7 +165,11 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
     if (entityKey === 'programme') return { name: '', head: '' };
     if (entityKey === 'sub') return { programmeId: org.programmes[0]?.id || '', name: '', head: '', unitLabel: 'Unit' };
     if (entityKey === 'unit') return { subId: org.subs[0]?.id || '', name: '', kind: 'Unit', head: '' };
-    return { unitId: eligibleUnits[0]?.id || '', name: '', roleTitle: '' };
+    // Individual: name + the email they'll sign in with via Microsoft —
+    // deliberately no unit/department (none is ever assigned) and no role
+    // title (every Individual created here gets the fixed 'default',
+    // read-only role — see routes/org.js's POST /individuals).
+    return { name: '', email: '' };
   }
 
   function startCreate() {
@@ -163,12 +178,14 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
     setCreating(true);
   }
 
+  // Individuals are delete-only (see canEdit above) — this never actually
+  // runs for entityKey === 'individual' since no Edit control is rendered
+  // for one, but the guard makes that explicit rather than implicit.
   function startEdit(row) {
-    if (!canEdit) return;
+    if (!canEdit || entityKey === 'individual') return;
     if (entityKey === 'programme') setDraft({ name: row.name, head: row.head });
     if (entityKey === 'sub') setDraft({ programmeId: row.programme_id, name: row.name, head: row.head, unitLabel: row.unit_label || 'Unit' });
     if (entityKey === 'unit') setDraft({ subId: row.sub_id, name: row.name, kind: row.kind || 'Unit', head: row.head });
-    if (entityKey === 'individual') setDraft({ unitId: row.unit_id, name: row.name, roleTitle: row.role_title });
     setCreating(false);
     setEditingId(row.id);
   }
@@ -186,7 +203,7 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
         : entityKey === 'sub' ? '/org/subs'
           : entityKey === 'unit' ? '/org/units' : '/org/individuals';
       const body = entityKey === 'individual'
-        ? { unitId: Number(draft.unitId), name: draft.name, roleTitle: draft.roleTitle }
+        ? { name: draft.name, email: draft.email }
         : entityKey === 'unit'
           ? { subId: Number(draft.subId), name: draft.name, kind: draft.kind, head: draft.head }
           : entityKey === 'sub'
@@ -234,10 +251,20 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
         <td className="px-3 py-2.5">{isEditing && entityKey !== 'programme' ? (
           entityKey === 'sub' ? select('programmeId', org.programmes) : entityKey === 'unit' ? select('subId', org.subs) : select('unitId', eligibleUnits)
         ) : parentLabel(row)}</td>
-        <td className="px-3 py-2.5">{isEditing ? input(entityKey === 'individual' ? 'roleTitle' : 'head') : (values.head || values.role_title || '—')}</td>
+        <td className="px-3 py-2.5">{isEditing ? input('head') : (values.head || values.role_title || '—')}</td>
         <td className="px-3 py-2.5">{isEditing && entityKey === 'unit' ? input('kind') : (row.kind || '—')}</td>
         <td className="px-3 py-2.5 whitespace-nowrap">
-          {isEditing ? <span className="flex gap-1"><button className="btn btn-sm btn-primary" disabled={busyId === row.id} onClick={() => save(row)}>Save</button><button className="btn btn-sm" onClick={cancelEdit}>Cancel</button></span> : <span className="flex gap-1"><button className="btn btn-sm" disabled={!canEdit} onClick={() => startEdit(row)}>Edit</button>{canDelete && <button className="btn btn-sm btn-danger" disabled={busyId === row.id} onClick={() => remove(row)}>Delete</button>}</span>}
+          {isEditing ? (
+            <span className="flex gap-1"><button className="btn btn-sm btn-primary" disabled={busyId === row.id} onClick={() => save(row)}>Save</button><button className="btn btn-sm" onClick={cancelEdit}>Cancel</button></span>
+          ) : (
+            <span className="flex gap-1">
+              {/* An Individual is delete-only — no Edit control at all, not
+                  just a disabled one, for any Individual account regardless
+                  of how it was created (see routes/org.js). */}
+              {entityKey !== 'individual' && <button className="btn btn-sm" disabled={!canEdit} onClick={() => startEdit(row)}>Edit</button>}
+              {canDelete && <button className="btn btn-sm btn-danger" disabled={busyId === row.id} onClick={() => remove(row)}>Delete</button>}
+            </span>
+          )}
         </td>
       </>
     );
@@ -245,11 +272,23 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
 
   const createCells = draft && (
     <tr className="border-b border-line bg-sunken">
-      <td className="px-3 py-2.5 font-semibold">{input('name')}</td>
-      <td className="px-3 py-2.5">{entityKey === 'programme' ? '—' : entityKey === 'sub' ? select('programmeId', org.programmes) : entityKey === 'unit' ? select('subId', org.subs) : select('unitId', eligibleUnits)}</td>
-      <td className="px-3 py-2.5">{input(entityKey === 'individual' ? 'roleTitle' : 'head')}</td>
-      <td className="px-3 py-2.5">{entityKey === 'sub' ? select('unitLabel', UNIT_KINDS.map((name) => ({ id: name, name }))) : entityKey === 'unit' ? input('kind') : '—'}</td>
-      <td className="px-3 py-2.5 whitespace-nowrap"><span className="flex gap-1"><button className="btn btn-sm btn-primary" disabled={busyId === 'new'} onClick={() => save()}>Create</button><button className="btn btn-sm" onClick={cancelEdit}>Cancel</button></span></td>
+      {entityKey === 'individual' ? (
+        <>
+          <td className="px-3 py-2.5 font-semibold">{input('name')}</td>
+          <td className="px-3 py-2.5 text-ink-muted">No department</td>
+          <td className="px-3 py-2.5">{input('email', 'email')}</td>
+          <td className="px-3 py-2.5 text-ink-muted">Default (read-only)</td>
+          <td className="px-3 py-2.5 whitespace-nowrap"><span className="flex gap-1"><button className="btn btn-sm btn-primary" disabled={busyId === 'new'} onClick={() => save()}>Create</button><button className="btn btn-sm" onClick={cancelEdit}>Cancel</button></span></td>
+        </>
+      ) : (
+        <>
+          <td className="px-3 py-2.5 font-semibold">{input('name')}</td>
+          <td className="px-3 py-2.5">{entityKey === 'programme' ? '—' : entityKey === 'sub' ? select('programmeId', org.programmes) : select('subId', org.subs)}</td>
+          <td className="px-3 py-2.5">{input('head')}</td>
+          <td className="px-3 py-2.5">{entityKey === 'sub' ? select('unitLabel', UNIT_KINDS.map((name) => ({ id: name, name }))) : entityKey === 'unit' ? input('kind') : '—'}</td>
+          <td className="px-3 py-2.5 whitespace-nowrap"><span className="flex gap-1"><button className="btn btn-sm btn-primary" disabled={busyId === 'new'} onClick={() => save()}>Create</button><button className="btn btn-sm" onClick={cancelEdit}>Cancel</button></span></td>
+        </>
+      )}
     </tr>
   );
 
@@ -269,9 +308,9 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
           <label className="field-label block mb-1">Search organisation records</label>
           <input type="search" className="field-input w-full" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name, parent, head, role or type…" aria-label="Search organisation records" />
         </div>
-        <div className="overflow-x-auto rounded-lg border border-line">
+        <div className="overflow-x-auto max-h-[65vh] overflow-y-auto rounded-lg border border-line">
           <table className="w-full text-left text-[12px]">
-            <thead className="bg-sunken border-b border-line"><tr><th className="px-3 py-2 font-bold">Name</th><th className="px-3 py-2 font-bold">Parent / Unit</th><th className="px-3 py-2 font-bold">Head / Role</th><th className="px-3 py-2 font-bold">Type</th><th className="px-3 py-2 font-bold">Actions</th></tr></thead>
+            <thead className="bg-sunken border-b border-line sticky top-0 z-10"><tr><th className="px-3 py-2 font-bold">Name</th><th className="px-3 py-2 font-bold">Parent / Unit</th><th className="px-3 py-2 font-bold">Head / Role</th><th className="px-3 py-2 font-bold">Type</th><th className="px-3 py-2 font-bold">Actions</th></tr></thead>
             <tbody>{creating && createCells}{filteredRows.length === 0 && !creating ? <tr><td colSpan="5" className="px-3 py-6 text-center text-ink-muted">{rows.length === 0 ? `No ${entities.find((entity) => entity.key === entityKey)?.label.toLowerCase()} yet.` : 'No records match your search.'}</td></tr> : filteredRows.map((row) => <tr key={row.id} className="border-b border-line last:border-b-0 hover:bg-sunken/60">{cells(row)}</tr>)}</tbody>
           </table>
         </div>
@@ -655,63 +694,14 @@ function UpdateUnitForm() {
   );
 }
 
-// restrictToOwnScope: true when the caller holds only the narrower
-// add_individual permission (not manage_org_units) — the unit dropdown is
-// then limited to the units they could actually succeed against server-side
-// (their own unit if they're a Unit Head, or any unit in their own
-// sub-programme if they're a Sub Rep), so the form never offers a choice
-// the backend would reject.
-function AddIndividualForm({ restrictToOwnScope }) {
-  const { user, org, reloadCore } = useApp();
-  const toast = useToast();
-  const eligibleUnits = !restrictToOwnScope
-    ? org.units
-    : user.role === 'unithead'
-      ? org.units.filter((u) => u.id === user.scope_id)
-      : user.role === 'rep'
-        ? org.units.filter((u) => u.sub_id === user.scope_id)
-        : [];
-  const [unitId, setUnitId] = useState(eligibleUnits[0]?.id || '');
-  const [name, setName] = useState('');
-  const [roleTitle, setRoleTitle] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  async function submit(e) {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      const r = await api('/org/individuals', { method: 'POST', body: { unitId: Number(unitId), name, roleTitle } });
-      toast(`${name} added. Account: ${r.account.email} (${r.account.note})`);
-      setName(''); setRoleTitle('');
-      await reloadCore();
-    } catch (err) { toast(err.message, 'err'); }
-    finally { setBusy(false); }
-  }
-
-  if (restrictToOwnScope && eligibleUnits.length === 0) {
-    return (
-      <div className="rounded-xl bg-sunken border border-line p-4 text-[12.5px] text-ink-muted">
-        You have the "Add an Individual" permission, but no unit/sub-programme of your own to add one under.
-      </div>
-    );
-  }
-
-  return (
-    <div className="rounded-xl bg-sunken border border-line p-4">
-      <h3 className="font-display font-bold text-[14px] mb-3">Add an Individual</h3>
-      <form onSubmit={submit} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        <Field label="Under Unit">
-          <select className="field-input" value={unitId} onChange={(e) => setUnitId(e.target.value)}>
-            {eligibleUnits.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-          </select>
-        </Field>
-        <Field label="Full name"><input required className="field-input" value={name} onChange={(e) => setName(e.target.value)} /></Field>
-        <Field label="Role / job title" full><input required className="field-input" value={roleTitle} onChange={(e) => setRoleTitle(e.target.value)} /></Field>
-        <div className="sm:col-span-2 lg:col-span-4"><button className="btn btn-primary btn-sm" disabled={busy || !unitId}>Add individual</button></div>
-      </form>
-    </div>
-  );
-}
+// NOTE: individual creation no longer has a standalone form component here
+// — it went through the same Create/table flow as Programmes/Subs/Units
+// (see `createCells`'s entityKey === 'individual' branch above, and
+// `canAddIndividual` in the main component). There is deliberately no
+// own-scope restriction on it any more either: since no Individual is ever
+// assigned a unit/department (see POST /individuals), there is no unit
+// left to scope the picker against, so add_individual now behaves the same
+// everywhere it's granted rather than needing a narrower own-scope variant.
 
 function Field({ label, children, full }) {
   return (

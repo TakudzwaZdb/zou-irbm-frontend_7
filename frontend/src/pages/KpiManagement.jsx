@@ -158,9 +158,29 @@ function RecentlyRemoved() {
 // breaks — this form just no longer creates NEW ones that way, since a
 // Unit-scoped pool is strictly more useful (one definition, any number of
 // people in that unit can adopt it) for the same intent.
-function AddKpiForm() {
+// Escape-to-close for the Create KPI popup below — same pattern Permissions.jsx
+// uses for its role-permissions dialog, kept local here since KpiManagement has
+// no shared Modal component to pull it from (see Messages.jsx's compose dialog
+// for the backdrop-click/stopPropagation half of the same convention).
+function useEscapeToClose(onClose) {
+  useEffect(() => {
+    function onKey(e) { if (e.key === 'Escape') onClose(); }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+}
+
+// Was always rendered inline at the top of the (already-expanded) catalogue
+// table, pushing every row down by a full form's height whether or not
+// anyone was actually creating something right now. Now opened as a popup
+// from its own "Create KPI" button and closed automatically the moment a
+// create succeeds — onClose is only ever called after a successful submit,
+// or when the person explicitly backs out (✕, backdrop click, Escape), so a
+// KPI actually created never leaves the dialog hanging around behind it.
+function AddKpiForm({ onClose }) {
   const { org, reloadCore, reloadTemplates } = useApp();
   const toast = useToast();
+  useEscapeToClose(onClose);
   const [ownerType, setOwnerType] = useState('sub');
   const [ownerId, setOwnerId] = useState('');
   const [name, setName] = useState('');
@@ -206,63 +226,72 @@ function AddKpiForm() {
       }
       setName(''); setType(''); setMeasure(''); setBaseline(''); setTarget(''); setAssigneeIds([]);
       await Promise.all([reloadCore(), ownerType === 'individual' ? reloadTemplates() : Promise.resolve()]);
+      onClose();
     } catch (err) { toast(err.message, 'err'); }
     finally { setBusy(false); }
   }
 
   return (
-    <div className="rounded-xl bg-sunken border border-line p-4 mt-3">
-      <h3 className="font-display font-bold text-[14px] mb-3">Create a KPI</h3>
-      <form onSubmit={submit} className="flex flex-col gap-3">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <Field label="Owner type">
-            <select className="field-input" value={ownerType} onChange={(e) => { setOwnerType(e.target.value); setOwnerId(''); setAssigneeIds([]); }}>
-              <option value="sub">Sub-programme</option>
-              <option value="unit">Unit</option>
-              <option value="individual">Individuals (under a unit)</option>
-            </select>
-          </Field>
-          <Field label={ownerType === 'individual' ? 'Unit their individuals fall under' : 'Owner'}>
-            <select className="field-input" value={ownerId} onChange={(e) => { setOwnerId(e.target.value); setAssigneeIds([]); }}>
-              {options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-            </select>
-          </Field>
-          <Field label="Name"><input required className="field-input" value={name} onChange={(e) => setName(e.target.value)} /></Field>
-          <Field label="Type"><input required placeholder="Efficiency / Growth / Compliance…" className="field-input" value={type} onChange={(e) => setType(e.target.value)} /></Field>
-          <Field label="Measure (unit)"><input required placeholder="%, count, days…" className="field-input" value={measure} onChange={(e) => setMeasure(e.target.value)} /></Field>
-          <Field label="Baseline"><input required type="number" step="any" className="field-input" value={baseline} onChange={(e) => setBaseline(e.target.value)} /></Field>
-          <Field label="Target"><input required type="number" step="any" className="field-input" value={target} onChange={(e) => setTarget(e.target.value)} /></Field>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="create-kpi-title">
+      <div className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-xl bg-surface border border-line shadow-lg" onClick={(e) => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-line flex items-center justify-between flex-none">
+          <h2 id="create-kpi-title" className="font-display font-bold text-[14.5px]">Create a KPI</h2>
+          <button type="button" className="text-ink-muted hover:text-ink" onClick={onClose} aria-label="Close">✕</button>
         </div>
-        {ownerType === 'individual' && (
-          <p className="text-[11.5px] text-ink-muted max-w-[65ch]">
-            This creates the KPI once, scoped to the unit you picked — nobody owns it yet. Anyone in that unit sees it
-            in their own My Data Entry as something they can add as their own personal KPI (each person who picks it
-            up gets their own independent figure to enter, not a number shared with the rest of the unit).
-          </p>
-        )}
-        {ownerType === 'unit' && ownerId && (
-          <div>
-            <label className="field-label block mb-1.5">
-              Assign custodians (optional) — everyone selected files their own figure toward this KPI; their Unit
-              Head reviews and approves each one, and approved figures are summed automatically into the KPI's own
-              value, instead of creating a separate KPI per person.
-            </label>
-            {unitIndividuals.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {unitIndividuals.map((i) => (
-                  <label key={i.id} className={`chip cursor-pointer select-none ${assigneeIds.includes(i.id) ? 'bg-accent-50 text-accent-600' : 'bg-sunken text-ink-secondary border border-line'}`}>
-                    <input type="checkbox" className="sr-only" checked={assigneeIds.includes(i.id)} onChange={() => toggleAssignee(i.id)} />
-                    {i.name} — {i.role_title}
-                  </label>
-                ))}
-              </div>
-            ) : (
-              <p className="text-[11.5px] text-ink-muted">No individuals in this unit yet — add one from People &amp; Roles first.</p>
-            )}
+        <form onSubmit={submit} className="flex flex-col gap-3 p-4 overflow-y-auto">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <Field label="Owner type">
+              <select className="field-input" value={ownerType} onChange={(e) => { setOwnerType(e.target.value); setOwnerId(''); setAssigneeIds([]); }}>
+                <option value="sub">Sub-programme</option>
+                <option value="unit">Unit</option>
+                <option value="individual">Individuals (under a unit)</option>
+              </select>
+            </Field>
+            <Field label={ownerType === 'individual' ? 'Unit their individuals fall under' : 'Owner'}>
+              <select className="field-input" value={ownerId} onChange={(e) => { setOwnerId(e.target.value); setAssigneeIds([]); }}>
+                {options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Name"><input required className="field-input" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+            <Field label="Type"><input required placeholder="Efficiency / Growth / Compliance…" className="field-input" value={type} onChange={(e) => setType(e.target.value)} /></Field>
+            <Field label="Measure (unit)"><input required placeholder="%, count, days…" className="field-input" value={measure} onChange={(e) => setMeasure(e.target.value)} /></Field>
+            <Field label="Baseline"><input required type="number" step="any" className="field-input" value={baseline} onChange={(e) => setBaseline(e.target.value)} /></Field>
+            <Field label="Target"><input required type="number" step="any" className="field-input" value={target} onChange={(e) => setTarget(e.target.value)} /></Field>
           </div>
-        )}
-        <div><button className="btn btn-primary btn-sm" disabled={busy}>Create KPI</button></div>
-      </form>
+          {ownerType === 'individual' && (
+            <p className="text-[11.5px] text-ink-muted max-w-[65ch]">
+              This creates the KPI once, scoped to the unit you picked — nobody owns it yet. Anyone in that unit sees it
+              in their own My Data Entry as something they can add as their own personal KPI (each person who picks it
+              up gets their own independent figure to enter, not a number shared with the rest of the unit).
+            </p>
+          )}
+          {ownerType === 'unit' && ownerId && (
+            <div>
+              <label className="field-label block mb-1.5">
+                Assign custodians (optional) — everyone selected files their own figure toward this KPI; their Unit
+                Head reviews and approves each one, and approved figures are summed automatically into the KPI's own
+                value, instead of creating a separate KPI per person.
+              </label>
+              {unitIndividuals.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {unitIndividuals.map((i) => (
+                    <label key={i.id} className={`chip cursor-pointer select-none ${assigneeIds.includes(i.id) ? 'bg-accent-50 text-accent-600' : 'bg-sunken text-ink-secondary border border-line'}`}>
+                      <input type="checkbox" className="sr-only" checked={assigneeIds.includes(i.id)} onChange={() => toggleAssignee(i.id)} />
+                      {i.name} — {i.role_title}
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[11.5px] text-ink-muted">No individuals in this unit yet — add one from People &amp; Roles first.</p>
+              )}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <button className="btn btn-primary btn-sm" disabled={busy}>{busy ? 'Creating…' : 'Create KPI'}</button>
+            <button type="button" className="btn btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
@@ -278,6 +307,7 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
   const [editingId, setEditingId] = useState(null);
   const [draft, setDraft] = useState(null);
   const [busyId, setBusyId] = useState(null);
+  const [showCreate, setShowCreate] = useState(false);
 
   const activeKpis = (kpis || []).filter((k) => !k.deleted_at && !k.removed_at);
 
@@ -382,7 +412,14 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
 
       {open && (
         <div className="mt-3">
-          {canCreate && <AddKpiForm />}
+          {canCreate && (
+            <div className="mb-3">
+              <button type="button" className="btn btn-primary btn-sm" onClick={() => setShowCreate(true)}>
+                + Create KPI
+              </button>
+            </div>
+          )}
+          {showCreate && <AddKpiForm onClose={() => setShowCreate(false)} />}
           <div className="mb-3">
             <label className="field-label block mb-1">Search created KPIs</label>
             <input
@@ -402,9 +439,9 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
                 : 'No KPIs match your search.'}
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-lg border border-line">
+            <div className="overflow-x-auto max-h-[65vh] overflow-y-auto rounded-lg border border-line">
               <table className="w-full text-left text-[12px]">
-                <thead className="bg-sunken border-b border-line">
+                <thead className="bg-sunken border-b border-line sticky top-0 z-10">
                   <tr>
                     <th className="px-3 py-2 font-bold whitespace-nowrap">KPI</th>
                     <th className="px-3 py-2 font-bold whitespace-nowrap">Type</th>

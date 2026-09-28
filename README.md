@@ -1,15 +1,23 @@
 # ZOU Strategic Plan Monitor — Full-Stack Reference Application
 
 A real, working full-stack implementation of the ZOU IRBM strategic-plan
-monitoring system: a genuine Node.js/Express + SQLite backend with bcrypt
-password hashing, JWT session authentication, and server-enforced
-role-based access control, plus a browser frontend that consumes it over a
-real HTTP API. This replaces the earlier single-file HTML prototype's
-simulated login and in-memory JavaScript state with an actual backend that
-persists data, validates every request, and cannot be bypassed by editing
-the page in the browser. The frontend itself is a proper React + Tailwind
-CSS single-page app (built with Vite) rather than hand-rolled HTML/CSS/JS,
-while still talking to the same real backend over the same REST API.
+monitoring system: a genuine Node.js/Express + PostgreSQL backend with
+bcrypt password hashing, JWT session authentication (plus Microsoft Entra
+ID sign-in for read-only Individual accounts — see AZURE_SETUP.md), and
+server-enforced role-based access control, plus a browser frontend that
+consumes it over a real HTTP API. This replaces the earlier single-file
+HTML prototype's simulated login and in-memory JavaScript state with an
+actual backend that persists data, validates every request, and cannot be
+bypassed by editing the page in the browser. The frontend itself is a
+proper React + Tailwind CSS single-page app (built with Vite) rather than
+hand-rolled HTML/CSS/JS, while still talking to the same real backend over
+the same REST API.
+(The project started on Node's built-in `node:sqlite`, single-file,
+nothing-to-install — several sections further down still narrate that era
+verbatim as it actually happened. It has since moved to a real PostgreSQL
+server so it can run against a managed database like Azure Database for
+PostgreSQL; see "Database: PostgreSQL, not SQLite" below for what that
+means for setup today.)
 
 ## What's real here
 
@@ -23,8 +31,9 @@ while still talking to the same real backend over the same REST API.
   approve their own KPI submission even if they call the API directly,
   and permission management is only reachable by the `ictadmin` role,
   structurally, not just permission-gated.
-- **Data**: a persistent SQLite database file (`backend/data/zou.db`),
-  not an in-memory mock that resets on refresh.
+- **Data**: a persistent PostgreSQL database (local or managed, e.g. Azure
+  Database for PostgreSQL — see AZURE_SETUP.md), not an in-memory mock that
+  resets on refresh.
 - **Audit trail**: every permission change, org-structure change, KPI
   creation/edit, and data-entry/submit/approve/return/override action is
   written to an `audit_log` table with who did what and when.
@@ -1373,7 +1382,7 @@ covering every approval tier before this was packaged.
 
 ```
 zou-fullstack/
-├── backend/                  Node.js + Express + SQLite API
+├── backend/                  Node.js + Express + PostgreSQL API
 │   ├── src/
 │   │   ├── db.js             Schema + database connection
 │   │   ├── seed.js           Seeds the org structure, KPIs, and demo accounts
@@ -1413,8 +1422,9 @@ the frontend**).
 
 ## Just run it
 
-Requires **Node.js 22.5 or later** (the backend uses Node's built-in
-`node:sqlite` module — see "Why no database to install" below).
+Requires **Node.js 22.5 or later** and a running **PostgreSQL** server
+(local is fine for development — see "Database: PostgreSQL, not SQLite"
+below for why, and AZURE_SETUP.md if you want a managed one instead).
 
 All commands below run **inside the `backend` folder only**. The
 `frontend` folder has its own `package.json` for its own build tooling —
@@ -1425,19 +1435,18 @@ you don't need to touch it unless you're changing the React source (see
 cd backend
 npm install
 cp .env.example .env
-npm run seed      # creates backend/data/zou.db and seeds it
+# edit .env: set JWT_SECRET, and PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE
+# to point at a Postgres server + database you've already created (a plain
+# `createdb zou_irbm` against a local Postgres install is enough)
+npm run seed      # creates the schema in that database and seeds it
 npm start
 ```
 
 Then open **http://localhost:4000/** in a browser. That one URL serves
 both the pre-built React app and the API.
 
-You'll see one or two lines like `ExperimentalWarning: SQLite is an
-experimental feature` when the server starts — that's expected and
-harmless; Node still marks its built-in SQLite support as experimental.
-
 To reset to a clean demo state at any time, stop the server and re-run
-`npm run seed` — it wipes and rebuilds all tables.
+`npm run seed` — it wipes and rebuilds all tables in that same database.
 
 ## Developing the frontend
 
@@ -1468,16 +1477,24 @@ cd frontend
 npm run build      # writes to frontend/dist
 ```
 
-### Why no database to install
+### Database: PostgreSQL, not SQLite
 
-Earlier versions of this project used the `better-sqlite3` package, which
-needs a native binary compiled for your exact OS/CPU/Node version — on
-some Windows setups (especially very new Node releases without a
-prebuilt binary available yet, or machines without Visual Studio Build
-Tools/Python installed) that compilation step fails with errors like
-`Could not locate the bindings file`. The backend now uses Node's
-built-in `node:sqlite` module instead, so there is nothing to compile —
-`npm install` only installs plain JavaScript packages.
+Earlier versions of this project stored everything in a single SQLite
+file (first via the `better-sqlite3` package, then Node's own built-in
+`node:sqlite` module) specifically so there was nothing to install or
+compile — several sections elsewhere in this README, and in the code's
+own comments, still narrate that era accurately, as history.
+
+That changed: the backend now talks to a real PostgreSQL server (`pg`,
+a pure-JS driver — still nothing to compile) via `backend/src/db.js`,
+so this app can run against a managed, durable, backupable database
+service instead of a single file on local disk — the natural choice for
+anything beyond a local demo. Local development is still simple: install
+Postgres locally (or use a container), create an empty database, and
+point `.env`'s `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` at
+it — `npm run seed` creates the schema and demo data inside it. For a
+managed production database (e.g. Azure Database for PostgreSQL Flexible
+Server), see **AZURE_SETUP.md**.
 
 ## Backing up the database
 
@@ -1487,38 +1504,40 @@ npm run backup
 ```
 
 Writes a complete, independent snapshot to
-`backend/data/backups/zou-<timestamp>.db` and verifies it immediately after
-(`PRAGMA integrity_check`) before calling the run a success. This is safe to
-run at any time, including while the server is up and being actively used —
-it does not lock out writers, pause the app, or need any coordination with
+`backend/data/backups/zou-<timestamp>.dump` (Postgres's custom archive
+format, via `pg_dump`) and verifies it two ways immediately after — a
+cheap `pg_restore --list` table-of-contents read, then a full restore
+into a disposable scratch database that's queried back and dropped again
+— before calling the run a success. This is safe to run at any time,
+including while the server is up and being actively used — it does not
+lock out writers, pause the app, or need any coordination with
 `server.js`. It's real online backup, not a suggestion to stop the server
-first: `src/backup.js` uses SQLite's own `VACUUM INTO`, which opens a read
-transaction against the live database and streams a consistent copy to a
-new file. A plain file copy (`cp data/zou.db backup.db`) would not be
-reliable here — the live database runs in WAL mode (see `db.js`), so the
-main `.db` file on disk can be missing recently-committed data still sitting
-in the `-wal` side file at any given instant; `VACUUM INTO` accounts for
-that, `cp` does not.
+first: `pg_dump` takes a consistent snapshot of the live database via
+Postgres's own MVCC, the same mechanism that lets normal reads and writes
+proceed concurrently against it.
 
 By default the last 14 backups are kept and older ones are pruned
 automatically on each run (only files this script created, matching
-`zou-*.db` in that directory — nothing else there is ever touched or
+`zou-*.dump` in that directory — nothing else there is ever touched or
 deleted). Override with environment variables in `.env` if needed:
 `BACKUP_DIR` (default `backend/data/backups`), `BACKUP_KEEP` (default `14`,
-set to `0` to keep everything), `DB_FILE` (which live database to back up —
-same variable `server.js` and `seed.js` already use). A specific destination
-path can also be passed directly — `node src/backup.js /path/to/out.db` —
-which skips the automatic pruning, since a one-off destination usually means
-you're managing retention yourself.
+set to `0` to keep everything) — which database to back up is read the
+same way the rest of the app connects to one (`PGHOST`/`PGPORT`/`PGUSER`/
+`PGPASSWORD`/`PGDATABASE`, or `DATABASE_URL`). A specific destination path
+can also be passed directly — `node src/backup.js /path/to/out.dump` —
+which skips the automatic pruning, since a one-off destination usually
+means you're managing retention yourself.
 
-**Restoring** is the reverse of taking the backup: stop the server, then
-copy a backup file over the live one —
+**Restoring** a `.dump` file is via `pg_restore`, into an existing (and
+normally empty) target database — `pg_restore` never creates the database
+itself:
 
 ```bash
 cd backend
-# stop the running server first
-cp data/backups/zou-<timestamp>.db data/zou.db
-rm -f data/zou.db-wal data/zou.db-shm   # stale WAL/shm files from the old db, if present
+createdb zou_restored          # or drop and recreate the live one first
+pg_restore --no-owner --no-privileges -d zou_restored data/backups/zou-<timestamp>.dump
+# point .env's PGDATABASE (or DATABASE_URL) at zou_restored, or rename it
+# to swap it in as the live database, then:
 npm start
 ```
 
@@ -1717,10 +1736,11 @@ that distinction matters):
   process per core (Node's `cluster` module) instead of running as a single
   process — override with `WEB_CONCURRENCY` in `.env` (`1` for simpler
   local debugging). Every schema migration in `db.js` runs exactly once, in
-  the primary process, *before* any worker is forked — SQLite's WAL mode
-  (already enabled) is explicitly designed for what happens after that:
-  several processes, one file, one writer at a time, unlimited concurrent
-  readers. Verified live: 200 real concurrent connections to an
+  the primary process, *before* any worker is forked. Each worker then
+  opens its own PostgreSQL connection pool (`pg`'s `Pool`, capped via
+  `DB_POOL_MAX`) — real concurrent client connections to a real
+  client/server database, not several processes sharing one on-disk file,
+  so there's no single-writer file lock to contend with. Verified live: 200 real concurrent connections to an
   authenticated data endpoint (`GET /api/kpis/values`) all succeeded with a
   median response time of ~8ms and a 95th-percentile of ~29ms, spread
   across both worker processes (confirmed via each response's own
@@ -1767,20 +1787,22 @@ that distinction matters):
   cluster-wide total stays close to the original intent instead of
   silently becoming 8-per-worker.
 - A second correctness detail the cluster change exposed on a real
-  restart: `db.js` has a handful of unconditional write statements (the
-  permissions-catalog sync, a few `INSERT OR IGNORE` backfills) that
-  re-run on every process's own `require('./db')`, not just once in the
-  primary. With two worker processes starting within milliseconds of each
-  other, WAL mode's "one writer at a time" rule could make the second
-  worker's write collide with the first's — and with no
-  `PRAGMA busy_timeout` set, `node:sqlite` threw `SQLITE_BUSY` ("database
-  is locked") immediately instead of waiting. Node's `cluster` module
-  auto-restarted the crashed worker, so the app still ended up healthy,
-  but a crash-and-restart on every boot isn't acceptable — fixed by
-  setting `PRAGMA busy_timeout = 5000` in `db.js`, so a worker now waits
-  up to 5s for the other's write to finish instead of failing outright.
-  Verified live: both workers now start cleanly with no crash/restart in
-  the log.
+  restart, back when this ran on SQLite: `db.js` has a handful of
+  unconditional write statements (the permissions-catalog sync, a few
+  backfills) that re-run on every process's own `require('./db')`, not
+  just once in the primary. With two worker processes starting within
+  milliseconds of each other, SQLite's single-file "one writer at a time"
+  rule could make the second worker's write collide with the first's, and
+  it threw `SQLITE_BUSY` ("database is locked") immediately instead of
+  waiting — fixed at the time by setting a busy timeout so a worker waited
+  for the other's write to finish instead of failing outright. This class
+  of race is now structurally gone under PostgreSQL: every one of those
+  statements is idempotent (`IF NOT EXISTS` / `ON CONFLICT DO NOTHING`)
+  and each worker holds its own real client connection in the pool, so
+  concurrent workers writing the same idempotent statement at startup is
+  just two ordinary transactions, not a shared-file lock contest — see
+  `server.js`'s own comment on why the primary still awaits `db.ready()`
+  once before forking anyway (belt-and-suspenders, not a requirement).
 
 ## API reference (summary)
 

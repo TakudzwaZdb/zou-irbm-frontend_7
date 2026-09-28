@@ -10,44 +10,50 @@ const { emailFor } = require('./utils/email');
 
 const DEMO_PASSWORD = process.env.SEED_PASSWORD || 'Zou@2026';
 
-const txn = db.transaction(() => {
+const txn = db.transaction(async () => {
   console.log('Wiping existing data...');
-  db.exec(`
+  await db.exec(`
     DELETE FROM message_recipients; DELETE FROM messages;
     DELETE FROM plan_proposals; DELETE FROM kpi_assignments; DELETE FROM structural_proposals;
     DELETE FROM audit_log; DELETE FROM kpi_values; DELETE FROM kpis;
     DELETE FROM individuals; DELETE FROM units; DELETE FROM subs; DELETE FROM programmes;
-    DELETE FROM user_permissions; DELETE FROM users; DELETE FROM permissions; DELETE FROM settings;
+    DELETE FROM role_permissions; DELETE FROM user_permissions; DELETE FROM users; DELETE FROM permissions; DELETE FROM settings;
   `);
 
   console.log('Seeding permission catalog...');
   const insertPerm = db.prepare('INSERT INTO permissions (key, label, group_name) VALUES (?, ?, ?)');
-  PERMISSIONS.forEach((p) => insertPerm.run(p.key, p.label, p.group));
+  for (const p of PERMISSIONS) await insertPerm.run(p.key, p.label, p.group);
+
+  const insertRolePerm = db.prepare('INSERT OR IGNORE INTO role_permissions (role_key, permission_key) VALUES (?, ?)');
+  const roleDefs = await db.prepare('SELECT key FROM role_definitions').all();
+  for (const role of roleDefs) {
+    for (const key of (DEFAULT_PERMS_BY_ROLE[role.key] || [])) await insertRolePerm.run(role.key, key);
+  }
 
   console.log('Seeding settings...');
   const insertSetting = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)');
-  insertSetting.run('ragGreen', '80');
-  insertSetting.run('ragAmber', '50');
-  insertSetting.run('lateCutoffIndividual', '3');
-  insertSetting.run('lateCutoffUnit', '5');
-  insertSetting.run('lateCutoffSub', '7');
-  insertSetting.run('escalateProgramme', '6');
-  insertSetting.run('escalateVC', '11');
-  insertSetting.run('redEscalateProgramme', '2');
-  insertSetting.run('redEscalateVC', '4');
-  insertSetting.run('submissionOpenDay', '25');
-  insertSetting.run('submissionCloseDay', '3');
+  await insertSetting.run('ragGreen', '80');
+  await insertSetting.run('ragAmber', '50');
+  await insertSetting.run('lateCutoffIndividual', '3');
+  await insertSetting.run('lateCutoffUnit', '5');
+  await insertSetting.run('lateCutoffSub', '7');
+  await insertSetting.run('escalateProgramme', '6');
+  await insertSetting.run('escalateVC', '11');
+  await insertSetting.run('redEscalateProgramme', '2');
+  await insertSetting.run('redEscalateVC', '4');
+  await insertSetting.run('submissionOpenDay', '25');
+  await insertSetting.run('submissionCloseDay', '3');
 
   const passwordHash = bcrypt.hashSync(DEMO_PASSWORD, 10);
   const insertUser = db.prepare(
     'INSERT INTO users (name, title, email, password_hash, role, scope_type, scope_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
   );
   const setPerms = db.prepare('INSERT INTO user_permissions (user_id, permission_key) VALUES (?, ?)');
-  function makeUser(name, title, role, scopeType, scopeId, permsOverride) {
+  async function makeUser(name, title, role, scopeType, scopeId, permsOverride) {
     const email = emailFor(name);
-    const id = insertUser.run(name, title, email, passwordHash, role, scopeType, scopeId).lastInsertRowid;
+    const { lastInsertRowid: id } = await insertUser.run(name, title, email, passwordHash, role, scopeType, scopeId);
     const perms = permsOverride || DEFAULT_PERMS_BY_ROLE[role] || [];
-    perms.forEach((k) => setPerms.run(id, k));
+    for (const k of perms) await setPerms.run(id, k);
     return id;
   }
 
@@ -59,8 +65,8 @@ const txn = db.transaction(() => {
   // "Overall Institutional Performance" card). A real designation, not just
   // a job title: it's what the app itself points to when it says who owns
   // that number.
-  const vcId = makeUser('Prof. L. Chareka', 'Vice Chancellor', 'exec', null, null);
-  db.prepare('UPDATE users SET is_executive_owner = 1 WHERE id = ?').run(vcId);
+  const vcId = await makeUser('Prof. L. Chareka', 'Vice Chancellor', 'exec', null, null);
+  await db.prepare('UPDATE users SET is_executive_owner = 1 WHERE id = ?').run(vcId);
   // University Council: the final validation/approval authority over the
   // compiled University Annual Plan, above CPU's own compile-and-submit
   // step — see routes/plans.js's POST /university/approve|return. A real
@@ -68,9 +74,9 @@ const txn = db.transaction(() => {
   // everywhere else in the app (DEFAULT_PERMS_BY_ROLE.council), the one
   // thing this account can actually do is validate and either approve
   // (putting it into effect) or return the Annual Plan once CPU submits it.
-  makeUser('Mr. F. Museta', 'Council Chairperson', 'council', null, null);
-  const cpuId = makeUser('T. Moyo', 'Corporate Planning Unit', 'cpu', null, null);
-  const ictId = makeUser('L. Chikomo', 'ICT Systems Administrator', 'ictadmin', null, null);
+  await makeUser('Mr. F. Museta', 'Council Chairperson', 'council', null, null);
+  const cpuId = await makeUser('T. Moyo', 'Corporate Planning Unit', 'cpu', null, null);
+  const ictId = await makeUser('L. Chikomo', 'ICT Systems Administrator', 'ictadmin', null, null);
 
   console.log('Seeding programmes, sub-programmes, units, individuals...');
   const insertProgramme = db.prepare('INSERT INTO programmes (name, head) VALUES (?, ?)');
@@ -78,9 +84,9 @@ const txn = db.transaction(() => {
   const insertUnit = db.prepare('INSERT INTO units (sub_id, name, head, kind, head_user_id) VALUES (?, ?, ?, ?, ?)');
   const insertIndividual = db.prepare('INSERT INTO individuals (unit_id, name, role_title, user_id) VALUES (?, ?, ?, ?)');
 
-  const pGovId = insertProgramme.run('Governance & Administration', 'Mr. S. Chitiyo — DVC Administration').lastInsertRowid;
-  const pHcdId = insertProgramme.run('Human Capital Development', 'Prof. B. Manyanga — DVC Academic').lastInsertRowid;
-  const pRiiId = insertProgramme.run('Research, Innovation & Industrialisation', 'Prof. E. Mavhunga — DVC Research & Innovation').lastInsertRowid;
+  const pGovId = (await insertProgramme.run('Governance & Administration', 'Mr. S. Chitiyo — DVC Administration')).lastInsertRowid;
+  const pHcdId = (await insertProgramme.run('Human Capital Development', 'Prof. B. Manyanga — DVC Academic')).lastInsertRowid;
+  const pRiiId = (await insertProgramme.run('Research, Innovation & Industrialisation', 'Prof. E. Mavhunga — DVC Research & Innovation')).lastInsertRowid;
 
   // Each Programme's own head gets a real login account — a genuine
   // 'programme' role scoped (scope_type/scope_id) to that Programme only,
@@ -93,10 +99,10 @@ const txn = db.transaction(() => {
     { programme: pHcdId, name: 'Prof. B. Manyanga', title: 'DVC Academic — Programme Head, Human Capital Development' },
     { programme: pRiiId, name: 'Prof. E. Mavhunga', title: 'DVC Research & Innovation — Programme Head, Research, Innovation & Industrialisation' },
   ];
-  PROGRAMME_HEADS.forEach((ph) => {
-    const headUserId = makeUser(ph.name, ph.title, 'programme', 'programme', ph.programme);
-    db.prepare('UPDATE programmes SET head_user_id = ? WHERE id = ?').run(headUserId, ph.programme);
-  });
+  for (const ph of PROGRAMME_HEADS) {
+    const headUserId = await makeUser(ph.name, ph.title, 'programme', 'programme', ph.programme);
+    await db.prepare('UPDATE programmes SET head_user_id = ? WHERE id = ?').run(headUserId, ph.programme);
+  }
 
   const SUBS_SEED = [
     { key: 's1', programme: pGovId, name: 'Administration', head: 'Mr. T. Muzawazi — Director, Administration', rep: 'P. Marecha (Administration Officer)', unitLabel: 'Department' },
@@ -109,12 +115,12 @@ const txn = db.transaction(() => {
     { key: 's8', programme: pRiiId, name: 'Innovation & Enterprises', head: 'Mr. K. Chikafu — Director, Innovation & Enterprises', rep: 'T. Zulu (Innovation Officer)', unitLabel: 'Unit' },
   ];
   const subIds = {};
-  SUBS_SEED.forEach((s) => {
-    const repUserId = makeUser(s.rep, `Sub-programme Rep — ${s.name}`, 'rep', 'sub', null);
-    const id = insertSub.run(s.programme, s.name, s.head, s.unitLabel, repUserId).lastInsertRowid;
-    db.prepare('UPDATE users SET scope_id = ? WHERE id = ?').run(id, repUserId);
+  for (const s of SUBS_SEED) {
+    const repUserId = await makeUser(s.rep, `Sub-programme Rep — ${s.name}`, 'rep', 'sub', null);
+    const { lastInsertRowid: id } = await insertSub.run(s.programme, s.name, s.head, s.unitLabel, repUserId);
+    await db.prepare('UPDATE users SET scope_id = ? WHERE id = ?').run(id, repUserId);
     subIds[s.key] = id;
-  });
+  }
 
   const UNITS_SEED = [
     { key: 'u1', sub: 's1', name: 'Registry', head: 'Mrs. P. Chikonzo — Registry Manager' },
@@ -135,12 +141,12 @@ const txn = db.transaction(() => {
     { key: 'u16', sub: 's8', name: 'Enterprise Development Unit', head: 'Ms. N. Gutu — Enterprise Development Manager' },
   ];
   const unitIds = {};
-  UNITS_SEED.forEach((u) => {
-    const headUserId = makeUser(u.head, `Unit Head — ${u.name}`, 'unithead', 'unit', null);
-    const id = insertUnit.run(subIds[u.sub], u.name, u.head, 'Unit', headUserId).lastInsertRowid;
-    db.prepare('UPDATE users SET scope_id = ? WHERE id = ?').run(id, headUserId);
+  for (const u of UNITS_SEED) {
+    const headUserId = await makeUser(u.head, `Unit Head — ${u.name}`, 'unithead', 'unit', null);
+    const { lastInsertRowid: id } = await insertUnit.run(subIds[u.sub], u.name, u.head, 'Unit', headUserId);
+    await db.prepare('UPDATE users SET scope_id = ? WHERE id = ?').run(id, headUserId);
     unitIds[u.key] = id;
-  });
+  }
 
   const INDIVIDUALS_SEED = [
     { key: 'i1', unit: 'u9', name: 'T. Chikwanha', role: 'Programme Coordinator' },
@@ -149,12 +155,12 @@ const txn = db.transaction(() => {
     { key: 'i4', unit: 'u6', name: 'S. Chikafu', role: 'Systems Support Officer' },
   ];
   const individualIds = {};
-  INDIVIDUALS_SEED.forEach((ind) => {
-    const userId = makeUser(ind.name, ind.role, 'individual', 'individual', null);
-    const id = insertIndividual.run(unitIds[ind.unit], ind.name, ind.role, userId).lastInsertRowid;
-    db.prepare('UPDATE users SET scope_id = ? WHERE id = ?').run(id, userId);
+  for (const ind of INDIVIDUALS_SEED) {
+    const userId = await makeUser(ind.name, ind.role, 'individual', 'individual', null);
+    const { lastInsertRowid: id } = await insertIndividual.run(unitIds[ind.unit], ind.name, ind.role, userId);
+    await db.prepare('UPDATE users SET scope_id = ? WHERE id = ?').run(id, userId);
     individualIds[ind.key] = id;
-  });
+  }
 
   console.log('Seeding KPIs...');
   const insertKpi = db.prepare(
@@ -200,25 +206,35 @@ const txn = db.transaction(() => {
   ];
   const idMaps = { sub: subIds, unit: unitIds, individual: individualIds };
   const kpiIds = [];
-  KPIS_SEED.forEach(([ownerType, ownerKey, name, type, measure, baseline, target, isAutomated]) => {
+  for (const [ownerType, ownerKey, name, type, measure, baseline, target, isAutomated] of KPIS_SEED) {
     const ownerId = idMaps[ownerType][ownerKey];
-    const id = insertKpi.run(ownerType, ownerId, name, type, measure, baseline, target, isAutomated ? 1 : 0).lastInsertRowid;
+    const { lastInsertRowid: id } = await insertKpi.run(ownerType, ownerId, name, type, measure, baseline, target, isAutomated ? 1 : 0);
     kpiIds.push(id);
-  });
+  }
 
   console.log('Seeding a starter monthly value (current month, draft, empty) per KPI...');
   const insertValue = db.prepare(
     'INSERT INTO kpi_values (kpi_id, year, month, value, status) VALUES (?, ?, ?, NULL, \'draft\')'
   );
   const now = new Date();
-  kpiIds.forEach((id) => insertValue.run(id, now.getFullYear(), now.getMonth() + 1));
+  for (const id of kpiIds) await insertValue.run(id, now.getFullYear(), now.getMonth() + 1);
 
   console.log('Seeding audit log entries for setup...');
   const insertAudit = db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)');
-  insertAudit.run(ictId, 'seed', 'system', null, 'Database seeded with initial org structure, accounts, and KPIs.');
+  await insertAudit.run(ictId, 'seed', 'system', null, 'Database seeded with initial org structure, accounts, and KPIs.');
 
   console.log('Done. Demo login: any seeded email + password "' + DEMO_PASSWORD + '".');
   console.log('e.g. t.moyo@zou.ac.zw (CPU), l.chikomo@zou.ac.zw (ICT Admin), l.chareka@zou.ac.zw (VC / Executive Owner), f.museta@zou.ac.zw (University Council).');
 });
 
-txn();
+(async () => {
+  try {
+    await db.ready();
+    await txn();
+  } catch (err) {
+    console.error('Seeding failed:', err);
+    process.exitCode = 1;
+  } finally {
+    await db.close();
+  }
+})();

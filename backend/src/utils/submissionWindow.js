@@ -13,8 +13,8 @@
 //     until the next reporting month's own window opens.
 const db = require('../db');
 
-function getSubmissionWindowSettings() {
-  const rows = db.prepare("SELECT key, value FROM settings WHERE key IN ('submissionOpenDay', 'submissionCloseDay')").all();
+async function getSubmissionWindowSettings() {
+  const rows = await db.prepare("SELECT key, value FROM settings WHERE key IN ('submissionOpenDay', 'submissionCloseDay')").all();
   const s = {};
   rows.forEach((r) => { s[r.key] = Number(r.value); });
   return {
@@ -30,8 +30,8 @@ function parseUtc(s) { return s ? new Date(s.replace(' ', 'T') + 'Z') : null; }
 
 // The three boundary instants for one reporting (year, month), given the
 // admin's configured open/close days. `month` is 1-12.
-function windowBoundsFor(year, month, settings) {
-  const { submissionOpenDay, submissionCloseDay } = settings || getSubmissionWindowSettings();
+async function windowBoundsFor(year, month, settings) {
+  const { submissionOpenDay, submissionCloseDay } = settings || await getSubmissionWindowSettings();
   const opensAt = new Date(Date.UTC(year, month - 1, submissionOpenDay, 0, 0, 0));
   // Date.UTC's month arg is 0-based, so passing the 1-based `month` here
   // lands on day 0 of the FOLLOWING month, i.e. the last day of this one —
@@ -50,8 +50,8 @@ function windowBoundsFor(year, month, settings) {
 //   open     — on-time, within the reporting month itself.
 //   late     — after month-end but within the grace window; accepted, flagged.
 //   closed   — after the grace window; nothing may be submitted any more.
-function classify(year, month, at, settings) {
-  const { opensAt, monthEnd, closesAt } = windowBoundsFor(year, month, settings);
+async function classify(year, month, at, settings) {
+  const { opensAt, monthEnd, closesAt } = await windowBoundsFor(year, month, settings);
   let status;
   if (at < opensAt) status = 'not_open';
   else if (at <= monthEnd) status = 'open';
@@ -84,9 +84,9 @@ function resolveNow(req) {
 // right now?" — and by the frontend's own GET /kpis/submission-window so
 // the UI can disable Submit before ever making the attempt, not just after
 // a rejected request.
-function checkSubmissionWindow(year, month, req) {
-  const settings = getSubmissionWindowSettings();
-  return { ...classify(year, month, resolveNow(req), settings), settings };
+async function checkSubmissionWindow(year, month, req) {
+  const settings = await getSubmissionWindowSettings();
+  return { ...(await classify(year, month, resolveNow(req), settings)), settings };
 }
 
 // The SAME resolved "now" (real clock, or a test's X-Test-Now — see
@@ -108,10 +108,10 @@ function nowSqlString(req) {
 // way routes/compliance.js's own late-cutoff settings already are — an
 // admin's change applies uniformly rather than needing every historical
 // row re-stamped.) Returns false for anything not yet submitted.
-function wasLate(year, month, submittedAtStr) {
+async function wasLate(year, month, submittedAtStr) {
   const at = parseUtc(submittedAtStr);
   if (!at) return false;
-  return classify(year, month, at, getSubmissionWindowSettings()).status === 'late';
+  return (await classify(year, month, at, await getSubmissionWindowSettings())).status === 'late';
 }
 
 const MONTH_NAMES = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];

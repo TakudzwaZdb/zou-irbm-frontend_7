@@ -88,7 +88,7 @@ export default function Audit() {
           
           <div className="rounded-xl border border-line bg-surface overflow-x-auto max-h-[62vh] overflow-y-auto">
             <table className="w-full text-[12.6px] min-w-[640px]">
-              <thead className="sticky top-0">
+              <thead className="sticky top-0 z-10">
                 <tr className="bg-sunken text-[10.8px] uppercase tracking-wide text-ink-muted font-bold">
                   <Th>Time</Th><Th>User</Th><Th>Action</Th><Th>Entity</Th><Th>Detail</Th>
                 </tr>

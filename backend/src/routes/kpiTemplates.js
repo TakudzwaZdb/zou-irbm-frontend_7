@@ -15,8 +15,8 @@ router.use(requireAuth);
 // already works on it with zero special-casing, exactly like the shared-KPI
 // self-claim mechanism this replaces.
 
-function unitOr404(unitId, res) {
-  const unit = db.prepare('SELECT * FROM units WHERE id = ? AND deleted_at IS NULL').get(unitId);
+async function unitOr404(unitId, res) {
+  const unit = await db.prepare('SELECT * FROM units WHERE id = ? AND deleted_at IS NULL').get(unitId);
   if (!unit) { res.status(404).json({ error: 'Unit not found.' }); return null; }
   return unit;
 }
@@ -26,10 +26,10 @@ function unitOr404(unitId, res) {
 // `pickedCount` (how many individuals in that unit have already made it
 // theirs) so whoever created it can see real adoption, not just a static
 // definition sitting unused.
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   // Soft-removed templates (deleted_at set — see DELETE /:id below) drop out
   // of the active pool without their definition ever being destroyed.
-  const templates = db.prepare(
+  const templates = await db.prepare(
     `SELECT t.*, u.name AS unit_name,
        (SELECT COUNT(*) FROM kpis k WHERE k.template_id = t.id AND k.deleted_at IS NULL) AS picked_count
      FROM kpi_templates t JOIN units u ON u.id = t.unit_id
@@ -43,8 +43,8 @@ router.get('/', (req, res) => {
 // routes/kpis.js's GET /removed and routes/org.js's GET /api/org/removed,
 // scoped to this one catalog so whoever can create a template can also see
 // (and restore) one they or someone else just took out of the pool.
-router.get('/removed', requireAnyPerm('create_kpi', 'delete_kpi'), (req, res) => {
-  const templates = db.prepare(
+router.get('/removed', requireAnyPerm('create_kpi', 'delete_kpi'), async (req, res) => {
+  const templates = await db.prepare(
     `SELECT t.*, u.name AS unit_name
      FROM kpi_templates t JOIN units u ON u.id = t.unit_id
      WHERE t.deleted_at IS NOT NULL
@@ -58,22 +58,22 @@ router.get('/removed', requireAnyPerm('create_kpi', 'delete_kpi'), (req, res) =>
 // NOT create a live kpis row: nobody owns it yet, and nobody is on the hook
 // for entering data against it, until an actual person in that unit picks
 // it up below.
-router.post('/', requirePerm('create_kpi'), (req, res) => {
+router.post('/', requirePerm('create_kpi'), async (req, res) => {
   const { unitId, name, type, measure, baseline, target } = req.body || {};
   if (!unitId || !name || !type || !measure || baseline == null || target == null) {
     return res.status(400).json({ error: 'unitId, name, type, measure, baseline, and target are all required.' });
   }
-  const unit = unitOr404(unitId, res); if (!unit) return;
+  const unit = await unitOr404(unitId, res); if (!unit) return;
 
-  const id = db
+  const { lastInsertRowid: id } = await db
     .prepare('INSERT INTO kpi_templates (unit_id, name, type, measure, baseline, target, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(Number(unitId), name, type, measure, Number(baseline), Number(target), req.user.id).lastInsertRowid;
+    .run(Number(unitId), name, type, measure, Number(baseline), Number(target), req.user.id);
 
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'create_kpi_template', 'kpi_template', id,
     `KPI template "${name}" created for individuals in ${unit.name} (baseline ${baseline}, target ${target}).`
   );
-  res.status(201).json({ template: db.prepare('SELECT * FROM kpi_templates WHERE id = ?').get(id) });
+  res.status(201).json({ template: await db.prepare('SELECT * FROM kpi_templates WHERE id = ?').get(id) });
 });
 
 // Removing a template never touches anyone's already-instantiated personal
@@ -82,12 +82,12 @@ router.post('/', requirePerm('create_kpi'), (req, res) => {
 // picked it up yet. Nothing is destroyed: a deleted_at stamp, not a real
 // DELETE (see db.js's softDeleteTables), so the definition itself — name,
 // type, measure, baseline, target — stays intact and restorable below.
-router.delete('/:id', requireAnyPerm('create_kpi', 'delete_kpi'), (req, res) => {
-  const template = db.prepare('SELECT * FROM kpi_templates WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+router.delete('/:id', requireAnyPerm('create_kpi', 'delete_kpi'), async (req, res) => {
+  const template = await db.prepare('SELECT * FROM kpi_templates WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!template) return res.status(404).json({ error: 'Template not found.' });
 
-  db.prepare("UPDATE kpi_templates SET deleted_at = datetime('now') WHERE id = ?").run(template.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare("UPDATE kpi_templates SET deleted_at = datetime('now') WHERE id = ?").run(template.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'delete_kpi_template', 'kpi_template', template.id,
     `KPI template "${template.name}" removed from the pool. Nothing is deleted — it's recoverable from Recently Removed.`
   );
@@ -97,12 +97,12 @@ router.delete('/:id', requireAnyPerm('create_kpi', 'delete_kpi'), (req, res) => 
 // Restore a previously-removed template — clears deleted_at and it
 // reappears in the active pool exactly as it was, same pattern as every
 // other restore route in this app.
-router.post('/:id/restore', requireAnyPerm('create_kpi', 'delete_kpi'), (req, res) => {
-  const template = db.prepare('SELECT * FROM kpi_templates WHERE id = ? AND deleted_at IS NOT NULL').get(req.params.id);
+router.post('/:id/restore', requireAnyPerm('create_kpi', 'delete_kpi'), async (req, res) => {
+  const template = await db.prepare('SELECT * FROM kpi_templates WHERE id = ? AND deleted_at IS NOT NULL').get(req.params.id);
   if (!template) return res.status(404).json({ error: 'Removed template not found.' });
 
-  db.prepare('UPDATE kpi_templates SET deleted_at = NULL WHERE id = ?').run(template.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE kpi_templates SET deleted_at = NULL WHERE id = ?').run(template.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'restore_kpi_template', 'kpi_template', template.id, `KPI template "${template.name}" restored.`
   );
   res.json({ ok: true });
@@ -113,32 +113,32 @@ router.post('/:id/restore', requireAnyPerm('create_kpi', 'delete_kpi'), (req, re
 // does for a directly-created individual KPI (same initial draft
 // kpi_values row for the current period), just with owner_id set to the
 // picking Individual and template_id recorded for adoption tracking.
-router.post('/:id/pick', requirePerm('data_entry'), (req, res) => {
-  const template = db.prepare('SELECT * FROM kpi_templates WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+router.post('/:id/pick', requirePerm('data_entry'), async (req, res) => {
+  const template = await db.prepare('SELECT * FROM kpi_templates WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!template) return res.status(404).json({ error: 'Template not found.' });
   if (req.user.role !== 'individual') return res.status(403).json({ error: 'Only an Individual can pick up a KPI template.' });
 
-  const individual = db.prepare('SELECT * FROM individuals WHERE id = ?').get(req.user.scope_id);
+  const individual = await db.prepare('SELECT * FROM individuals WHERE id = ?').get(req.user.scope_id);
   if (!individual || individual.unit_id !== template.unit_id) {
     return res.status(403).json({ error: 'This KPI template was created for a different unit than your own.' });
   }
-  const already = db.prepare("SELECT 1 FROM kpis WHERE template_id = ? AND owner_type = 'individual' AND owner_id = ? AND deleted_at IS NULL").get(template.id, individual.id);
+  const already = await db.prepare("SELECT 1 FROM kpis WHERE template_id = ? AND owner_type = 'individual' AND owner_id = ? AND deleted_at IS NULL").get(template.id, individual.id);
   if (already) return res.status(400).json({ error: 'You have already added this KPI.' });
 
-  const pickTxn = db.transaction(() => {
-    const id = db
+  const pickTxn = db.transaction(async () => {
+    const { lastInsertRowid: id } = await db
       .prepare('INSERT INTO kpis (owner_type, owner_id, name, type, measure, baseline, target, template_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run('individual', individual.id, template.name, template.type, template.measure, template.baseline, template.target, template.id).lastInsertRowid;
+      .run('individual', individual.id, template.name, template.type, template.measure, template.baseline, template.target, template.id);
     const now = new Date();
-    db.prepare('INSERT INTO kpi_values (kpi_id, year, month, status) VALUES (?, ?, ?, \'draft\')').run(id, now.getFullYear(), now.getMonth() + 1);
+    await db.prepare('INSERT INTO kpi_values (kpi_id, year, month, status) VALUES (?, ?, ?, \'draft\')').run(id, now.getFullYear(), now.getMonth() + 1);
     return id;
   });
-  const id = pickTxn();
+  const id = await pickTxn();
 
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'pick_kpi_template', 'kpi', id, `Picked up "${template.name}" from ${individual.name}'s unit's KPI pool as a personal KPI.`
   );
-  res.status(201).json({ kpi: db.prepare('SELECT * FROM kpis WHERE id = ?').get(id) });
+  res.status(201).json({ kpi: await db.prepare('SELECT * FROM kpis WHERE id = ?').get(id) });
 });
 
 module.exports = router;

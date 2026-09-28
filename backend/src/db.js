@@ -1,51 +1,159 @@
-// Real, persistent SQLite database (file on disk) — not in-memory, not mocked.
-// Survives server restarts. Swap this module for pg/mysql2 later without
-// touching route logic much, since all access goes through this one module.
+// Real, persistent PostgreSQL database — replaces the earlier node:sqlite
+// (DatabaseSync) implementation so this app can run against a managed
+// database (e.g. Azure Database for PostgreSQL Flexible Server) instead of
+// a single file on local disk. Route files were written against
+// better-sqlite3/node:sqlite's synchronous `db.prepare(sql).get/all/run(...)`
+// shape, so this module reproduces that SAME shape — `.prepare()`, `.exec()`,
+// `.transaction()` — but every call now returns a Promise (Postgres access
+// is inherently async), which is why every route handler that touches the
+// database is `async` and every db call is `await`ed.
 //
-// Uses Node's built-in node:sqlite (no native addon to compile) instead of
-// better-sqlite3, so `npm install` never needs a C++ toolchain — this is
-// what used to fail on machines without build tools / without a prebuilt
-// binary for the local Node version. Requires Node.js 22.5+ (see README).
+// Connection: reads standard PG* env vars (PGHOST/PGPORT/PGUSER/PGPASSWORD/
+// PGDATABASE) or a single DATABASE_URL, whichever is set — see README/
+// AZURE_SETUP.md for exact values for local Postgres vs. Azure. Azure
+// Database for PostgreSQL Flexible Server requires TLS; set DB_SSL=true
+// (or include sslmode=require in DATABASE_URL) to enable it — local
+// Postgres needs neither.
 require('dotenv').config();
-const path = require('path');
-const fs = require('fs');
-const { DatabaseSync } = require('node:sqlite');
+const { Pool } = require('pg');
+const { AsyncLocalStorage } = require('node:async_hooks');
 
-const DB_FILE = process.env.DB_FILE || path.join(__dirname, '..', 'data', 'zou.db');
-fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
+const useSsl = process.env.DB_SSL === 'true'
+  || /sslmode=require/.test(process.env.DATABASE_URL || '');
 
-const db = new DatabaseSync(DB_FILE);
-db.exec('PRAGMA journal_mode = WAL');
-db.exec('PRAGMA foreign_keys = ON');
-// WAL mode allows unlimited concurrent readers but still only one writer at
-// a time — without this, a second process (server.js now runs one per CPU
-// core, see its WORKER_COUNT comment) that tries to write while another is
-// mid-transaction gets an immediate SQLITE_BUSY ("database is locked")
-// instead of waiting. This matters even though the primary process runs
-// every migration before any worker is forked: several statements below
-// (the permissions-catalog sync, a few `INSERT OR IGNORE` backfills) are
-// unconditional — they re-run on every process's require('./db'), not just
-// once — so two workers starting near-simultaneously can still collide on a
-// real write. 5s is comfortably longer than any single write here takes.
-db.exec('PRAGMA busy_timeout = 5000');
+const poolConfig = process.env.DATABASE_URL
+  ? { connectionString: process.env.DATABASE_URL }
+  : {
+    host: process.env.PGHOST || process.env.DB_HOST || '127.0.0.1',
+    port: Number(process.env.PGPORT || process.env.DB_PORT || 5432),
+    user: process.env.PGUSER || process.env.DB_USER || 'postgres',
+    password: process.env.PGPASSWORD || process.env.DB_PASSWORD || '',
+    database: process.env.PGDATABASE || process.env.DB_NAME || 'zou_irbm',
+  };
+if (useSsl) {
+  // rejectUnauthorized: false keeps this working out of the box against
+  // Azure's managed cert chain without bundling Azure's root CA — tighten
+  // this (ca: fs.readFileSync(...)) if your org's policy requires full
+  // chain verification. See AZURE_SETUP.md.
+  poolConfig.ssl = { rejectUnauthorized: false };
+}
+poolConfig.max = Number(process.env.DB_POOL_MAX || 5);
 
-// better-sqlite3-style transaction helper, since the rest of the codebase
-// (see seed.js) uses `const txn = db.transaction(fn); txn();`.
-db.transaction = function transaction(fn) {
-  return function (...args) {
-    db.exec('BEGIN');
+const pool = new Pool(poolConfig);
+pool.on('error', (err) => {
+  // A connection sitting idle in the pool can be dropped by the server
+  // (Azure Flexible Server recycles idle connections) — that must not
+  // crash the process; the pool transparently opens a new one on next use.
+  console.error('Postgres pool idle-client error (recovering):', err.message);
+});
+
+// Carries "the client for the currently-open transaction" across the whole
+// async call chain started inside db.transaction()'s callback, so nested
+// db.prepare(...).run() calls made from within it hit the SAME connection
+// (and therefore the same transaction) instead of grabbing an unrelated
+// connection from the pool — required for BEGIN/COMMIT/ROLLBACK to mean
+// anything.
+const als = new AsyncLocalStorage();
+function currentExecutor() {
+  return als.getStore() || pool;
+}
+
+// ---- SQLite -> Postgres SQL translation --------------------------------
+// Route files keep their original SQL text (positional `?` placeholders,
+// SQLite's `datetime('now')`, `INSERT OR IGNORE`) — translating it here
+// means the 400+ call sites across routes/*.js only need `await` + `async`,
+// not a rewrite of every SQL string.
+const NOW_UTC = "to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS')";
+// Tables whose primary key is not a single auto-incrementing `id` column —
+// `.run()` must not try to append `RETURNING id` for inserts into these.
+const NO_ID_TABLES = new Set(['permissions', 'role_definitions', 'user_permissions', 'role_permissions', 'settings']);
+
+const sqlCache = new Map();
+function translate(sql) {
+  let cached = sqlCache.get(sql);
+  if (cached) return cached;
+
+  let out = sql;
+  const isInsertOrIgnore = /^\s*INSERT\s+OR\s+IGNORE\s+INTO/i.test(out);
+  if (isInsertOrIgnore) {
+    out = out.replace(/^\s*INSERT\s+OR\s+IGNORE\s+INTO/i, 'INSERT INTO');
+  }
+  out = out.replace(/datetime\(\s*'now'\s*\)/gi, NOW_UTC);
+  let paramIndex = 0;
+  out = out.replace(/\?/g, () => `$${++paramIndex}`);
+  if (isInsertOrIgnore) {
+    out = `${out.replace(/;\s*$/, '')} ON CONFLICT DO NOTHING`;
+  }
+
+  const tableMatch = /^\s*INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)/i.exec(sql);
+  const insertTable = tableMatch ? tableMatch[1] : null;
+  const canReturnId = insertTable && !NO_ID_TABLES.has(insertTable) && !/\bRETURNING\b/i.test(out);
+
+  cached = { pgSql: out, canReturnId };
+  sqlCache.set(sql, cached);
+  return cached;
+}
+
+function cleanParams(params) {
+  return params.map((p) => (p === undefined ? null : p));
+}
+
+function prepare(sql) {
+  const { pgSql, canReturnId } = translate(sql);
+  const runSql = canReturnId ? `${pgSql.replace(/;\s*$/, '')} RETURNING id` : pgSql;
+
+  return {
+    async get(...params) {
+      const res = await currentExecutor().query(pgSql, cleanParams(params));
+      return res.rows[0];
+    },
+    async all(...params) {
+      const res = await currentExecutor().query(pgSql, cleanParams(params));
+      return res.rows;
+    },
+    async run(...params) {
+      const res = await currentExecutor().query(runSql, cleanParams(params));
+      return {
+        changes: res.rowCount,
+        lastInsertRowid: res.rows && res.rows[0] ? res.rows[0].id : undefined,
+      };
+    },
+  };
+}
+
+// Raw multi-statement / no-params execution — node-postgres's simple query
+// protocol (used automatically when a query has no parameters) runs a
+// semicolon-separated batch of statements in one round trip, same as
+// better-sqlite3's db.exec().
+async function exec(sql) {
+  const { pgSql } = translate(sql);
+  return currentExecutor().query(pgSql);
+}
+
+// better-sqlite3-style transaction helper (see seed.js: `const txn =
+// db.transaction(fn); await txn();`). Opens one real client for the whole
+// transaction and publishes it via AsyncLocalStorage so every db call made
+// from inside `fn` — however deeply nested — runs on that same connection.
+function transaction(fn) {
+  return async function transactionWrapper(...args) {
+    const client = await pool.connect();
     try {
-      const result = fn(...args);
-      db.exec('COMMIT');
+      await client.query('BEGIN');
+      const result = await als.run(client, () => fn(...args));
+      await client.query('COMMIT');
       return result;
     } catch (err) {
-      try { db.exec('ROLLBACK'); } catch (_) { /* ignore */ }
+      try { await client.query('ROLLBACK'); } catch (_) { /* connection already broken */ }
       throw err;
+    } finally {
+      client.release();
     }
   };
-};
+}
 
-db.exec(`
+// ---- Schema (final current-state shape — no migration history to replay,
+// since this is a fresh target database) --------------------------------
+const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS permissions (
   key TEXT PRIMARY KEY,
   label TEXT NOT NULL,
@@ -56,19 +164,46 @@ CREATE TABLE IF NOT EXISTS role_definitions (
   key TEXT PRIMARY KEY,
   label TEXT NOT NULL,
   built_in INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (${NOW_UTC})
 );
 
 CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
   title TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('exec','cpu','ictadmin','rep','unithead','individual')),
-  scope_type TEXT CHECK(scope_type IN ('sub','unit','individual') OR scope_type IS NULL),
+  -- Nullable: an account created with auth_provider='azure' (see
+  -- routes/org.js's POST /individuals and routes/auth.js's /azure/callback)
+  -- has no password at all — it signs in exclusively through Microsoft
+  -- Entra ID, matched on this row's email. Every other account keeps a
+  -- real bcrypt hash here, same as before.
+  password_hash TEXT,
+  role TEXT NOT NULL,
+  scope_type TEXT,
   scope_id INTEGER,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  avatar TEXT,
+  created_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  overview_limit TEXT,
+  is_executive_owner INTEGER NOT NULL DEFAULT 0,
+  token_version INTEGER NOT NULL DEFAULT 0,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
+  mfa_secret TEXT,
+  mfa_enabled INTEGER NOT NULL DEFAULT 0,
+  -- 'local' = signs in with the password above (routes/auth.js's POST
+  -- /login). 'azure' = no password is ever set for this account; it signs
+  -- in only via Microsoft Entra ID (POST /auth/azure/login ->
+  -- /auth/azure/callback), matched to this row by email (and, after a
+  -- first successful sign-in, by azure_oid below too). See the big
+  -- comment above POST /individuals in routes/org.js for why an Individual
+  -- account is always provisioned this way now.
+  auth_provider TEXT NOT NULL DEFAULT 'local',
+  -- Microsoft's stable per-account identifier (the 'oid' claim from Entra
+  -- ID's id_token) for an auth_provider='azure' row — recorded on that
+  -- account's first successful Microsoft sign-in so later sign-ins can be
+  -- matched even if the person's email address is later changed in Entra
+  -- ID. NULL until then; unused for auth_provider='local' rows.
+  azure_oid TEXT,
+  deleted_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS user_permissions (
@@ -77,41 +212,71 @@ CREATE TABLE IF NOT EXISTS user_permissions (
   PRIMARY KEY (user_id, permission_key)
 );
 
+CREATE TABLE IF NOT EXISTS role_permissions (
+  role_key TEXT NOT NULL REFERENCES role_definitions(key) ON DELETE CASCADE,
+  permission_key TEXT NOT NULL REFERENCES permissions(key),
+  PRIMARY KEY (role_key, permission_key)
+);
+
 CREATE TABLE IF NOT EXISTS programmes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
-  head TEXT NOT NULL
+  head TEXT NOT NULL,
+  head_user_id INTEGER REFERENCES users(id),
+  deleted_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS subs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   programme_id INTEGER NOT NULL REFERENCES programmes(id),
   name TEXT NOT NULL,
   head TEXT NOT NULL,
   unit_label TEXT NOT NULL DEFAULT 'Unit',
-  rep_user_id INTEGER REFERENCES users(id)
+  rep_user_id INTEGER REFERENCES users(id),
+  deleted_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS units (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   sub_id INTEGER NOT NULL REFERENCES subs(id),
   name TEXT NOT NULL,
   head TEXT NOT NULL,
   kind TEXT NOT NULL DEFAULT 'Unit',
   head_user_id INTEGER REFERENCES users(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  deleted_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS individuals (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  unit_id INTEGER NOT NULL REFERENCES units(id),
+  id SERIAL PRIMARY KEY,
+  -- Nullable: a 'default' role account (see routes/org.js's POST
+  -- /individuals) is deliberately created with no department/unit —
+  -- unit_id stays NULL for the life of that account, and every unit-scoped
+  -- query (cascadeSoftDeleteUnit's own lookup, the org tree, "Manage
+  -- individuals" panels) simply never matches it, which is exactly right:
+  -- it isn't part of any unit's structure.
+  unit_id INTEGER REFERENCES units(id),
   name TEXT NOT NULL,
   role_title TEXT NOT NULL,
-  user_id INTEGER REFERENCES users(id)
+  user_id INTEGER REFERENCES users(id),
+  deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS kpi_templates (
+  id SERIAL PRIMARY KEY,
+  unit_id INTEGER NOT NULL REFERENCES units(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL,
+  measure TEXT NOT NULL,
+  baseline REAL NOT NULL,
+  target REAL NOT NULL,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  deleted_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS kpis (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   owner_type TEXT NOT NULL CHECK(owner_type IN ('sub','unit','individual')),
   owner_id INTEGER NOT NULL,
   name TEXT NOT NULL,
@@ -120,28 +285,35 @@ CREATE TABLE IF NOT EXISTS kpis (
   baseline REAL NOT NULL,
   target REAL NOT NULL,
   is_automated INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  template_id INTEGER REFERENCES kpi_templates(id) ON DELETE SET NULL,
+  deleted_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS kpi_values (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   kpi_id INTEGER NOT NULL REFERENCES kpis(id) ON DELETE CASCADE,
   year INTEGER NOT NULL,
   month INTEGER NOT NULL,
   value REAL,
   override_value REAL,
   override_note TEXT,
-  status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','submitted','approved')),
+  status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','submitted','programme_approved','approved')),
   explanation TEXT,
+  entered_value REAL,
   submitted_at TEXT,
+  programme_approved_at TEXT,
   approved_at TEXT,
   return_comment TEXT,
+  override_cleared_value REAL,
+  override_cleared_note TEXT,
+  override_cleared_at TEXT,
   UNIQUE(kpi_id, year, month)
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts TEXT NOT NULL DEFAULT (datetime('now')),
+  id SERIAL PRIMARY KEY,
+  ts TEXT NOT NULL DEFAULT (${NOW_UTC}),
   user_id INTEGER REFERENCES users(id),
   action TEXT NOT NULL,
   entity TEXT NOT NULL,
@@ -154,16 +326,8 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
--- The annual planning & budget cycle — a real submission/approval cascade
--- like kpi_values, but for a Unit/Department/Faculty/Region's next-cycle
--- plan proposal (narrative + a requested budget figure). A Sub-programme's
--- and Programme's own rows never carry their own budget number — their
--- budget is always DERIVED (summed) from the real, entered figures of the
--- units beneath them; see routes/plans.js. owner_id is NULL only for the
--- single 'university' row per cycle_year (the compiled annual plan CPU
--- submits once every Programme is in).
 CREATE TABLE IF NOT EXISTS plan_proposals (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   cycle_year INTEGER NOT NULL,
   owner_type TEXT NOT NULL CHECK(owner_type IN ('unit','sub','programme','university')),
   owner_id INTEGER,
@@ -175,49 +339,26 @@ CREATE TABLE IF NOT EXISTS plan_proposals (
   return_comment TEXT
 );
 
--- A real, persisted queue of structural-change proposals (e.g. "split this
--- Sub-programme in two") — distinct from the immediate, direct org-unit
--- creation in POST /org/units. Nothing currently auto-actions an entry here
--- (there's no approval workflow wired to it, same as the reference
--- prototype this mirrors); it's a durable record of what's been proposed
--- and by whom, for CPU/exec to review manually.
 CREATE TABLE IF NOT EXISTS structural_proposals (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   scope TEXT NOT NULL CHECK(scope IN ('programme','sub')),
   text TEXT NOT NULL,
   created_by INTEGER REFERENCES users(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (${NOW_UTC})
 );
 
--- Delegates day-to-day data entry on ONE Unit-owned KPI to a specific
--- Individual within that unit — "this is one of your duties" — without
--- changing who owns or approves the KPI: the Unit remains the owner of
--- record and the Sub-programme Rep still approves it (see routes/kpis.js's
--- isOwner/isApprover), only who's allowed to enter and submit the monthly
--- value for it widens to include the assignee. Only a Unit Head may create
--- or remove an assignment, and only for KPIs their own unit owns.
 CREATE TABLE IF NOT EXISTS kpi_assignments (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   kpi_id INTEGER NOT NULL REFERENCES kpis(id) ON DELETE CASCADE,
   individual_id INTEGER NOT NULL REFERENCES individuals(id) ON DELETE CASCADE,
   assigned_by INTEGER REFERENCES users(id),
-  assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+  assigned_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  deleted_at TEXT,
   UNIQUE(kpi_id, individual_id)
 );
 
--- Each assignee's OWN monthly figure toward a shared Unit-owned KPI — e.g.
--- three advisors each assigned "Students Mentored", each filing their own
--- count. This is deliberately a separate table from kpi_values, not a
--- second writer racing to overwrite the same row: every assignee gets their
--- own row, their own draft/submitted/approved lifecycle, and their own
--- Unit Head review, exactly like a normal KPI submission but scoped one
--- level down. Approved contributions are summed automatically into the
--- Unit's own kpi_values row (see routes/kpis.js's recomputeUnitTotal) —
--- that sum is what the Unit Head then reviews and submits onward to the
--- Sub-programme Rep, same as any other Unit KPI. A KPI with no assignees
--- never touches this table at all; nothing changes for it.
 CREATE TABLE IF NOT EXISTS kpi_contributions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   kpi_id INTEGER NOT NULL REFERENCES kpis(id) ON DELETE CASCADE,
   individual_id INTEGER NOT NULL REFERENCES individuals(id) ON DELETE CASCADE,
   year INTEGER NOT NULL,
@@ -230,599 +371,125 @@ CREATE TABLE IF NOT EXISTS kpi_contributions (
   return_comment TEXT,
   UNIQUE(kpi_id, individual_id, year, month)
 );
-`);
 
-const roleDefinitions = [
+CREATE TABLE IF NOT EXISTS messages (
+  id SERIAL PRIMARY KEY,
+  sender_id INTEGER NOT NULL REFERENCES users(id),
+  subject TEXT NOT NULL,
+  body TEXT NOT NULL,
+  sent_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  sender_deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS message_recipients (
+  id SERIAL PRIMARY KEY,
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  recipient_id INTEGER NOT NULL REFERENCES users(id),
+  read_at TEXT,
+  deleted_at TEXT,
+  UNIQUE(message_id, recipient_id)
+);
+
+CREATE TABLE IF NOT EXISTS kpi_hidden (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kpi_id INTEGER NOT NULL REFERENCES kpis(id) ON DELETE CASCADE,
+  hidden_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  UNIQUE(user_id, kpi_id)
+);
+
+CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  used_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_kpi_values_period ON kpi_values(year, month);
+CREATE INDEX IF NOT EXISTS idx_kpi_contributions_period ON kpi_contributions(year, month);
+CREATE INDEX IF NOT EXISTS idx_message_recipients_recipient ON message_recipients(recipient_id);
+CREATE INDEX IF NOT EXISTS idx_mfa_recovery_codes_user ON mfa_recovery_codes(user_id);
+
+-- Appointment integrity: Individual accounts may repeat, but every other
+-- role may occur only once per organisation scope (partial unique indexes —
+-- supported identically in Postgres).
+CREATE UNIQUE INDEX IF NOT EXISTS users_unique_active_scoped_appointment
+  ON users (role, scope_type, scope_id)
+  WHERE deleted_at IS NULL AND role <> 'individual' AND scope_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS users_unique_active_global_appointment
+  ON users (role)
+  WHERE deleted_at IS NULL AND role <> 'individual' AND scope_id IS NULL;
+`;
+
+const BUILT_IN_ROLES = [
   ['exec', 'Executive'], ['cpu', 'Corporate Planning Unit'],
   ['ictadmin', 'ICT Systems Administrator'], ['rep', 'Sub-programme Rep'],
   ['unithead', 'Unit Head'], ['individual', 'Individual'],
   ['programme', 'Programme Head'], ['council', 'University Council'],
+  // A bare, scope-less, read-only account — see routes/org.js's POST
+  // /individuals. Not manually assignable via the ordinary role-change
+  // dropdowns (see frontend pages/Users.jsx's ROLES list, which
+  // deliberately omits it); the only way an account gets this role is
+  // through that specific creation flow.
+  ['default', 'Default (Read-only)'],
 ];
-const insertRoleDefinition = db.prepare('INSERT OR IGNORE INTO role_definitions (key, label, built_in) VALUES (?, ?, 1)');
-roleDefinitions.forEach(([key, label]) => insertRoleDefinition.run(key, label));
 
-// Migration: databases created before the profile-photo feature won't have
-// this column yet — CREATE TABLE IF NOT EXISTS above only applies to a
-// brand-new file, so add it here if it's missing from an existing one.
-// Stored as a data: URL (base64), the same "actually persisted, actually
-// served back" approach as everything else in this app — no external file
-// storage to configure for a reference implementation.
-const userColumns = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
-if (!userColumns.includes('avatar')) {
-  db.exec('ALTER TABLE users ADD COLUMN avatar TEXT');
-}
+let readyPromise = null;
+async function ensureSchema() {
+  await pool.query(SCHEMA_SQL);
 
-// Migration: allow 'programme' as a role/scope_type (Programme Head feature —
-// a real account tier that oversees one whole Programme). SQLite CHECK
-// constraints can't be altered with ALTER TABLE, so an existing database
-// (whose users table was created before this feature) needs a rebuild:
-// create the table with the widened CHECK, copy every row across unchanged,
-// swap it in. Only tables that still have the old fixed role CHECK can need
-// this migration; the later custom-role migration deliberately removes that
-// CHECK altogether, so looking only for the literal 'programme' would make
-// every worker rebuild an already-migrated table on startup.
-const usersSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get()?.sql || '';
-if (usersSql.includes('CHECK(role IN') && !usersSql.includes("'programme'")) {
-  console.log('Migrating users table to allow role/scope_type = "programme"...');
-  db.exec('PRAGMA foreign_keys = OFF');
-  db.exec(`
-    CREATE TABLE users_new (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      title TEXT NOT NULL,
-      email TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL CHECK(role IN ('exec','cpu','ictadmin','rep','unithead','individual','programme','council')),
-      scope_type TEXT CHECK(scope_type IN ('sub','unit','individual','programme') OR scope_type IS NULL),
-      scope_id INTEGER,
-      avatar TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    INSERT INTO users_new (id, name, title, email, password_hash, role, scope_type, scope_id, avatar, created_at)
-      SELECT id, name, title, email, password_hash, role, scope_type, scope_id, avatar, created_at FROM users;
-    DROP TABLE users;
-    ALTER TABLE users_new RENAME TO users;
-  `);
-  db.exec('PRAGMA foreign_keys = ON');
-}
+  // Idempotent widen: individuals.unit_id used to be NOT NULL — a 'default'
+  // role account (see routes/org.js) is created with no unit at all, so a
+  // database created before that feature existed needs this dropped once.
+  // A no-op (no error) if it's already nullable.
+  await pool.query('ALTER TABLE individuals ALTER COLUMN unit_id DROP NOT NULL');
 
-// Migration: a Programme's own account holder (the Programme Head login),
-// mirroring units.head_user_id / subs.rep_user_id — display-only, just like
-// those two (see lib/scope.js's own scope-based ownership checks, which
-// never trust these reference columns for authorization).
-const programmeColumns = db.prepare('PRAGMA table_info(programmes)').all().map((c) => c.name);
-if (!programmeColumns.includes('head_user_id')) {
-  db.exec('ALTER TABLE programmes ADD COLUMN head_user_id INTEGER REFERENCES users(id)');
-}
+  // Idempotent widen/backfill for the same reason: a database created before
+  // Entra ID / auth_provider existed needs password_hash relaxed and the two
+  // new columns added once. All four statements are no-ops on a database
+  // that already has them (IF NOT EXISTS / already-nullable).
+  await pool.query('ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL');
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT NOT NULL DEFAULT 'local'");
+  await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS azure_oid TEXT');
 
-// Internal messaging — a real, persisted communication channel that works
-// across every tier (Individual <-> Unit Head <-> Sub Rep <-> Programme
-// Head <-> CPU <-> Exec <-> ICT Admin), not simulated: genuine rows, genuine
-// read/unread state, genuine recipients resolved from the same users table
-// everything else in the app uses. There's no outbound SMTP/email-delivery
-// service configured for this reference deployment (same reasoning as the
-// admin-assisted password reset in routes/users.js), so this is the actual,
-// working "email system" — an in-app inbox addressed by each account's real
-// @zou.ac.zw email — rather than a fake "sent!" toast with nowhere for a
-// real email to go.
-db.exec(`
-CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  sender_id INTEGER NOT NULL REFERENCES users(id),
-  subject TEXT NOT NULL,
-  body TEXT NOT NULL,
-  sent_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+  const insertRole = prepare('INSERT OR IGNORE INTO role_definitions (key, label, built_in) VALUES (?, ?, 1)');
+  for (const [key, label] of BUILT_IN_ROLES) {
+    // eslint-disable-next-line no-await-in-loop
+    await insertRole.run(key, label);
+  }
 
-CREATE TABLE IF NOT EXISTS message_recipients (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-  recipient_id INTEGER NOT NULL REFERENCES users(id),
-  read_at TEXT,
-  UNIQUE(message_id, recipient_id)
-);
-`);
-
-// Migration: per-participant message deletion — like real email, deleting a
-// message only ever removes YOUR OWN copy of it, never the other side's.
-// `messages.sender_deleted_at` is the sender clearing it from their own
-// Sent; `message_recipients.deleted_at` is one specific recipient clearing
-// it from their own Inbox — the same message can be gone from the sender's
-// Sent while still sitting, unread or read, in three other people's
-// Inboxes. See routes/messages.js's DELETE /:id for the actual purge logic
-// (a message is only ever hard-deleted once every participant — sender AND
-// every recipient — has cleared their own copy).
-const messageColumns = db.prepare('PRAGMA table_info(messages)').all().map((c) => c.name);
-if (!messageColumns.includes('sender_deleted_at')) {
-  db.exec('ALTER TABLE messages ADD COLUMN sender_deleted_at TEXT');
-}
-const recipientColumns = db.prepare('PRAGMA table_info(message_recipients)').all().map((c) => c.name);
-if (!recipientColumns.includes('deleted_at')) {
-  db.exec('ALTER TABLE message_recipients ADD COLUMN deleted_at TEXT');
-}
-
-// A purely personal display preference: any signed-in person, at any tier,
-// can mark a KPI they see in an exploratory/browsing view (Overview's
-// drill-down) as not relevant to them, decluttering their OWN view of it
-// going forward — this
-// never touches the KPI itself, never affects what any other person sees,
-// and is never consulted by an accountability list (My Data Entry's own
-// owned/assigned KPIs, Approvals Queue's pending items): those always show
-// in full regardless of this table, so hiding something can never be used
-// to dodge a real duty. See routes/kpis.js's GET/POST/DELETE /hidden.
-db.exec(`
-CREATE TABLE IF NOT EXISTS kpi_hidden (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  kpi_id INTEGER NOT NULL REFERENCES kpis(id) ON DELETE CASCADE,
-  hidden_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(user_id, kpi_id)
-);
-`);
-
-// A KPI "template" — created once against a Unit rather than one named
-// person, so whoever creates KPIs doesn't have to make an identical
-// owner_type='individual' KPI per staff member. Anyone in that Unit can
-// then pick it up for themselves (see routes/kpiTemplates.js's POST
-// :id/pick), which INSTANTIATES their own real, independent kpis row
-// (owner_type='individual', owner_id=their own individuals.id) — not a
-// shared/summed figure like a Unit-owned KPI's contributors. This is what
-// replaced individual self-claim of Unit-owned KPIs: an Individual now only
-// ever sees KPIs genuinely created for individuals (this pool, scoped to
-// their own unit) rather than being offered their whole Unit's own
-// aggregate KPI to volunteer into.
-db.exec(`
-CREATE TABLE IF NOT EXISTS kpi_templates (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  unit_id INTEGER NOT NULL REFERENCES units(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  type TEXT NOT NULL,
-  measure TEXT NOT NULL,
-  baseline REAL NOT NULL,
-  target REAL NOT NULL,
-  created_by INTEGER REFERENCES users(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-`);
-
-// Links a real, live individual-owned KPI (kpis.id) back to the template it
-// was picked from, if any — lets the template's creator see real adoption
-// ("3 of 8 in this unit have picked this up") and lets the pick route check
-// "have I already picked this one" without a separate join table. Nullable
-// and ON DELETE SET NULL: deleting the template later never deletes anyone's
-// already-instantiated personal KPI, it just detaches the link.
-const kpiColumns = db.prepare('PRAGMA table_info(kpis)').all().map((c) => c.name);
-if (!kpiColumns.includes('template_id')) {
-  db.exec('ALTER TABLE kpis ADD COLUMN template_id INTEGER REFERENCES kpi_templates(id) ON DELETE SET NULL');
-}
-
-// Automated cumulative performance: what a submitter actually typed for
-// ONE period — this period's own contribution on its own, never a running
-// total — kept separate from kpi_values.value, which stays "the official
-// cumulative total as of this period" exactly as every existing reader
-// (RAG, the monthly pace tracker, Reports, the Annual Plan PDF, variance)
-// already expects it to mean. See routes/kpis.js's previousOfficialValue /
-// POST :id/approve: the moment a period is approved, value is recomputed
-// as the previous period's own official value (or the KPI's baseline, for
-// the very first one ever) PLUS this period's entered_value — so nobody
-// has to remember or re-type a running total by hand, and nothing counts
-// as official until an approver has actually signed off on it.
-const kpiValueColumns = db.prepare('PRAGMA table_info(kpi_values)').all().map((c) => c.name);
-if (!kpiValueColumns.includes('entered_value')) {
-  db.exec('ALTER TABLE kpi_values ADD COLUMN entered_value REAL');
-}
-
-// Clearing a manual override used to just NULL override_value/override_note
-// outright — the one place left in this app where a real, user-entered
-// figure (and the reason someone typed for it) was genuinely destroyed with
-// no way back, unlike everything else here (see the softDeleteTables
-// rationale below). These three columns give it the same shadow-and-restore
-// shape as every other removal: DELETE /:id/override (routes/kpis.js) now
-// copies the live override_value/override_note into these _cleared columns
-// and stamps override_cleared_at BEFORE nulling the live ones, instead of
-// just discarding them, and POST /:id/override/restore copies them straight
-// back and clears this shadow — so "clear override" is a real, reversible
-// action, not a quiet data loss, right up until someone applies a genuinely
-// new override over it (which retires the old shadow, the same way a fresh
-// value supersedes stale history everywhere else in this app).
-const kpiValueOverrideColumns = db.prepare('PRAGMA table_info(kpi_values)').all().map((c) => c.name);
-if (!kpiValueOverrideColumns.includes('override_cleared_value')) {
-  db.exec('ALTER TABLE kpi_values ADD COLUMN override_cleared_value REAL');
-}
-if (!kpiValueOverrideColumns.includes('override_cleared_note')) {
-  db.exec('ALTER TABLE kpi_values ADD COLUMN override_cleared_note TEXT');
-}
-if (!kpiValueOverrideColumns.includes('override_cleared_at')) {
-  db.exec('ALTER TABLE kpi_values ADD COLUMN override_cleared_at TEXT');
-}
-
-// Migration: widen the users.role CHECK to also allow 'council' — the
-// University Council's own account tier, which validates/approves the
-// compiled University Annual Plan before it takes effect (see
-// routes/plans.js's POST /university/approve|return). Same rebuild
-// technique as the earlier 'programme' migration above (SQLite CHECK
-// constraints can't be altered in place), detected the same way — by
-// looking at the table's own stored CREATE TABLE text. Only a table that
-// still has the fixed role CHECK can need this rebuild; once the later
-// custom-role migration has removed that CHECK, workers must leave it alone.
-const usersSqlForCouncil = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get()?.sql || '';
-if (usersSqlForCouncil.includes('CHECK(role IN') && !usersSqlForCouncil.includes("'council'")) {
-  console.log('Migrating users table to allow role = "council"...');
-  db.exec('PRAGMA foreign_keys = OFF');
-  db.exec(`
-    CREATE TABLE users_new2 (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      title TEXT NOT NULL,
-      email TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL CHECK(role IN ('exec','cpu','ictadmin','rep','unithead','individual','programme','council')),
-      scope_type TEXT CHECK(scope_type IN ('sub','unit','individual','programme') OR scope_type IS NULL),
-      scope_id INTEGER,
-      avatar TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    INSERT INTO users_new2 (id, name, title, email, password_hash, role, scope_type, scope_id, avatar, created_at)
-      SELECT id, name, title, email, password_hash, role, scope_type, scope_id, avatar, created_at FROM users;
-    DROP TABLE users;
-    ALTER TABLE users_new2 RENAME TO users;
-  `);
-  db.exec('PRAGMA foreign_keys = ON');
-}
-
-// Migration: per-account cap on how deep Overview's Programme -> Sub-
-// programme -> Unit -> Individual drill-down may go for THIS account —
-// 'programme' | 'sub' | 'unit' | NULL (NULL/unset = no cap, the full
-// structure all the way to Individual). This is deliberately independent
-// of role/permissions: it's a visibility ceiling ICT admin can place on top
-// of whatever a role would otherwise see (see routes/users.js's PATCH
-// /:id/overview-limit), for accounts that should see the organisational
-// picture down to a point without reaching individual-level personal
-// performance detail. Enforced in the frontend's Overview drill-down
-// (lib/scope.js's canDrillToKind) — a navigation restriction on the
-// exploratory browsing view, not a data-access change to any of the
-// accountability surfaces (My Data Entry / Approvals Queue / alerts),
-// which never consult it.
-const usersColumnsForLimit = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
-if (!usersColumnsForLimit.includes('overview_limit')) {
-  db.exec('ALTER TABLE users ADD COLUMN overview_limit TEXT');
-}
-
-// Migration: marks the ONE account that is this university's Executive
-// Owner — accountable for overall institutional performance against the
-// Plan (see routes/org.js's GET / exposing whoever holds this, and
-// Overview.jsx's "Overall Institutional Performance" card). Deliberately a
-// single-holder flag, not a role: it's an accountability designation ICT
-// admin assigns to a real exec account (ordinarily the Vice Chancellor),
-// separate from what that account can actually click or edit. See
-// routes/users.js's PATCH /:id/executive-owner, which clears it from any
-// other account before setting it on the new one.
-if (!usersColumnsForLimit.includes('is_executive_owner')) {
-  db.exec('ALTER TABLE users ADD COLUMN is_executive_owner INTEGER NOT NULL DEFAULT 0');
-}
-
-// Migration: widen kpi_values.status to also allow 'programme_approved' —
-// the new intermediate stage a Sub-programme's own KPI submission passes
-// through on its way to CPU. Individual- and Unit-owned KPIs stay
-// single-stage (submitted -> approved, straight to their one real
-// approver) exactly as before; only a Sub-programme's OWN KPIs (owner_type
-// = 'sub') now go submitted -> programme_approved -> approved: the Sub
-// Rep's own Programme Head reviews it first (see routes/kpis.js's
-// isApprover), and only once THEY approve does it move on to CPU for the
-// real, final sign-off that also computes the new cumulative value (see
-// previousOfficialValue / POST :id/approve) — a Sub-owned KPI is never
-// "official" on the strength of the Programme Head's approval alone. Same
-// SQLite CHECK-constraint rebuild technique as the 'council' role
-// migration above (CHECK constraints can't be altered in place), detected
-// the same way by inspecting the table's own stored CREATE TABLE text, so
-// this runs at most once per database and no-ops on a fresh one.
-const kpiValuesSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='kpi_values'").get()?.sql || '';
-if (!kpiValuesSql.includes("'programme_approved'")) {
-  console.log('Migrating kpi_values table to allow status = "programme_approved"...');
-  db.exec('PRAGMA foreign_keys = OFF');
-  db.exec(`
-    CREATE TABLE kpi_values_new (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      kpi_id INTEGER NOT NULL REFERENCES kpis(id) ON DELETE CASCADE,
-      year INTEGER NOT NULL,
-      month INTEGER NOT NULL,
-      value REAL,
-      override_value REAL,
-      override_note TEXT,
-      status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','submitted','programme_approved','approved')),
-      explanation TEXT,
-      entered_value REAL,
-      submitted_at TEXT,
-      programme_approved_at TEXT,
-      approved_at TEXT,
-      return_comment TEXT,
-      UNIQUE(kpi_id, year, month)
-    );
-    INSERT INTO kpi_values_new (id, kpi_id, year, month, value, override_value, override_note, status, explanation, entered_value, submitted_at, approved_at, return_comment)
-      SELECT id, kpi_id, year, month, value, override_value, override_note, status, explanation, entered_value, submitted_at, approved_at, return_comment FROM kpi_values;
-    DROP TABLE kpi_values;
-    ALTER TABLE kpi_values_new RENAME TO kpi_values;
-  `);
-  db.exec('PRAGMA foreign_keys = ON');
-}
-
-// Migration: the 'programme_approved' intermediate stage above has since
-// been retired by deliberate request — a Sub-programme's own KPI
-// submission is now approved once, finally, by its own Programme Head,
-// with no further CPU sign-off (see routes/kpis.js's isApprover and
-// POST :id/approve). The status value and its column stay in the schema
-// above for backward compatibility with old audit history, but no new row
-// is ever written into it again. This finalizes any row that happens to
-// still be sitting at that now-retired status from before the change,
-// computing its official cumulative value the exact same way
-// POST :id/approve always has (previous period's total + this period's
-// own entered figure), so a legacy row doesn't sit forever half-approved
-// and invisible to its Programme's own performance rollup. Idempotent —
-// the WHERE clause only ever matches a row still at 'programme_approved',
-// so this is a genuine no-op on every run once it's cleared them all (and
-// a live check of this app's own seeded database found zero such rows —
-// this is a defensive correctness measure, not a fix for an active
-// problem).
-{
-  const legacyRows = db.prepare("SELECT * FROM kpi_values WHERE status = 'programme_approved'").all();
-  if (legacyRows.length > 0) {
-    console.log(`Finalizing ${legacyRows.length} legacy kpi_values row(s) stuck at the retired 'programme_approved' status...`);
-    for (const row of legacyRows) {
-      const kpi = db.prepare('SELECT * FROM kpis WHERE id = ?').get(row.kpi_id);
-      if (kpi && !kpi.is_automated && row.entered_value != null) {
-        const priorRow = db.prepare(
-          `SELECT value, override_value FROM kpi_values
-           WHERE kpi_id = ? AND value IS NOT NULL AND (year < ? OR (year = ? AND month < ?))
-           ORDER BY year DESC, month DESC LIMIT 1`
-        ).get(row.kpi_id, row.year, row.year, row.month);
-        const base = priorRow ? (priorRow.override_value != null ? priorRow.override_value : priorRow.value) : kpi.baseline;
-        const newValue = base + Number(row.entered_value);
-        db.prepare('UPDATE kpi_values SET value = ?, status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(newValue, row.id);
-      } else {
-        db.prepare('UPDATE kpi_values SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
-      }
-      db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-        null, 'approve', 'kpi', row.kpi_id,
-        `${row.year}-${String(row.month).padStart(2, '0')} automatically finalized to 'approved' — the intermediate 'programme_approved' stage it was left at was retired (Programme Head approval is now final; no CPU sign-off applies).`
-      );
+  // Keep the `permissions` catalog and each built-in role's default grants
+  // in sync with utils/permissions.js — idempotent, safe to run on every
+  // process start (mirrors what the old SQLite db.js did unconditionally).
+  const { PERMISSIONS, defaultPermsForRole } = require('./utils/permissions');
+  const insertPerm = prepare('INSERT OR IGNORE INTO permissions (key, label, group_name) VALUES (?, ?, ?)');
+  for (const p of PERMISSIONS) {
+    // eslint-disable-next-line no-await-in-loop
+    await insertPerm.run(p.key, p.label, p.group);
+  }
+  const insertRolePerm = prepare('INSERT OR IGNORE INTO role_permissions (role_key, permission_key) VALUES (?, ?)');
+  for (const [roleKey] of BUILT_IN_ROLES) {
+    // eslint-disable-next-line no-await-in-loop
+    for (const permKey of defaultPermsForRole(roleKey)) {
+      // eslint-disable-next-line no-await-in-loop
+      await insertRolePerm.run(roleKey, permKey);
     }
   }
 }
 
-// Backfill: grant 'approve_own_tier' to every already-seeded Programme Head
-// account. Permissions live per-user in `user_permissions`, populated only
-// once at seed time from DEFAULT_PERMS_BY_ROLE (see utils/permissions.js) —
-// a database seeded BEFORE this feature existed has Programme Head accounts
-// with no row for this permission at all, even though the role's default
-// set now includes it, so without this backfill every Programme Head would
-// get a real 403 trying to use the Approvals Queue this feature just gave
-// them a nav item for. Idempotent (INSERT OR IGNORE — the (user_id,
-// permission_key) primary key makes a re-run a no-op) and harmless on a
-// freshly-seeded database, where seed.js already granted this directly.
-db.exec(`
-  INSERT OR IGNORE INTO user_permissions (user_id, permission_key)
-  SELECT id, 'approve_own_tier' FROM users WHERE role = 'programme'
-`);
-
-// Keep the `permissions` catalog table in sync with utils/permissions.js's
-// PERMISSIONS list. seed.js only ever inserts these once, at seed time — a
-// database seeded before a new permission was added to that list has no row
-// for it at all, and `user_permissions.permission_key` is a real foreign
-// key against this table, so granting that permission to anyone (by a
-// backfill below, or by ICT admin in Settings) would fail outright without
-// this. Idempotent (INSERT OR IGNORE on the `key` primary key).
-{
-  const { PERMISSIONS } = require('./utils/permissions');
-  const insertPerm = db.prepare('INSERT OR IGNORE INTO permissions (key, label, group_name) VALUES (?, ?, ?)');
-  PERMISSIONS.forEach((p) => insertPerm.run(p.key, p.label, p.group));
+// Call (and await) once before serving traffic — see server.js. Memoized so
+// every module that requires('./db') and calls ready() shares the same
+// in-flight/completed schema setup rather than racing separate CREATE
+// TABLE statements (CREATE TABLE IF NOT EXISTS is idempotent regardless,
+// but this avoids redundant round-trips).
+function ready() {
+  if (!readyPromise) readyPromise = ensureSchema();
+  return readyPromise;
 }
 
-// Backfill: grant the new 'view_institutional_performance' permission to
-// every already-seeded account whose role automatically had unconditional
-// access to the university-wide "Overall Institutional Performance" view
-// before this permission existed (exec/cpu/ictadmin/council — see
-// pages/Overview.jsx / components/OrgTree.jsx and DEFAULT_PERMS_BY_ROLE).
-// Without this, every existing account in those four roles would suddenly
-// lose access to a view they always had the instant this feature ships,
-// rather than ICT admin making a deliberate choice to keep or revoke it —
-// this backfill preserves today's real access as the starting point for
-// that choice, exactly like the approve_own_tier backfill above.
-db.exec(`
-  INSERT OR IGNORE INTO user_permissions (user_id, permission_key)
-  SELECT id, 'view_institutional_performance' FROM users WHERE role IN ('exec', 'cpu', 'ictadmin', 'council')
-`);
-
-// Migration: real, server-enforced session revocation for an otherwise
-// stateless JWT (see SECURITY_REVIEW.md's finding #6). Every token minted at
-// login carries the account's token_version at that moment (see routes/
-// auth.js's /login); middleware/auth.js's requireAuth rejects any token
-// whose embedded version no longer matches this column. Bumping it —
-// on a password change, an admin-driven password reset, or the self-service
-// "sign out everywhere" action — instantly invalidates every token issued
-// before that bump, without waiting out its 12h expiry.
-const usersColumnsForSecurity = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
-if (!usersColumnsForSecurity.includes('token_version')) {
-  db.exec('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0');
+async function close() {
+  await pool.end();
 }
 
-// Migration: forces a real password change before an account can do
-// anything else (see SECURITY_REVIEW.md's finding #1 — no more accounts
-// left indefinitely on a shared, predictable password). Set to 1 whenever
-// ICT admin provisions a new Unit Head / Individual account or resets
-// someone's password (see routes/org.js, routes/users.js's reset-password),
-// each of which now generates a real random temporary password rather than
-// a shared default. requireAuth (middleware/auth.js) blocks every route
-// except GET /api/auth/me and POST /api/auth/change-password while this is
-// set, so it's a real gate, not just a frontend nudge. Existing seeded demo
-// accounts are deliberately left at the default 0 — the seeded password is
-// openly documented on the sign-in screen for evaluating this build, not a
-// production credential (see README's "What's simplified" section).
-if (!usersColumnsForSecurity.includes('must_change_password')) {
-  db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
-}
-
-// Migration: soft-delete columns for Programmes/Sub-programmes/Units/
-// Individuals/KPIs/Users. "Remove" on any of these (routes/org.js,
-// routes/kpis.js's DELETE /:id) used to be a genuine, irreversible SQL
-// DELETE — the row, and everything under it, was really gone, with only a
-// count-of-what-was-removed left behind in the audit log. That's real data
-// loss: a Unit removed by mistake took every KPI value ever recorded
-// against it with it, permanently. `deleted_at` (NULL = active, a
-// timestamp = removed) turns every one of those actions into a stamp
-// instead of a deletion — the row, and its full history, stays in the
-// database exactly as it was; every query that lists "the current org" or
-// "the current KPI catalogue" filters `deleted_at IS NULL` so a removed
-// item stops appearing anywhere active, and a real POST .../restore route
-// clears the stamp (see routes/org.js and routes/kpis.js) rather than
-// requiring a database restore. `users.deleted_at` is the same idea
-// applied to a login account tied to a removed Programme/Sub/Unit/
-// Individual: the account is deactivated (can no longer sign in — see
-// routes/auth.js's POST /login) rather than deleted, so its own history
-// (audit_log entries, messages sent/received, past KPI submissions) never
-// loses its real author.
-// kpi_templates and kpi_assignments joined this list after the rest —
-// removing a template used to be a real DELETE (the definition just gone,
-// no restore), and unassigning someone from a shared KPI used to be a real
-// DELETE FROM kpi_assignments too (losing not just the membership but who
-// assigned them and when — assigned_by/assigned_at). Same treatment as
-// every other table here now: a stamp, not a deletion, with a matching
-// restore route (see kpiTemplates.js's DELETE/:id/restore and kpis.js's
-// DELETE/POST .../assign, which restores rather than re-inserting when a
-// soft-removed assignment already exists for that kpi_id + individual_id —
-// re-inserting would collide with the UNIQUE(kpi_id, individual_id)
-// constraint the deleted_at-stamped row still occupies).
-const softDeleteTables = ['programmes', 'subs', 'units', 'individuals', 'kpis', 'users', 'kpi_templates', 'kpi_assignments'];
-softDeleteTables.forEach((table) => {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
-  if (!cols.includes('deleted_at')) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN deleted_at TEXT`);
-  }
-});
-
-// Appointment integrity: Individual accounts may be repeated, but every
-// other role may occur only once for the same organisation scope. Repair any
-// old duplicate rows before creating the database-level backstop. The first
-// active account keeps the appointment; duplicate accounts are demoted to
-// Individual rather than deleted.
-const duplicateAppointments = db.prepare(`
-  SELECT role, scope_type, scope_id, GROUP_CONCAT(id) AS ids
-  FROM users
-  WHERE deleted_at IS NULL AND role <> 'individual'
-  GROUP BY role, scope_type, scope_id
-  HAVING COUNT(*) > 1
-`).all();
-duplicateAppointments.forEach(({ ids }) => {
-  const userIds = String(ids).split(',').map(Number);
-  userIds.slice(1).forEach((userId) => {
-    db.prepare("UPDATE users SET role = 'individual', title = 'Individual', scope_type = 'individual', scope_id = NULL WHERE id = ?").run(userId);
-    db.prepare('UPDATE programmes SET head_user_id = NULL WHERE head_user_id = ?').run(userId);
-    db.prepare('UPDATE subs SET rep_user_id = NULL WHERE rep_user_id = ?').run(userId);
-    db.prepare('UPDATE units SET head_user_id = NULL WHERE head_user_id = ?').run(userId);
-  });
-});
-db.exec(`
-  CREATE UNIQUE INDEX IF NOT EXISTS users_unique_active_scoped_appointment
-  ON users (role, scope_type, scope_id)
-  WHERE deleted_at IS NULL AND role <> 'individual' AND scope_id IS NOT NULL;
-  CREATE UNIQUE INDEX IF NOT EXISTS users_unique_active_global_appointment
-  ON users (role)
-  WHERE deleted_at IS NULL AND role <> 'individual' AND scope_id IS NULL;
-`);
-
-// Migration: optional, self-contained TOTP-based MFA per account (see
-// utils/totp.js) — a real second factor an account can opt into, verified
-// on login the same way any authenticator-app-based site does, with no
-// external SMS/email service behind it (this app has neither — see
-// auth.js's own honest "forgot password" route). mfa_secret is written at
-// POST /auth/mfa/setup time but stays inert (mfa_enabled = 0) until the
-// person proves they actually scanned it by submitting one real generated
-// code back to POST /auth/mfa/enable — the same "prove receipt before it's
-// live" shape as the recovery-code table below. Disabling (self-service
-// with the current password, or an ictadmin-assisted reset for a lost
-// device — see routes/auth.js and routes/users.js) clears both mfa_secret
-// and mfa_enabled together, never leaves a stale secret behind.
-const usersColumnsForMfa = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
-if (!usersColumnsForMfa.includes('mfa_secret')) {
-  db.exec('ALTER TABLE users ADD COLUMN mfa_secret TEXT');
-}
-if (!usersColumnsForMfa.includes('mfa_enabled')) {
-  db.exec('ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0');
-}
-
-// Custom role definitions are valid user roles too. Older databases used a
-// fixed CHECK constraint, so rebuild that table once after all user columns
-// have been added and preserved.
-const roleConstraintSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get()?.sql || '';
-if (roleConstraintSql.includes('CHECK(role IN')) {
-  db.exec('PRAGMA foreign_keys = OFF');
-  db.exec(`
-    CREATE TABLE users_roles_new (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      title TEXT NOT NULL,
-      email TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL,
-      scope_type TEXT,
-      scope_id INTEGER,
-      avatar TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      overview_limit TEXT,
-      is_executive_owner INTEGER NOT NULL DEFAULT 0,
-      token_version INTEGER NOT NULL DEFAULT 0,
-      must_change_password INTEGER NOT NULL DEFAULT 0,
-      mfa_secret TEXT,
-      mfa_enabled INTEGER NOT NULL DEFAULT 0,
-      deleted_at TEXT
-    );
-    INSERT INTO users_roles_new (id, name, title, email, password_hash, role, scope_type, scope_id, avatar, created_at, overview_limit, is_executive_owner, token_version, must_change_password, mfa_secret, mfa_enabled, deleted_at)
-      SELECT id, name, title, email, password_hash, role, scope_type, scope_id, avatar, created_at, overview_limit, is_executive_owner, token_version, must_change_password, mfa_secret, mfa_enabled, deleted_at FROM users;
-    DROP TABLE users;
-    ALTER TABLE users_roles_new RENAME TO users;
-  `);
-  db.exec('PRAGMA foreign_keys = ON');
-}
-
-// A one-time recovery code exists so losing an authenticator device (phone
-// lost/replaced/wiped) doesn't necessarily need ICT admin's help to
-// recover — the same reasoning a bank or any real MFA implementation
-// applies. Ten single-use codes are generated at enable time (see
-// routes/auth.js's POST /mfa/enable) and shown to the person exactly once;
-// only their bcrypt hash is ever persisted (mirrors password_hash — a
-// leaked database row still can't be used to sign in), and used_at marks a
-// code spent without ever deleting the row, so "which codes has this
-// account already burned" stays a real, auditable fact rather than
-// disappearing the moment a code is used.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    code_hash TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    used_at TEXT
-  )
-`);
-db.exec('CREATE INDEX IF NOT EXISTS idx_mfa_recovery_codes_user ON mfa_recovery_codes(user_id)');
-
-// Indexes: every PRIMARY KEY and UNIQUE constraint above is already
-// auto-indexed by SQLite, but three real queries filter on columns that
-// aren't the LEADING column of any of those, so they fall back to a full
-// table scan — invisible at this app's current size (a few dozen KPIs, a
-// few dozen recorded values) but a real, growing cost as months/years of
-// history accumulate. CREATE INDEX IF NOT EXISTS is naturally idempotent,
-// unlike the ALTER TABLE ADD COLUMN migrations above, so no existence
-// check is needed first.
-//
-// GET /api/kpis/values and GET /api/kpis/contributions (routes/kpis.js) —
-// the batch "everything for this one period" reads every data-entry/
-// approvals/reviews screen uses — filter kpi_values/kpi_contributions by
-// (year, month) alone; the tables' own UNIQUE constraints lead with
-// kpi_id/individual_id instead, so neither covers this lookup.
-db.exec('CREATE INDEX IF NOT EXISTS idx_kpi_values_period ON kpi_values(year, month)');
-db.exec('CREATE INDEX IF NOT EXISTS idx_kpi_contributions_period ON kpi_contributions(year, month)');
-// GET /api/messages's inbox view (routes/messages.js) filters
-// message_recipients by recipient_id alone; its own UNIQUE constraint
-// leads with message_id instead, so this one's uncovered the same way.
-db.exec('CREATE INDEX IF NOT EXISTS idx_message_recipients_recipient ON message_recipients(recipient_id)');
-
-module.exports = db;
+module.exports = { prepare, exec, transaction, ready, close, pool };

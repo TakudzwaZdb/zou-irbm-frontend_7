@@ -1,7 +1,7 @@
 {
   "name": "zou-strategic-plan-monitor-backend",
   "version": "1.0.0",
-  "description": "Real backend (Express + SQLite) for the ZOU Strategic Plan Monitor",
+  "description": "Real backend (Express + PostgreSQL) for the ZOU Strategic Plan Monitor",
   "main": "src/server.js",
   "type": "commonjs",
   "engines": {
@@ -15,6 +15,7 @@
     "backup": "node src/backup.js"
   },
   "dependencies": {
+    "@azure/msal-node": "^7.0.0",
     "bcryptjs": "^2.4.3",
     "compression": "^1.8.1",
     "cors": "^2.8.5",
@@ -22,6 +23,7 @@
     "express": "^4.19.2",
     "express-rate-limit": "^8.7.0",
     "helmet": "^8.3.0",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.23.0"
   }
 }

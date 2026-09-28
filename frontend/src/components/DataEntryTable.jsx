@@ -242,9 +242,9 @@ export default function DataEntryTable({ kpis, interactive = true }) {
           </button>
         </div>
       )}
-      <div className="card p-0 overflow-x-auto">
+      <div className="card p-0 overflow-x-auto max-h-[65vh] overflow-y-auto">
         <table className="w-full text-[12.3px] border-collapse">
-          <thead>
+          <thead className="sticky top-0 z-10 bg-surface">
             <tr className="border-b border-line text-left text-ink-muted text-[10.8px] uppercase tracking-wide">
               {interactive && (
                 <th className="w-8 px-3 py-2.5">

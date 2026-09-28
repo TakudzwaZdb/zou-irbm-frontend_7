@@ -1,0 +1,42 @@
+﻿Add performance reporting; harden auth, ops, and provisioning gaps
+
+Reports:
+- Add a focused per-entity report generator (Overall / Programme /
+  Sub-programme / Unit / Staff member) at the existing Monthly / Quarterly /
+  Biannual / Annual cadence, with jurisdiction-scoped entity pickers and its
+  own PDF/CSV export.
+- Add a staff-level tier (toggleable) to the existing Programme/Sub-
+  programme/Unit rollup table and its exports.
+- Restrict individual staff report generation to oversight roles
+  (Unit Head and above) - never self-served by a plain Employee account.
+
+Fixes:
+- Grant Programme Head accounts view_reports by default - they were
+  missing it despite nav.js listing Reports as part of their oversight.
+  Takes effect immediately for existing accounts via the existing
+  role/user permission union, no backfill required.
+- Clean up a stale, unused 'programmehead' permission-key duplicate.
+
+Security and ops:
+- Add per-actor rate limiting to POST /api/messages and
+  POST /users/:id/reset-password.
+- Wire real SMTP email delivery for admin-driven password resets
+  (optional, degrades gracefully when unconfigured); refuse to "reset" a
+  Microsoft-sign-in account.
+- Upgrade nodemailer to resolve several high-severity CVEs; npm audit clean.
+- Add an npm run create-account CLI for onboarding real unscoped-role
+  accounts; replace the fictional demo ICT admin with a real account.
+- Remove demo login credentials from the login page.
+- Strip backend/test and .env from the deploy workflow artifact; drop a
+  stale DB_FILE line from .env.
+
+Frontend and accessibility:
+- Route-level code-splitting cuts the main JS bundle from ~795KB to
+  ~198KB and removes Vite's bundle-size warning.
+- Associate every real label/input pair with htmlFor/id across Framework,
+  KPI Management, Organisation Builder, Organisation Structure, Users,
+  and Permissions.
+
+Docs:
+- Fix README references describing backups as SQLite (now Postgres via
+  pg_dump/pg_restore) and SMTP as "not yet built".

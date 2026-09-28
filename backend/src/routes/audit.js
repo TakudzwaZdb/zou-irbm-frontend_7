@@ -16,7 +16,7 @@ const router = express.Router();
 // skipped or duplicated by paging further back in the same session).
 const DEFAULT_PAGE_SIZE = 200;
 const MAX_PAGE_SIZE = 500;
-router.get('/', requireAuth, requirePerm('view_audit'), (req, res) => {
+router.get('/', requireAuth, requirePerm('view_audit'), async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || DEFAULT_PAGE_SIZE, 1), MAX_PAGE_SIZE);
   const before = req.query.before ? Number(req.query.before) : null;
   if (req.query.before && !Number.isFinite(before)) {
@@ -27,7 +27,7 @@ router.get('/', requireAuth, requirePerm('view_audit'), (req, res) => {
   const params = before ? [before, limit + 1] : [limit + 1];
   // Fetch one extra row purely to learn whether there's a next page,
   // without a separate COUNT(*) query — trimmed back off before responding.
-  const rows = db
+  const rows = await db
     .prepare(
       `SELECT a.id, a.ts, a.action, a.entity, a.entity_id, a.detail, u.name AS user_name, u.title AS user_title
        FROM audit_log a LEFT JOIN users u ON u.id = a.user_id

@@ -15,11 +15,11 @@ const { isGlobalReader, canReadUnit, canReadSub, canReadProgramme } = require('.
 const router = express.Router();
 router.use(requireAuth);
 
-function getRow(cycleYear, ownerType, ownerId) {
+async function getRow(cycleYear, ownerType, ownerId) {
   if (ownerId == null) {
-    return db.prepare('SELECT * FROM plan_proposals WHERE cycle_year = ? AND owner_type = ?').get(cycleYear, ownerType);
+    return await db.prepare('SELECT * FROM plan_proposals WHERE cycle_year = ? AND owner_type = ?').get(cycleYear, ownerType);
   }
-  return db.prepare('SELECT * FROM plan_proposals WHERE cycle_year = ? AND owner_type = ? AND owner_id = ?').get(cycleYear, ownerType, ownerId);
+  return await db.prepare('SELECT * FROM plan_proposals WHERE cycle_year = ? AND owner_type = ? AND owner_id = ?').get(cycleYear, ownerType, ownerId);
 }
 
 // Every call site below passes a fixed object literal (e.g. { narrative,
@@ -31,26 +31,26 @@ function getRow(cycleYear, ownerType, ownerId) {
 // SECURITY_REVIEW.md's SQL-injection note on this function).
 const UPSERT_DRAFT_ALLOWED_FIELDS = new Set(['narrative', 'budget', 'status']);
 
-function upsertDraft(cycleYear, ownerType, ownerId, fields) {
+async function upsertDraft(cycleYear, ownerType, ownerId, fields) {
   const badKeys = Object.keys(fields).filter((k) => !UPSERT_DRAFT_ALLOWED_FIELDS.has(k));
   if (badKeys.length) throw new Error(`upsertDraft: unexpected field(s): ${badKeys.join(', ')}`);
-  const existing = getRow(cycleYear, ownerType, ownerId);
+  const existing = await getRow(cycleYear, ownerType, ownerId);
   if (existing) {
     const sets = Object.keys(fields).map((k) => `${k} = ?`).join(', ');
-    db.prepare(`UPDATE plan_proposals SET ${sets} WHERE id = ?`).run(...Object.values(fields), existing.id);
-    return getRow(cycleYear, ownerType, ownerId);
+    await db.prepare(`UPDATE plan_proposals SET ${sets} WHERE id = ?`).run(...Object.values(fields), existing.id);
+    return await getRow(cycleYear, ownerType, ownerId);
   }
   const cols = ['cycle_year', 'owner_type', 'owner_id', ...Object.keys(fields)];
   const placeholders = cols.map(() => '?').join(', ');
-  const id = db.prepare(`INSERT INTO plan_proposals (${cols.join(', ')}) VALUES (${placeholders})`)
-    .run(cycleYear, ownerType, ownerId, ...Object.values(fields)).lastInsertRowid;
-  return db.prepare('SELECT * FROM plan_proposals WHERE id = ?').get(id);
+  const { lastInsertRowid: id } = await db.prepare(`INSERT INTO plan_proposals (${cols.join(', ')}) VALUES (${placeholders})`)
+    .run(cycleYear, ownerType, ownerId, ...Object.values(fields));
+  return await db.prepare('SELECT * FROM plan_proposals WHERE id = ?').get(id);
 }
 
 function isUnitOwner(user, unitId) { return user.role === 'unithead' && user.scope_id === unitId; }
 function isSubOwner(user, subId) { return user.role === 'rep' && user.scope_id === subId; }
-function unitSubId(unitId) { return db.prepare('SELECT sub_id FROM units WHERE id = ?').get(unitId)?.sub_id; }
-function subProgrammeId(subId) { return db.prepare('SELECT programme_id FROM subs WHERE id = ?').get(subId)?.programme_id; }
+async function unitSubId(unitId) { return (await db.prepare('SELECT sub_id FROM units WHERE id = ?').get(unitId))?.sub_id; }
+async function subProgrammeId(subId) { return (await db.prepare('SELECT programme_id FROM subs WHERE id = ?').get(subId))?.programme_id; }
 // A Programme Head's real, server-enforced scope check — same pattern as
 // isUnitOwner/isSubOwner above: role AND scope_id must both match, never
 // trusting programmes.head_user_id (display-only, like units.head_user_id /
@@ -58,33 +58,39 @@ function subProgrammeId(subId) { return db.prepare('SELECT programme_id FROM sub
 function isProgrammeHeadOwner(user, programmeId) { return user.role === 'programme' && user.scope_id === programmeId; }
 
 // ---- read: the whole compiled picture for one cycle year -----------------
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   const cycleYear = Number(req.query.year);
   if (!cycleYear) return res.status(400).json({ error: 'year query param is required.' });
 
-  const units = db.prepare('SELECT id, sub_id, name FROM units WHERE deleted_at IS NULL ORDER BY id').all().map((u) => ({
-    ...u, proposal: getRow(cycleYear, 'unit', u.id) || null,
-  }));
+  const unitRows = await db.prepare('SELECT id, sub_id, name FROM units WHERE deleted_at IS NULL ORDER BY id').all();
+  const units = [];
+  for (const u of unitRows) {
+    units.push({ ...u, proposal: (await getRow(cycleYear, 'unit', u.id)) || null });
+  }
 
-  const subs = db.prepare('SELECT id, programme_id, name FROM subs WHERE deleted_at IS NULL ORDER BY id').all().map((s) => {
+  const subRows = await db.prepare('SELECT id, programme_id, name FROM subs WHERE deleted_at IS NULL ORDER BY id').all();
+  const subs = [];
+  for (const s of subRows) {
     const myUnits = units.filter((u) => u.sub_id === s.id);
     const approvedBudget = myUnits.reduce((sum, u) => sum + (u.proposal?.status === 'approved' ? Number(u.proposal.budget || 0) : 0), 0);
     const provisionalBudget = myUnits.reduce((sum, u) => sum + (u.proposal && u.proposal.status !== 'draft' ? Number(u.proposal.budget || 0) : 0), 0);
-    return {
+    subs.push({
       ...s, unitCount: myUnits.length, approvedBudget, provisionalBudget,
-      proposal: getRow(cycleYear, 'sub', s.id) || null,
-    };
-  });
+      proposal: (await getRow(cycleYear, 'sub', s.id)) || null,
+    });
+  }
 
-  const programmes = db.prepare('SELECT id, name FROM programmes WHERE deleted_at IS NULL ORDER BY id').all().map((p) => {
+  const programmeRows = await db.prepare('SELECT id, name FROM programmes WHERE deleted_at IS NULL ORDER BY id').all();
+  const programmes = [];
+  for (const p of programmeRows) {
     const mySubs = subs.filter((s) => s.programme_id === p.id);
     const approvedBudget = mySubs.reduce((sum, s) => sum + s.approvedBudget, 0);
     const provisionalBudget = mySubs.reduce((sum, s) => sum + s.provisionalBudget, 0);
-    return {
+    programmes.push({
       ...p, subCount: mySubs.length, approvedBudget, provisionalBudget,
-      proposal: getRow(cycleYear, 'programme', p.id) || null,
-    };
-  });
+      proposal: (await getRow(cycleYear, 'programme', p.id)) || null,
+    });
+  }
 
   // Every budget/count above is computed from the FULL org tree first — a
   // Unit's own approvedBudget and a Sub/Programme's roll-up must stay
@@ -98,9 +104,15 @@ router.get('/', (req, res) => {
   // branch — one their own panel never requested in the first place — is
   // now actually blocked server-side too.
   const seesWholePlan = isGlobalReader(req.user) || req.user.role === 'individual';
-  const visibleUnits = seesWholePlan ? units : units.filter((u) => canReadUnit(req.user, u.id));
-  const visibleSubs = seesWholePlan ? subs : subs.filter((s) => canReadSub(req.user, s.id));
-  const visibleProgrammes = seesWholePlan ? programmes : programmes.filter((p) => canReadProgramme(req.user, p.id));
+  let visibleUnits = units, visibleSubs = subs, visibleProgrammes = programmes;
+  if (!seesWholePlan) {
+    visibleUnits = [];
+    for (const u of units) { if (await canReadUnit(req.user, u.id)) visibleUnits.push(u); }
+    visibleSubs = [];
+    for (const s of subs) { if (await canReadSub(req.user, s.id)) visibleSubs.push(s); }
+    visibleProgrammes = [];
+    for (const p of programmes) { if (await canReadProgramme(req.user, p.id)) visibleProgrammes.push(p); }
+  }
 
   const universityApprovedBudget = programmes.reduce((sum, p) => sum + p.approvedBudget, 0);
   const universityProvisionalBudget = programmes.reduce((sum, p) => sum + p.provisionalBudget, 0);
@@ -109,61 +121,61 @@ router.get('/', (req, res) => {
     cycleYear, units: visibleUnits, subs: visibleSubs, programmes: visibleProgrammes,
     university: {
       approvedBudget: universityApprovedBudget, provisionalBudget: universityProvisionalBudget,
-      proposal: getRow(cycleYear, 'university', null) || null,
+      proposal: (await getRow(cycleYear, 'university', null)) || null,
     },
   });
 });
 
 // ---- Unit tier: enter/submit, Sub Rep approves/returns --------------------
-router.put('/units/:unitId', requirePerm('data_entry'), (req, res) => {
+router.put('/units/:unitId', requirePerm('data_entry'), async (req, res) => {
   const unitId = Number(req.params.unitId);
   if (!isUnitOwner(req.user, unitId)) return res.status(403).json({ error: 'You can only edit your own unit\'s plan proposal.' });
   const { cycleYear, narrative, budget } = req.body || {};
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
-  const existing = getRow(cycleYear, 'unit', unitId);
+  const existing = await getRow(cycleYear, 'unit', unitId);
   if (existing && existing.status !== 'draft') return res.status(400).json({ error: 'This proposal is locked while submitted or approved — ask your Sub-programme Rep to return it first.' });
-  const row = upsertDraft(cycleYear, 'unit', unitId, { narrative: narrative || null, budget: budget == null ? null : Number(budget), status: 'draft' });
+  const row = await upsertDraft(cycleYear, 'unit', unitId, { narrative: narrative || null, budget: budget == null ? null : Number(budget), status: 'draft' });
   res.json({ proposal: row });
 });
 
-router.post('/units/:unitId/submit', requirePerm('data_entry'), (req, res) => {
+router.post('/units/:unitId/submit', requirePerm('data_entry'), async (req, res) => {
   const unitId = Number(req.params.unitId);
   if (!isUnitOwner(req.user, unitId)) return res.status(403).json({ error: 'You can only submit your own unit\'s plan proposal.' });
   const { cycleYear } = req.body || {};
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
-  const row = getRow(cycleYear, 'unit', unitId);
+  const row = await getRow(cycleYear, 'unit', unitId);
   if (!row || row.budget == null) return res.status(400).json({ error: 'Enter a narrative and budget before submitting.' });
-  db.prepare('UPDATE plan_proposals SET status = \'submitted\', submitted_at = datetime(\'now\'), return_comment = NULL WHERE id = ?').run(row.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE plan_proposals SET status = \'submitted\', submitted_at = datetime(\'now\'), return_comment = NULL WHERE id = ?').run(row.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'submit_plan', 'plan_proposal', row.id, `Unit plan proposal for ${cycleYear} submitted (budget ${row.budget}).`
   );
   res.json({ ok: true });
 });
 
-router.post('/units/:unitId/approve', requirePerm('approve_own_tier'), (req, res) => {
+router.post('/units/:unitId/approve', requirePerm('approve_own_tier'), async (req, res) => {
   const unitId = Number(req.params.unitId);
-  if (!isSubOwner(req.user, unitSubId(unitId))) return res.status(403).json({ error: 'You are not the approver for this unit.' });
+  if (!isSubOwner(req.user, await unitSubId(unitId))) return res.status(403).json({ error: 'You are not the approver for this unit.' });
   const { cycleYear } = req.body || {};
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
-  const row = getRow(cycleYear, 'unit', unitId);
+  const row = await getRow(cycleYear, 'unit', unitId);
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that cycle.' });
-  db.prepare('UPDATE plan_proposals SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE plan_proposals SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'approve_plan', 'plan_proposal', row.id, `Unit plan proposal for ${cycleYear} approved.`
   );
   res.json({ ok: true });
 });
 
-router.post('/units/:unitId/return', requirePerm('approve_own_tier'), (req, res) => {
+router.post('/units/:unitId/return', requirePerm('approve_own_tier'), async (req, res) => {
   const unitId = Number(req.params.unitId);
-  if (!isSubOwner(req.user, unitSubId(unitId))) return res.status(403).json({ error: 'You are not the approver for this unit.' });
+  if (!isSubOwner(req.user, await unitSubId(unitId))) return res.status(403).json({ error: 'You are not the approver for this unit.' });
   const { cycleYear, comment } = req.body || {};
   if (!comment) return res.status(400).json({ error: 'A reason is required when returning a proposal.' });
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
-  const row = getRow(cycleYear, 'unit', unitId);
+  const row = await getRow(cycleYear, 'unit', unitId);
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that cycle.' });
-  db.prepare('UPDATE plan_proposals SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment, row.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE plan_proposals SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment, row.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'return_plan', 'plan_proposal', row.id, `Unit plan proposal for ${cycleYear} returned: "${comment}"`
   );
   res.json({ ok: true });
@@ -173,32 +185,32 @@ router.post('/units/:unitId/return', requirePerm('approve_own_tier'), (req, res)
 // its units above, never entered here — submitted by the Rep, approved only
 // by that Sub-programme's own Programme Head (see POST /subs/:subId/approve
 // below) — CPU has no direct approval authority at this tier.
-router.put('/subs/:subId', requirePerm('data_entry'), (req, res) => {
+router.put('/subs/:subId', requirePerm('data_entry'), async (req, res) => {
   const subId = Number(req.params.subId);
   if (!isSubOwner(req.user, subId)) return res.status(403).json({ error: 'You can only edit your own sub-programme\'s plan proposal.' });
   const { cycleYear, narrative } = req.body || {};
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
-  const existing = getRow(cycleYear, 'sub', subId);
+  const existing = await getRow(cycleYear, 'sub', subId);
   if (existing && existing.status !== 'draft') return res.status(400).json({ error: 'This proposal is locked while submitted or approved — ask your Programme Head to return it first.' });
-  const row = upsertDraft(cycleYear, 'sub', subId, { narrative: narrative || null, status: 'draft' });
+  const row = await upsertDraft(cycleYear, 'sub', subId, { narrative: narrative || null, status: 'draft' });
   res.json({ proposal: row });
 });
 
-router.post('/subs/:subId/submit', requirePerm('data_entry'), (req, res) => {
+router.post('/subs/:subId/submit', requirePerm('data_entry'), async (req, res) => {
   const subId = Number(req.params.subId);
   if (!isSubOwner(req.user, subId)) return res.status(403).json({ error: 'You can only submit your own sub-programme\'s plan proposal.' });
   const { cycleYear } = req.body || {};
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
-  const row = getRow(cycleYear, 'sub', subId);
+  const row = await getRow(cycleYear, 'sub', subId);
   if (!row || !row.narrative) return res.status(400).json({ error: 'Enter a planning narrative before submitting.' });
-  db.prepare('UPDATE plan_proposals SET status = \'submitted\', submitted_at = datetime(\'now\'), return_comment = NULL WHERE id = ?').run(row.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE plan_proposals SET status = \'submitted\', submitted_at = datetime(\'now\'), return_comment = NULL WHERE id = ?').run(row.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'submit_plan', 'plan_proposal', row.id, `Sub-programme plan proposal for ${cycleYear} submitted.`
   );
   res.json({ ok: true });
 });
 
-router.post('/subs/:subId/approve', requirePerm('approve_own_tier'), (req, res) => {
+router.post('/subs/:subId/approve', requirePerm('approve_own_tier'), async (req, res) => {
   const subId = Number(req.params.subId);
   // Approval authority here belongs to the Programme Head who owns the
   // Programme this Sub-programme sits under — a real, scope-checked check,
@@ -209,34 +221,34 @@ router.post('/subs/:subId/approve', requirePerm('approve_own_tier'), (req, res) 
   // is deliberately removed here so a Sub-programme's plan proposal can
   // only ever be approved by its own Programme Head, never bypassed by
   // CPU's org-wide oversight permission.
-  if (!isProgrammeHeadOwner(req.user, subProgrammeId(subId))) {
+  if (!isProgrammeHeadOwner(req.user, await subProgrammeId(subId))) {
     return res.status(403).json({ error: 'Only this Sub-programme\'s own Programme Head approves its plan proposal.' });
   }
   const { cycleYear } = req.body || {};
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
-  const row = getRow(cycleYear, 'sub', subId);
+  const row = await getRow(cycleYear, 'sub', subId);
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that cycle.' });
-  db.prepare('UPDATE plan_proposals SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE plan_proposals SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'approve_plan', 'plan_proposal', row.id, `Sub-programme plan proposal for ${cycleYear} approved.`
   );
   res.json({ ok: true });
 });
 
-router.post('/subs/:subId/return', requirePerm('approve_own_tier'), (req, res) => {
+router.post('/subs/:subId/return', requirePerm('approve_own_tier'), async (req, res) => {
   const subId = Number(req.params.subId);
   // Same restriction as the approve route above: only this Sub-programme's
   // own Programme Head, not CPU.
-  if (!isProgrammeHeadOwner(req.user, subProgrammeId(subId))) {
+  if (!isProgrammeHeadOwner(req.user, await subProgrammeId(subId))) {
     return res.status(403).json({ error: 'Only this Sub-programme\'s own Programme Head returns its plan proposal.' });
   }
   const { cycleYear, comment } = req.body || {};
   if (!comment) return res.status(400).json({ error: 'A reason is required when returning a proposal.' });
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
-  const row = getRow(cycleYear, 'sub', subId);
+  const row = await getRow(cycleYear, 'sub', subId);
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that cycle.' });
-  db.prepare('UPDATE plan_proposals SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment, row.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE plan_proposals SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment, row.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'return_plan', 'plan_proposal', row.id, `Sub-programme plan proposal for ${cycleYear} returned: "${comment}"`
   );
   res.json({ ok: true });
@@ -248,28 +260,28 @@ router.post('/subs/:subId/return', requirePerm('approve_own_tier'), (req, res) =
 // as the Sub-programme tier above), but a real Programme Head now compiles
 // and submits their own Programme's plan, scope-checked exactly like every
 // other tier in this cascade.
-router.put('/programmes/:programmeId', requireAnyPerm('approve_own_tier', 'data_entry'), (req, res) => {
+router.put('/programmes/:programmeId', requireAnyPerm('approve_own_tier', 'data_entry'), async (req, res) => {
   const programmeId = Number(req.params.programmeId);
   if (req.user.role !== 'cpu' && !isProgrammeHeadOwner(req.user, programmeId)) {
     return res.status(403).json({ error: 'Only CPU or this Programme\'s own Programme Head compiles its plan.' });
   }
   const { cycleYear, narrative } = req.body || {};
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
-  const row = upsertDraft(cycleYear, 'programme', programmeId, { narrative: narrative || null, status: 'draft' });
+  const row = await upsertDraft(cycleYear, 'programme', programmeId, { narrative: narrative || null, status: 'draft' });
   res.json({ proposal: row });
 });
 
-router.post('/programmes/:programmeId/submit', requireAnyPerm('approve_own_tier', 'data_entry'), (req, res) => {
+router.post('/programmes/:programmeId/submit', requireAnyPerm('approve_own_tier', 'data_entry'), async (req, res) => {
   const programmeId = Number(req.params.programmeId);
   if (req.user.role !== 'cpu' && !isProgrammeHeadOwner(req.user, programmeId)) {
     return res.status(403).json({ error: 'Only CPU or this Programme\'s own Programme Head submits its plan.' });
   }
   const { cycleYear } = req.body || {};
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
-  const row = getRow(cycleYear, 'programme', programmeId);
+  const row = await getRow(cycleYear, 'programme', programmeId);
   if (!row || !row.narrative) return res.status(400).json({ error: 'Enter a planning narrative before submitting.' });
-  db.prepare('UPDATE plan_proposals SET status = \'submitted\', submitted_at = datetime(\'now\') WHERE id = ?').run(row.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE plan_proposals SET status = \'submitted\', submitted_at = datetime(\'now\') WHERE id = ?').run(row.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'submit_plan', 'plan_proposal', row.id, `Programme plan for ${cycleYear} submitted.`
   );
   res.json({ ok: true });
@@ -282,25 +294,25 @@ router.post('/programmes/:programmeId/submit', requireAnyPerm('approve_own_tier'
 // same "locked while under review" rule the Unit/Sub tiers already enforce
 // (previously this route had no such guard at all, which meant CPU could
 // silently overwrite even an already-Council-approved, in-effect plan).
-router.put('/university', requirePerm('submit_annual_plan'), (req, res) => {
+router.put('/university', requirePerm('submit_annual_plan'), async (req, res) => {
   const { cycleYear, narrative } = req.body || {};
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
-  const existing = getRow(cycleYear, 'university', null);
+  const existing = await getRow(cycleYear, 'university', null);
   if (existing && existing.status !== 'draft') {
     return res.status(400).json({ error: 'This plan is locked while submitted or approved — ask the University Council to return it first.' });
   }
-  const row = upsertDraft(cycleYear, 'university', null, { narrative: narrative || null, status: 'draft' });
+  const row = await upsertDraft(cycleYear, 'university', null, { narrative: narrative || null, status: 'draft' });
   res.json({ proposal: row });
 });
 
-router.post('/university/submit', requirePerm('submit_annual_plan'), (req, res) => {
+router.post('/university/submit', requirePerm('submit_annual_plan'), async (req, res) => {
   const { cycleYear } = req.body || {};
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
-  const row = getRow(cycleYear, 'university', null);
+  const row = await getRow(cycleYear, 'university', null);
   if (!row || !row.narrative) return res.status(400).json({ error: 'Enter the compiled annual-plan narrative before submitting.' });
   if (row.status !== 'draft') return res.status(400).json({ error: 'This plan has already been submitted to the University Council.' });
-  db.prepare('UPDATE plan_proposals SET status = \'submitted\', submitted_at = datetime(\'now\'), return_comment = NULL WHERE id = ?').run(row.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE plan_proposals SET status = \'submitted\', submitted_at = datetime(\'now\'), return_comment = NULL WHERE id = ?').run(row.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'submit_annual_plan', 'plan_proposal', row.id, `University Annual Plan for ${cycleYear} submitted to the University Council for validation.`
   );
   res.json({ ok: true });
@@ -313,26 +325,26 @@ router.post('/university/submit', requirePerm('submit_annual_plan'), (req, res) 
 // nothing recomputed specially for this) and either approves it — final,
 // official for the cycle — or returns it to CPU with a reason, exactly
 // like every return elsewhere in this app.
-router.post('/university/approve', requirePerm('validate_annual_plan'), (req, res) => {
+router.post('/university/approve', requirePerm('validate_annual_plan'), async (req, res) => {
   const { cycleYear } = req.body || {};
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
-  const row = getRow(cycleYear, 'university', null);
+  const row = await getRow(cycleYear, 'university', null);
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending the University Council\'s review for that cycle.' });
-  db.prepare('UPDATE plan_proposals SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE plan_proposals SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'approve_annual_plan', 'plan_proposal', row.id, `University Annual Plan for ${cycleYear} validated and approved by the University Council — now in effect.`
   );
   res.json({ ok: true });
 });
 
-router.post('/university/return', requirePerm('validate_annual_plan'), (req, res) => {
+router.post('/university/return', requirePerm('validate_annual_plan'), async (req, res) => {
   const { cycleYear, comment } = req.body || {};
   if (!comment || !comment.trim()) return res.status(400).json({ error: 'A reason is required when returning the plan.' });
   if (!cycleYear) return res.status(400).json({ error: 'cycleYear is required.' });
-  const row = getRow(cycleYear, 'university', null);
+  const row = await getRow(cycleYear, 'university', null);
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending the University Council\'s review for that cycle.' });
-  db.prepare('UPDATE plan_proposals SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment.trim(), row.id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE plan_proposals SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment.trim(), row.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'return_annual_plan', 'plan_proposal', row.id, `University Annual Plan for ${cycleYear} returned by the University Council: "${comment.trim()}"`
   );
   res.json({ ok: true });

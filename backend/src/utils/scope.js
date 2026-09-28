@@ -17,6 +17,13 @@
 // blocked. See routes/kpis.js, routes/plans.js, routes/compliance.js for
 // where these get applied, and README.md's "Still genuinely open" section
 // (now closed out) for the finding this fixes.
+//
+// Every function here that (directly or transitively) looks a row up is
+// `async` — db.js's Postgres-backed `db.prepare(...).get()` returns a
+// Promise now, so every caller in routes/kpis.js, routes/plans.js, and
+// routes/compliance.js must `await` these too (see each of those files'
+// own call sites). isGlobalReader stays synchronous — it only reads
+// `user.role`, never the database.
 const db = require('../db');
 
 // Global oversight roles — see everything, same as the UI already assumes
@@ -28,26 +35,26 @@ const db = require('../db');
 const GLOBAL_READ_ROLES = ['cpu', 'ictadmin', 'exec', 'council'];
 function isGlobalReader(user) { return GLOBAL_READ_ROLES.includes(user.role); }
 
-function unitSubId(unitId) {
-  return db.prepare('SELECT sub_id FROM units WHERE id = ?').get(unitId)?.sub_id ?? null;
+async function unitSubId(unitId) {
+  return (await db.prepare('SELECT sub_id FROM units WHERE id = ?').get(unitId))?.sub_id ?? null;
 }
-function individualUnitId(individualId) {
-  return db.prepare('SELECT unit_id FROM individuals WHERE id = ?').get(individualId)?.unit_id ?? null;
+async function individualUnitId(individualId) {
+  return (await db.prepare('SELECT unit_id FROM individuals WHERE id = ?').get(individualId))?.unit_id ?? null;
 }
-function subProgrammeId(subId) {
-  return db.prepare('SELECT programme_id FROM subs WHERE id = ?').get(subId)?.programme_id ?? null;
+async function subProgrammeId(subId) {
+  return (await db.prepare('SELECT programme_id FROM subs WHERE id = ?').get(subId))?.programme_id ?? null;
 }
 function individualScopeType(user) { return user.scope_type || 'individual'; }
 
 // Which Sub-programme does this KPI ultimately roll up under, whichever
 // tier actually owns it?
-function kpiSubId(kpi) {
+async function kpiSubId(kpi) {
   if (kpi.owner_type === 'sub') return kpi.owner_id;
   if (kpi.owner_type === 'unit') return unitSubId(kpi.owner_id);
-  return unitSubId(individualUnitId(kpi.owner_id));
+  return unitSubId(await individualUnitId(kpi.owner_id));
 }
-function kpiProgrammeId(kpi) {
-  const subId = kpiSubId(kpi);
+async function kpiProgrammeId(kpi) {
+  const subId = await kpiSubId(kpi);
   return subId != null ? subProgrammeId(subId) : null;
 }
 
@@ -55,21 +62,21 @@ function kpiProgrammeId(kpi) {
 // (see kpis.js's kpi_assignments table)? Mirrored here (rather than
 // imported from routes/kpis.js) to keep this module dependency-free of the
 // route files that consume it.
-function isAssignedIndividual(user, kpi) {
+async function isAssignedIndividual(user, kpi) {
   if (kpi.owner_type !== 'unit' || user.role !== 'individual' || individualScopeType(user) !== 'individual') return false;
-  return !!db.prepare(
+  return !!(await db.prepare(
     'SELECT 1 FROM kpi_assignments WHERE kpi_id = ? AND individual_id = ? AND deleted_at IS NULL'
-  ).get(kpi.id, user.scope_id);
+  ).get(kpi.id, user.scope_id));
 }
 
 // Can this user see this KPI (and by extension its values/contributions)?
-function canReadKpi(user, kpi) {
+async function canReadKpi(user, kpi) {
   if (isGlobalReader(user)) return true;
-  if (user.role === 'programme') return kpiProgrammeId(kpi) === user.scope_id;
-  if (user.role === 'rep') return kpiSubId(kpi) === user.scope_id;
+  if (user.role === 'programme') return (await kpiProgrammeId(kpi)) === user.scope_id;
+  if (user.role === 'rep') return (await kpiSubId(kpi)) === user.scope_id;
   if (user.role === 'unithead') {
     if (kpi.owner_type === 'unit') return kpi.owner_id === user.scope_id;
-    if (kpi.owner_type === 'individual') return individualUnitId(kpi.owner_id) === user.scope_id;
+    if (kpi.owner_type === 'individual') return (await individualUnitId(kpi.owner_id)) === user.scope_id;
     return false;
   }
   if (user.role === 'individual') {
@@ -77,9 +84,9 @@ function canReadKpi(user, kpi) {
       if (kpi.owner_type === 'individual' && kpi.owner_id === user.scope_id) return true;
       return isAssignedIndividual(user, kpi);
     }
-    if (individualScopeType(user) === 'unit') return kpi.owner_type === 'unit' && kpi.owner_id === user.scope_id || kpi.owner_type === 'individual' && individualUnitId(kpi.owner_id) === user.scope_id;
-    if (individualScopeType(user) === 'sub') return kpiSubId(kpi) === user.scope_id;
-    if (individualScopeType(user) === 'programme') return kpiProgrammeId(kpi) === user.scope_id;
+    if (individualScopeType(user) === 'unit') return kpi.owner_type === 'unit' && kpi.owner_id === user.scope_id || kpi.owner_type === 'individual' && (await individualUnitId(kpi.owner_id)) === user.scope_id;
+    if (individualScopeType(user) === 'sub') return (await kpiSubId(kpi)) === user.scope_id;
+    if (individualScopeType(user) === 'programme') return (await kpiProgrammeId(kpi)) === user.scope_id;
   }
   return false;
 }
@@ -89,16 +96,16 @@ function canReadKpi(user, kpi) {
 // Programme Head above it, every Unit Head/Individual nested inside it —
 // can see the Sub-programme's own aggregate; only a DIFFERENT branch is
 // blocked.
-function canReadSub(user, subId) {
+async function canReadSub(user, subId) {
   if (isGlobalReader(user)) return true;
-  if (user.role === 'programme') return subProgrammeId(subId) === user.scope_id;
+  if (user.role === 'programme') return (await subProgrammeId(subId)) === user.scope_id;
   if (user.role === 'rep') return user.scope_id === subId;
-  if (user.role === 'unithead') return unitSubId(user.scope_id) === subId;
+  if (user.role === 'unithead') return (await unitSubId(user.scope_id)) === subId;
   if (user.role === 'individual') {
-    if (individualScopeType(user) === 'individual') return unitSubId(individualUnitId(user.scope_id)) === subId;
-    if (individualScopeType(user) === 'unit') return unitSubId(user.scope_id) === subId;
+    if (individualScopeType(user) === 'individual') return (await unitSubId(await individualUnitId(user.scope_id))) === subId;
+    if (individualScopeType(user) === 'unit') return (await unitSubId(user.scope_id)) === subId;
     if (individualScopeType(user) === 'sub') return user.scope_id === subId;
-    if (individualScopeType(user) === 'programme') return subProgrammeId(subId) === user.scope_id;
+    if (individualScopeType(user) === 'programme') return (await subProgrammeId(subId)) === user.scope_id;
   }
   return false;
 }
@@ -106,31 +113,31 @@ function canReadSub(user, subId) {
 // Can this user see this Unit's own data (its plan proposal)? The Unit
 // Head themselves, anyone in their own chain above (Rep/Programme Head),
 // or an Individual who belongs to that unit.
-function canReadUnit(user, unitId) {
+async function canReadUnit(user, unitId) {
   if (isGlobalReader(user)) return true;
   if (user.role === 'unithead') return user.scope_id === unitId;
   if (user.role === 'individual') {
-    if (individualScopeType(user) === 'individual') return individualUnitId(user.scope_id) === unitId;
+    if (individualScopeType(user) === 'individual') return (await individualUnitId(user.scope_id)) === unitId;
     if (individualScopeType(user) === 'unit') return user.scope_id === unitId;
-    if (individualScopeType(user) === 'sub') return unitSubId(unitId) === user.scope_id;
-    if (individualScopeType(user) === 'programme') return subProgrammeId(unitSubId(unitId)) === user.scope_id;
+    if (individualScopeType(user) === 'sub') return (await unitSubId(unitId)) === user.scope_id;
+    if (individualScopeType(user) === 'programme') return (await subProgrammeId(await unitSubId(unitId))) === user.scope_id;
   }
-  const subId = unitSubId(unitId);
+  const subId = await unitSubId(unitId);
   if (subId == null) return false;
   return canReadSub(user, subId);
 }
 
 // Can this user see this Programme's own data (its compiled plan)? The
 // Programme Head themselves, or anyone nested within their programme.
-function canReadProgramme(user, programmeId) {
+async function canReadProgramme(user, programmeId) {
   if (isGlobalReader(user)) return true;
   if (user.role === 'programme') return user.scope_id === programmeId;
-  if (user.role === 'rep') return subProgrammeId(user.scope_id) === programmeId;
-  if (user.role === 'unithead') return subProgrammeId(unitSubId(user.scope_id)) === programmeId;
+  if (user.role === 'rep') return (await subProgrammeId(user.scope_id)) === programmeId;
+  if (user.role === 'unithead') return (await subProgrammeId(await unitSubId(user.scope_id))) === programmeId;
   if (user.role === 'individual') {
-    if (individualScopeType(user) === 'individual') return subProgrammeId(unitSubId(individualUnitId(user.scope_id))) === programmeId;
-    if (individualScopeType(user) === 'unit') return subProgrammeId(unitSubId(user.scope_id)) === programmeId;
-    if (individualScopeType(user) === 'sub') return subProgrammeId(user.scope_id) === programmeId;
+    if (individualScopeType(user) === 'individual') return (await subProgrammeId(await unitSubId(await individualUnitId(user.scope_id)))) === programmeId;
+    if (individualScopeType(user) === 'unit') return (await subProgrammeId(await unitSubId(user.scope_id))) === programmeId;
+    if (individualScopeType(user) === 'sub') return (await subProgrammeId(user.scope_id)) === programmeId;
     if (individualScopeType(user) === 'programme') return user.scope_id === programmeId;
   }
   return false;

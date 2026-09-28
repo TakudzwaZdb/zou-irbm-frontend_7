@@ -24,28 +24,28 @@ router.use(requireAuth);
 
 // Everyone a person could possibly message — real names/emails/roles, never
 // permissions or scope_id (that's the ICT-admin-only /api/users view).
-router.get('/directory', (req, res) => {
-  const users = db.prepare('SELECT id, name, title, email, role FROM users WHERE id != ? ORDER BY role, name').all(req.user.id);
+router.get('/directory', async (req, res) => {
+  const users = await db.prepare('SELECT id, name, title, email, role FROM users WHERE id != ? ORDER BY role, name').all(req.user.id);
   res.json({ users });
 });
 
-router.get('/unread-count', (req, res) => {
-  const row = db.prepare('SELECT COUNT(*) AS n FROM message_recipients WHERE recipient_id = ? AND read_at IS NULL').get(req.user.id);
+router.get('/unread-count', async (req, res) => {
+  const row = await db.prepare('SELECT COUNT(*) AS n FROM message_recipients WHERE recipient_id = ? AND read_at IS NULL').get(req.user.id);
   res.json({ count: row.n });
 });
 
 // ?box=inbox (default) or ?box=sent.
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   const box = req.query.box === 'sent' ? 'sent' : 'inbox';
 
   if (box === 'sent') {
-    const messages = db.prepare(
+    const messages = await db.prepare(
       'SELECT id, subject, body, sent_at FROM messages WHERE sender_id = ? AND sender_deleted_at IS NULL ORDER BY sent_at DESC'
     ).all(req.user.id);
     if (messages.length) {
       const ids = messages.map((m) => m.id);
       const placeholders = ids.map(() => '?').join(', ');
-      const recipientRows = db.prepare(
+      const recipientRows = await db.prepare(
         `SELECT mr.message_id, u.id AS user_id, u.name, u.email, mr.read_at
          FROM message_recipients mr JOIN users u ON u.id = mr.recipient_id
          WHERE mr.message_id IN (${placeholders})`
@@ -59,7 +59,7 @@ router.get('/', (req, res) => {
     return res.json({ messages });
   }
 
-  const messages = db.prepare(
+  const messages = await db.prepare(
     `SELECT m.id, m.subject, m.body, m.sent_at, mr.read_at,
             u.id AS sender_id, u.name AS sender_name, u.email AS sender_email, u.role AS sender_role
      FROM message_recipients mr
@@ -71,7 +71,7 @@ router.get('/', (req, res) => {
   res.json({ messages });
 });
 
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const { recipientIds, subject, body } = req.body || {};
   if (!Array.isArray(recipientIds) || recipientIds.length === 0) {
     return res.status(400).json({ error: 'Choose at least one recipient.' });
@@ -82,28 +82,30 @@ router.post('/', (req, res) => {
   const uniqueIds = [...new Set(recipientIds.map(Number))].filter((id) => Number.isInteger(id) && id !== req.user.id);
   if (uniqueIds.length === 0) return res.status(400).json({ error: 'Choose at least one recipient other than yourself.' });
   const placeholders = uniqueIds.map(() => '?').join(', ');
-  const validIds = db.prepare(`SELECT id FROM users WHERE id IN (${placeholders})`).all(...uniqueIds).map((r) => r.id);
+  const validIds = (await db.prepare(`SELECT id FROM users WHERE id IN (${placeholders})`).all(...uniqueIds)).map((r) => r.id);
   if (validIds.length !== uniqueIds.length) return res.status(400).json({ error: 'One or more recipients could not be found.' });
 
-  const sendTxn = db.transaction(() => {
-    const messageId = db.prepare('INSERT INTO messages (sender_id, subject, body) VALUES (?, ?, ?)')
-      .run(req.user.id, subject.trim(), body.trim()).lastInsertRowid;
+  const sendTxn = db.transaction(async () => {
+    const { lastInsertRowid: messageId } = await db.prepare('INSERT INTO messages (sender_id, subject, body) VALUES (?, ?, ?)')
+      .run(req.user.id, subject.trim(), body.trim());
     const insertRecipient = db.prepare('INSERT INTO message_recipients (message_id, recipient_id) VALUES (?, ?)');
-    validIds.forEach((id) => insertRecipient.run(messageId, id));
+    for (const id of validIds) {
+      await insertRecipient.run(messageId, id);
+    }
     return messageId;
   });
-  const messageId = sendTxn();
+  const messageId = await sendTxn();
 
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'send_message', 'message', messageId, `"${subject.trim()}" sent to ${validIds.length} recipient(s).`
   );
   res.status(201).json({ id: messageId });
 });
 
-router.post('/:id/read', (req, res) => {
-  const row = db.prepare('SELECT * FROM message_recipients WHERE message_id = ? AND recipient_id = ?').get(req.params.id, req.user.id);
+router.post('/:id/read', async (req, res) => {
+  const row = await db.prepare('SELECT * FROM message_recipients WHERE message_id = ? AND recipient_id = ?').get(req.params.id, req.user.id);
   if (!row) return res.status(404).json({ error: 'Message not found in your inbox.' });
-  if (!row.read_at) db.prepare("UPDATE message_recipients SET read_at = datetime('now') WHERE id = ?").run(row.id);
+  if (!row.read_at) await db.prepare("UPDATE message_recipients SET read_at = datetime('now') WHERE id = ?").run(row.id);
   res.json({ ok: true });
 });
 
@@ -115,25 +117,25 @@ router.post('/:id/read', (req, res) => {
 // sender AND every recipient — the underlying row has nothing left
 // pointing at it and is purged outright, so deleted mail doesn't pile up
 // forever once nobody can see it anyway.
-router.delete('/:id', (req, res) => {
-  const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(req.params.id);
+router.delete('/:id', async (req, res) => {
+  const message = await db.prepare('SELECT * FROM messages WHERE id = ?').get(req.params.id);
   if (!message) return res.status(404).json({ error: 'Message not found.' });
 
   const isSender = message.sender_id === req.user.id;
-  const recipientRow = db.prepare('SELECT * FROM message_recipients WHERE message_id = ? AND recipient_id = ?').get(message.id, req.user.id);
+  const recipientRow = await db.prepare('SELECT * FROM message_recipients WHERE message_id = ? AND recipient_id = ?').get(message.id, req.user.id);
   if (!isSender && !recipientRow) return res.status(404).json({ error: 'Message not found in your mailbox.' });
 
   if (isSender) {
-    if (!message.sender_deleted_at) db.prepare("UPDATE messages SET sender_deleted_at = datetime('now') WHERE id = ?").run(message.id);
+    if (!message.sender_deleted_at) await db.prepare("UPDATE messages SET sender_deleted_at = datetime('now') WHERE id = ?").run(message.id);
   } else if (!recipientRow.deleted_at) {
-    db.prepare("UPDATE message_recipients SET deleted_at = datetime('now') WHERE id = ?").run(recipientRow.id);
+    await db.prepare("UPDATE message_recipients SET deleted_at = datetime('now') WHERE id = ?").run(recipientRow.id);
   }
 
   // Purge check: has EVERY participant now deleted their own copy?
-  const fresh = db.prepare('SELECT sender_deleted_at FROM messages WHERE id = ?').get(message.id);
-  const remainingRecipients = db.prepare('SELECT COUNT(*) AS n FROM message_recipients WHERE message_id = ? AND deleted_at IS NULL').get(message.id).n;
+  const fresh = await db.prepare('SELECT sender_deleted_at FROM messages WHERE id = ?').get(message.id);
+  const remainingRecipients = (await db.prepare('SELECT COUNT(*) AS n FROM message_recipients WHERE message_id = ? AND deleted_at IS NULL').get(message.id)).n;
   if (fresh.sender_deleted_at && remainingRecipients === 0) {
-    db.prepare('DELETE FROM messages WHERE id = ?').run(message.id); // cascades message_recipients
+    await db.prepare('DELETE FROM messages WHERE id = ?').run(message.id); // cascades message_recipients
   }
 
   res.json({ ok: true });

@@ -40,9 +40,9 @@ export default function Compliance() {
       <h2 className="font-display font-bold text-[14.5px] mb-2.5">
         Late-submission compliance — {MONTHS[period.month]} {period.year}
       </h2>
-      <div className="rounded-xl border border-line bg-surface overflow-x-auto mb-3">
+      <div className="rounded-xl border border-line bg-surface overflow-x-auto max-h-[65vh] overflow-y-auto mb-3">
         <table className="w-full text-[12.6px]">
-          <thead>
+          <thead className="sticky top-0 z-10">
             <tr className="bg-sunken text-[10.8px] uppercase tracking-wide text-ink-muted font-bold">
               <Th>Programme</Th><Th>Sub-programme</Th><Th>Sub-level KPIs</Th><Th>Status</Th><Th>Days late</Th>
             </tr>

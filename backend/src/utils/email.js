@@ -9,12 +9,13 @@ function emailFor(name) {
 }
 
 // Guarantees the returned address isn't already taken in the users table.
-function uniqueEmailFor(name) {
+async function uniqueEmailFor(name) {
   let email = emailFor(name);
-  const taken = (e) => !!db.prepare('SELECT 1 FROM users WHERE email = ?').get(e);
-  if (!taken(email)) return email;
+  const taken = async (e) => !!(await db.prepare('SELECT 1 FROM users WHERE email = ?').get(e));
+  if (!(await taken(email))) return email;
   let n = 2;
-  while (taken(email.replace('@', `${n}@`))) n++;
+  // eslint-disable-next-line no-await-in-loop
+  while (await taken(email.replace('@', `${n}@`))) n++;
   return email.replace('@', `${n}@`);
 }
 

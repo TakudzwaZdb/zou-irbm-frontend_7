@@ -244,9 +244,9 @@ export default function Reports() {
       <h2 className="font-display font-bold text-[14.5px] mb-2.5">
         Programme, Sub-programme &amp; Unit performance appraisal — {periodLabel}
       </h2>
-      <div className="rounded-xl border border-line bg-surface overflow-x-auto mb-5">
+      <div className="rounded-xl border border-line bg-surface overflow-x-auto max-h-[65vh] overflow-y-auto mb-5">
         <table className="w-full text-[12.6px]">
-          <thead>
+          <thead className="sticky top-0 z-10">
             <tr className="bg-sunken text-[10.8px] uppercase tracking-wide text-ink-muted font-bold">
               <Th>Programme / Sub-programme / Unit</Th><Th>KPIs</Th><Th>Avg. progress</Th><Th>On track</Th><Th>At risk</Th><Th>Off track</Th><Th>No data</Th>
             </tr>

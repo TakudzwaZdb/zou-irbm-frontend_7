@@ -13,51 +13,67 @@ const os = require('os');
 const WORKER_COUNT = Math.max(1, Number(process.env.WEB_CONCURRENCY) || os.cpus().length);
 
 if (cluster.isPrimary) {
-  // Every schema migration (backend/src/db.js) runs exactly once, right
-  // here, before any worker is forked. node:sqlite's DatabaseSync API is
-  // fully synchronous, so this require() doesn't return until every
-  // migration has actually committed to disk. That ordering matters: each
-  // worker below is a genuinely separate OS process with its own module
-  // cache, so each one runs db.js's own migration-guard checks (PRAGMA
-  // table_info(...) before an ALTER TABLE) independently — if two of them
-  // ever raced on the very first launch, both could see a column missing
-  // at the same instant and both try to add it, crashing the second one.
-  // Requiring it here first means every worker's own check always finds
-  // the schema already migrated and no-ops, safely. SQLite's WAL mode
-  // (already enabled in db.js) is explicitly designed for exactly what
-  // happens after this: several processes, one file, one writer at a
-  // time, unlimited concurrent readers.
-  require('./db');
+  // The schema (backend/src/db.js) is created exactly once, right here,
+  // before any worker is forked — `db.ready()` resolves once every
+  // `CREATE TABLE IF NOT EXISTS` / catalog-sync statement has actually
+  // committed against Postgres. That ordering matters: each worker below is
+  // a genuinely separate OS process with its own module cache and its own
+  // connection pool, so without this, several workers could race to
+  // create the schema at once on a very first launch. In practice every
+  // statement in db.js's schema is idempotent (IF NOT EXISTS / ON CONFLICT
+  // DO NOTHING) so a race there is harmless — this ordering is kept anyway
+  // so the primary's own startup log line only prints once schema setup
+  // has genuinely finished, not while it's still in flight.
+  (async () => {
+    await require('./db').ready();
 
-  // Pass the resolved count down to every worker (including the
-  // os.cpus().length default, not just an explicit override) — routes/
-  // auth.js's login rate limiter reads it back to keep its effective
-  // cluster-wide limit close to its intended 8-per-10-minutes even though
-  // each worker now keeps its own independent in-memory counter (see the
-  // comment there for why that split is necessary at all).
-  process.env.WEB_CONCURRENCY = String(WORKER_COUNT);
+    // Pass the resolved count down to every worker (including the
+    // os.cpus().length default, not just an explicit override) — routes/
+    // auth.js's login rate limiter reads it back to keep its effective
+    // cluster-wide limit close to its intended 8-per-10-minutes even though
+    // each worker now keeps its own independent in-memory counter (see the
+    // comment there for why that split is necessary at all).
+    process.env.WEB_CONCURRENCY = String(WORKER_COUNT);
 
-  console.log(`Primary ${process.pid}: starting ${WORKER_COUNT} worker process(es) (set WEB_CONCURRENCY in .env to override).`);
-  for (let i = 0; i < WORKER_COUNT; i++) cluster.fork();
+    console.log(`Primary ${process.pid}: starting ${WORKER_COUNT} worker process(es) (set WEB_CONCURRENCY in .env to override).`);
+    for (let i = 0; i < WORKER_COUNT; i++) cluster.fork();
 
-  // A worker that crashes (an uncaught exception escaping a route
-  // handler, say) takes only itself down — replace it so the app's real
-  // capacity doesn't quietly shrink every time that happens instead of
-  // silently running on fewer workers than intended.
-  cluster.on('exit', (worker, code, signal) => {
-    console.error(`Worker ${worker.process.pid} exited (code ${code}, signal ${signal}) — starting a replacement.`);
-    cluster.fork();
+    // A worker that crashes (an uncaught exception escaping a route
+    // handler, say) takes only itself down — replace it so the app's real
+    // capacity doesn't quietly shrink every time that happens instead of
+    // silently running on fewer workers than intended.
+    cluster.on('exit', (worker, code, signal) => {
+      console.error(`Worker ${worker.process.pid} exited (code ${code}, signal ${signal}) — starting a replacement.`);
+      cluster.fork();
+    });
+  })().catch((err) => {
+    console.error('Fatal: could not prepare the database schema — no workers were started.', err);
+    process.exit(1);
   });
 } else {
-  runWorker();
+  runWorker().catch((err) => {
+    console.error(`Fatal: worker ${process.pid} failed to start.`, err);
+    process.exit(1);
+  });
 }
 
-function runWorker() {
+async function runWorker() {
   const path = require('path');
+  // Must load before any route file — it patches express.Router() so every
+  // route handler's rejected Promise reaches the error handler below
+  // instead of crashing the process. See utils/expressAsync.js.
+  require('./utils/expressAsync');
   const express = require('express');
   const cors = require('cors');
   const helmet = require('helmet');
   const compression = require('compression');
+
+  // Defensive, cheap no-op in the normal case (the primary already awaited
+  // this before forking any worker) — every statement db.js's ready() runs
+  // is idempotent, so a worker started some other way (or against a
+  // database schema created by a different process entirely) still never
+  // serves a request before its own schema check has actually passed.
+  await require('./db').ready();
 
   const authRoutes = require('./routes/auth');
   const userRoutes = require('./routes/users');

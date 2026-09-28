@@ -1,8 +1,8 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const db = require('../db');
-const { requireAuth, requireRole } = require('../middleware/auth');
-const { PERMISSIONS, DEFAULT_PERMS_BY_ROLE } = require('../utils/permissions');
+const { requireAuth, requireRole, getUserPermissions, applyRolePermissions, listRolesWithPermissions, permissionsForRole } = require('../middleware/auth');
+const { PERMISSIONS } = require('../utils/permissions');
 const { generateTempPassword } = require('../utils/password');
 
 const router = express.Router();
@@ -14,7 +14,7 @@ const router = express.Router();
 // server-enforced rule rather than a client-side convention.
 router.use(requireAuth, requireRole('ictadmin'));
 
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   // Deactivated accounts (deleted_at set — see routes/org.js's
   // deactivateUserAccount, fired when the person tied to them is removed
   // from the org structure) are excluded from the Directory the same way a
@@ -22,69 +22,178 @@ router.get('/', (req, res) => {
   // the row and its history are intact, it just isn't part of "current"
   // anymore. It stays fully visible and actionable from Recently Removed →
   // restoring the person there reactivates the account too.
-  const users = db.prepare('SELECT id, name, title, email, role, scope_type, scope_id, avatar, overview_limit, is_executive_owner, mfa_enabled FROM users WHERE deleted_at IS NULL ORDER BY role, name').all();
+  const users = await db.prepare('SELECT id, name, title, email, role, scope_type, scope_id, avatar, overview_limit, is_executive_owner, mfa_enabled FROM users WHERE deleted_at IS NULL ORDER BY role, name').all();
   users.forEach((u) => { u.mfa_enabled = !!u.mfa_enabled; });
-  const permRows = db.prepare('SELECT user_id, permission_key FROM user_permissions').all();
+  const permRows = await db.prepare('SELECT user_id, permission_key FROM user_permissions').all();
   const permsByUser = {};
   permRows.forEach((r) => {
     (permsByUser[r.user_id] = permsByUser[r.user_id] || []).push(r.permission_key);
   });
-  users.forEach((u) => { u.permissions = permsByUser[u.id] || []; });
-  res.json({ users, catalog: PERMISSIONS });
+  const roles = await listRolesWithPermissions();
+  const rolePerms = {};
+  roles.forEach((role) => { rolePerms[role.key] = role.permissions; });
+  users.forEach((u) => {
+    const direct = permsByUser[u.id] || [];
+    u.directPermissions = direct;
+    u.permissions = [...new Set([...direct, ...(rolePerms[u.role] || [])])].sort();
+  });
+  // How many active accounts currently hold each role — the Permissions
+  // page's roles table shows this per role, so it needs a real count rather
+  // than a field that was never actually populated.
+  const countsByRole = {};
+  users.forEach((u) => { countsByRole[u.role] = (countsByRole[u.role] || 0) + 1; });
+  roles.forEach((role) => { role.user_count = countsByRole[role.key] || 0; });
+  res.json({ users, roles, catalog: PERMISSIONS });
 });
 
-router.post('/:id/permissions/:key/grant', (req, res) => {
+// Bulk-assigns ONE role to several users at once — a convenience over the
+// single-user PATCH /:id/role below, restricted to roles that don't need a
+// personal organisational scope (exec/cpu/ictadmin/council and any custom
+// global role created via POST /api/org/roles): a scoped role (Unit Head,
+// Sub-programme Rep, Programme Head, Individual) needs a specific
+// Unit/Sub/Programme/Individual picked per person, which this bulk form has
+// no field for — those still go through the Users page's per-person role
+// change. Same single-holder-per-global-role rule PATCH /:id/role already
+// enforces: each user is assigned in turn inside one transaction, so if two
+// selected users would both occupy the same currently-vacant global seat,
+// the first succeeds and the rest fail with "already occupied" by that same
+// person — reported back per user rather than silently dropped or crashing
+// the whole batch.
+router.post('/assign-role', async (req, res) => {
+  const { userIds, role } = req.body || {};
+  if (!Array.isArray(userIds) || userIds.length === 0) return res.status(400).json({ error: 'Select at least one user.' });
+  const roleDefinition = await db.prepare('SELECT key, label FROM role_definitions WHERE key = ?').get(role);
+  if (!roleDefinition) return res.status(400).json({ error: 'Invalid role.' });
+  if (ROLE_SCOPE_TYPES[role] || role === 'individual') {
+    return res.status(400).json({ error: `${roleDefinition.label} needs a specific organisational scope for each person — assign it one person at a time from the Users page instead.` });
+  }
+  const ids = [...new Set(userIds.map(Number))].filter((id) => Number.isInteger(id));
+  const results = [];
+  const txn = db.transaction(async () => {
+    for (const id of ids) {
+      if (id === req.user.id) { results.push({ id, ok: false, error: 'You cannot change your own role.' }); continue; }
+      const target = await db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
+      if (!target) { results.push({ id, ok: false, error: 'User not found.' }); continue; }
+      const occupied = await db.prepare('SELECT name FROM users WHERE role = ? AND scope_type IS NULL AND scope_id IS NULL AND deleted_at IS NULL AND id != ?').get(role, id);
+      if (occupied) { results.push({ id, ok: false, error: `Already occupied by ${occupied.name}.` }); continue; }
+      await db.prepare('UPDATE individuals SET user_id = NULL WHERE user_id = ?').run(id);
+      await db.prepare('UPDATE programmes SET head_user_id = NULL WHERE head_user_id = ?').run(id);
+      await db.prepare('UPDATE subs SET rep_user_id = NULL WHERE rep_user_id = ?').run(id);
+      await db.prepare('UPDATE units SET head_user_id = NULL WHERE head_user_id = ?').run(id);
+      await db.prepare('UPDATE users SET role = ?, title = ?, scope_type = NULL, scope_id = NULL WHERE id = ?').run(role, roleDefinition.label, id);
+      // Same tier-change invariant as PATCH /:id/role: replace the previous
+      // role's default grants so old access can't leak into the new role.
+      await db.prepare('DELETE FROM user_permissions WHERE user_id = ?').run(id);
+      await applyRolePermissions(id, role);
+      await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+        req.user.id, 'change_role', 'user', id, `${target.name}: role changed from "${target.role}" to "${role}" (bulk assignment).`
+      );
+      results.push({ id, ok: true });
+    }
+  });
+  await txn();
+  const okCount = results.filter((r) => r.ok).length;
+  const failed = results.filter((r) => !r.ok);
+  if (okCount === 0) return res.status(400).json({ error: failed[0]?.error || 'No users were assigned.', results });
+  res.json({ ok: true, assigned: okCount, failed: failed.length, results });
+});
+
+router.post('/roles/:role/permissions/:key/grant', async (req, res) => {
+  const { role, key } = req.params;
+  if (!PERMISSIONS.some((p) => p.key === key)) return res.status(404).json({ error: 'Unknown permission key.' });
+  const definition = await db.prepare('SELECT key, label FROM role_definitions WHERE key = ?').get(role);
+  if (!definition) return res.status(404).json({ error: 'Role not found.' });
+  await db.transaction(async () => {
+    await db.prepare('INSERT OR IGNORE INTO role_permissions (role_key, permission_key) VALUES (?, ?)').run(role, key);
+    await db.prepare(`
+      INSERT OR IGNORE INTO user_permissions (user_id, permission_key)
+      SELECT id, ? FROM users WHERE role = ?
+    `).run(key, role);
+    await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+      req.user.id, 'permission_grant', 'role', null, `Granted "${key}" to the ${definition.label} role.`
+    );
+  })();
+  res.json({ ok: true, role: { key: definition.key, permissions: await permissionsForRole(role) } });
+});
+
+router.post('/roles/:role/permissions/:key/revoke', async (req, res) => {
+  const { role, key } = req.params;
+  if (!PERMISSIONS.some((p) => p.key === key)) return res.status(404).json({ error: 'Unknown permission key.' });
+  const definition = await db.prepare('SELECT key, label FROM role_definitions WHERE key = ?').get(role);
+  if (!definition) return res.status(404).json({ error: 'Role not found.' });
+  await db.transaction(async () => {
+    await db.prepare('DELETE FROM role_permissions WHERE role_key = ? AND permission_key = ?').run(role, key);
+    await db.prepare(`
+      DELETE FROM user_permissions
+      WHERE permission_key = ? AND user_id IN (SELECT id FROM users WHERE role = ?)
+    `).run(key, role);
+    await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+      req.user.id, 'permission_revoke', 'role', null, `Revoked "${key}" from the ${definition.label} role.`
+    );
+  })();
+  res.json({ ok: true, role: { key: definition.key, permissions: await permissionsForRole(role) } });
+});
+
+router.post('/:id/permissions/:key/grant', async (req, res) => {
   const { id, key } = req.params;
   if (!PERMISSIONS.some((p) => p.key === key)) return res.status(404).json({ error: 'Unknown permission key.' });
-  const target = db.prepare('SELECT id, name FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
+  const target = await db.prepare('SELECT id, name FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
-  db.transaction(() => {
-    db.prepare('INSERT OR IGNORE INTO user_permissions (user_id, permission_key) VALUES (?, ?)').run(id, key);
-    db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.transaction(async () => {
+    await db.prepare('INSERT OR IGNORE INTO user_permissions (user_id, permission_key) VALUES (?, ?)').run(id, key);
+    await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
       req.user.id, 'permission_grant', 'user', id, `Granted "${key}" to ${target.name}.`
     );
   })();
-  const permissions = db.prepare('SELECT permission_key FROM user_permissions WHERE user_id = ? ORDER BY permission_key').all(id).map((row) => row.permission_key);
+  const permissions = await getUserPermissions(id);
   res.json({ ok: true, user: { id: Number(id), permissions } });
 });
 
-router.post('/:id/permissions/:key/revoke', (req, res) => {
+router.post('/:id/permissions/:key/revoke', async (req, res) => {
   const { id, key } = req.params;
   if (!PERMISSIONS.some((p) => p.key === key)) return res.status(404).json({ error: 'Unknown permission key.' });
-  const target = db.prepare('SELECT id, name FROM users WHERE id = ?').get(id);
+  const target = await db.prepare('SELECT id, name FROM users WHERE id = ?').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
-  db.transaction(() => {
-    db.prepare('DELETE FROM user_permissions WHERE user_id = ? AND permission_key = ?').run(id, key);
-    db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.transaction(async () => {
+    await db.prepare('DELETE FROM user_permissions WHERE user_id = ? AND permission_key = ?').run(id, key);
+    await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
       req.user.id, 'permission_revoke', 'user', id, `Revoked "${key}" from ${target.name}.`
     );
   })();
-  const permissions = db.prepare('SELECT permission_key FROM user_permissions WHERE user_id = ? ORDER BY permission_key').all(id).map((row) => row.permission_key);
+  const permissions = await getUserPermissions(id);
   res.json({ ok: true, user: { id: Number(id), permissions } });
 });
 
-// Update a user's profile fields — name, title, email. Separate from role
-// change and permission grants (different decision, different form), and
+// Update a user's profile fields — name, email. Separate from role change
+// and permission grants (different decision, different form), and
 // deliberately allowed on your own account too (unlike role change/removal
 // below) since fixing your own name or email typo shouldn't require another
 // ICT admin.
-router.patch('/:id/profile', (req, res) => {
+//
+// `title` is intentionally NOT accepted here — it is never free text typed
+// by an admin. It is derived automatically from the account's role (see
+// PATCH /:id/role and POST /assign-role, both of which set
+// title = roleDefinition.label whenever a role/scope change is applied) so
+// the label shown across the app always matches what the database actually
+// says the account's role is, instead of drifting out of sync with a
+// manually-typed value.
+router.patch('/:id/profile', async (req, res) => {
   const { id } = req.params;
-  const { name, title, email } = req.body || {};
-  const target = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  const { name, email } = req.body || {};
+  const target = await db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required.' });
   if (!email || !email.trim()) return res.status(400).json({ error: 'Email is required.' });
   const normalizedEmail = email.trim().toLowerCase();
-  const clash = db.prepare('SELECT id FROM users WHERE email = ? AND id != ?').get(normalizedEmail, id);
+  const clash = await db.prepare('SELECT id FROM users WHERE email = ? AND id != ?').get(normalizedEmail, id);
   if (clash) return res.status(400).json({ error: 'Another account already uses that email.' });
 
-  db.prepare('UPDATE users SET name = ?, title = ?, email = ? WHERE id = ?')
-    .run(name.trim(), (title || '').trim(), normalizedEmail, id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE users SET name = ?, email = ? WHERE id = ?')
+    .run(name.trim(), normalizedEmail, id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'update_profile', 'user', id, `Profile updated for ${target.name} (was "${target.name}" <${target.email}>).`
   );
-  res.json({ user: db.prepare('SELECT id, name, title, email, role, scope_type, scope_id FROM users WHERE id = ?').get(id) });
+  res.json({ user: await db.prepare('SELECT id, name, title, email, role, scope_type, scope_id FROM users WHERE id = ?').get(id) });
 });
 
 // Admin-assisted password reset — the real, working answer to "reset it when
@@ -104,18 +213,18 @@ router.patch('/:id/profile', (req, res) => {
 // a reset done because an account may be compromised actually signs that
 // account out of every session it currently holds, not just changes what a
 // future login would need.
-router.post('/:id/reset-password', (req, res) => {
+router.post('/:id/reset-password', async (req, res) => {
   const { id } = req.params;
   const { newPassword } = req.body || {};
-  const target = db.prepare('SELECT id, name FROM users WHERE id = ?').get(id);
+  const target = await db.prepare('SELECT id, name FROM users WHERE id = ?').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
 
   const chosen = (newPassword && String(newPassword).trim()) || generateTempPassword();
   if (chosen.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
 
   const hash = bcrypt.hashSync(chosen, 10);
-  db.prepare('UPDATE users SET password_hash = ?, must_change_password = 1, token_version = token_version + 1 WHERE id = ?').run(hash, id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE users SET password_hash = ?, must_change_password = 1, token_version = token_version + 1 WHERE id = ?').run(hash, id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'reset_password', 'user', id, `Password reset for ${target.name} by ICT admin (must change it at next sign-in).`
   );
   res.json({ newPassword: chosen });
@@ -127,15 +236,15 @@ router.post('/:id/reset-password', (req, res) => {
 // silently re-enables it) and clears every recovery code; the person signs
 // in with just their password afterward and can set MFA back up with a new
 // device from their own Profile page whenever they're ready.
-router.post('/:id/mfa/disable', (req, res) => {
+router.post('/:id/mfa/disable', async (req, res) => {
   const { id } = req.params;
-  const target = db.prepare('SELECT id, name, mfa_enabled FROM users WHERE id = ?').get(id);
+  const target = await db.prepare('SELECT id, name, mfa_enabled FROM users WHERE id = ?').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
   if (!target.mfa_enabled) return res.status(400).json({ error: 'That account does not have two-factor authentication enabled.' });
 
-  db.prepare('UPDATE users SET mfa_enabled = 0, mfa_secret = NULL WHERE id = ?').run(id);
-  db.prepare('DELETE FROM mfa_recovery_codes WHERE user_id = ?').run(id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE users SET mfa_enabled = 0, mfa_secret = NULL WHERE id = ?').run(id);
+  await db.prepare('DELETE FROM mfa_recovery_codes WHERE user_id = ?').run(id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'mfa_disabled', 'user', id, `Two-factor authentication reset for ${target.name} by ICT admin (lost device/recovery codes).`
   );
   res.json({ ok: true });
@@ -151,11 +260,11 @@ const ROLE_SCOPE_TYPES = { rep: 'sub', unithead: 'unit', programme: 'programme' 
 // user's existing granted permissions, since a role change and a
 // permission change are different decisions — review the Permissions
 // panel afterwards if the new role needs a different permission set.
-router.patch('/:id/role', (req, res) => {
+router.patch('/:id/role', async (req, res) => {
   const { id } = req.params;
   const { role, scopeType, scopeId } = req.body || {};
   if (Number(id) === req.user.id) return res.status(400).json({ error: 'You cannot change your own role.' });
-  const roleDefinition = db.prepare('SELECT key, label FROM role_definitions WHERE key = ?').get(role);
+  const roleDefinition = await db.prepare('SELECT key, label FROM role_definitions WHERE key = ?').get(role);
   if (!roleDefinition) return res.status(400).json({ error: 'Invalid role.' });
   const requiredScopeType = ROLE_SCOPE_TYPES[role];
   if (requiredScopeType && scopeType !== requiredScopeType) {
@@ -171,11 +280,11 @@ router.patch('/:id/role', (req, res) => {
   }
   if (scopeType) {
     const scopeTables = { programme: 'programmes', sub: 'subs', unit: 'units', individual: 'individuals' };
-    const scope = db.prepare(`SELECT id FROM ${scopeTables[scopeType]} WHERE id = ? AND deleted_at IS NULL`).get(scopeId);
+    const scope = await db.prepare(`SELECT id FROM ${scopeTables[scopeType]} WHERE id = ? AND deleted_at IS NULL`).get(scopeId);
     if (!scope) return res.status(400).json({ error: 'The selected organisation scope was not found.' });
   }
   if (role === 'individual' && scopeType === 'individual') {
-    const individual = db.prepare(`
+    const individual = await db.prepare(`
       SELECT i.id, i.user_id, u.id AS unit_id, u.deleted_at AS unit_deleted_at,
         s.id AS sub_id, s.deleted_at AS sub_deleted_at,
         p.id AS programme_id, p.deleted_at AS programme_deleted_at
@@ -189,7 +298,7 @@ router.patch('/:id/role', (req, res) => {
       return res.status(400).json({ error: 'An Individual must be assigned to an active Programme, Sub-programme, and Unit / Department / Faculty / Region.' });
     }
   }
-  const target = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  const target = await db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
 
   // A role represents a single occupied appointment at its scope. Global
@@ -198,49 +307,48 @@ router.patch('/:id/role', (req, res) => {
   // is deliberately exempt because multiple Individual accounts are valid.
   if (role !== 'individual') {
     const occupied = scopeType
-      ? db.prepare('SELECT name FROM users WHERE role = ? AND scope_type = ? AND scope_id = ? AND deleted_at IS NULL AND id != ? ORDER BY id LIMIT 1')
+      ? await db.prepare('SELECT name FROM users WHERE role = ? AND scope_type = ? AND scope_id = ? AND deleted_at IS NULL AND id != ? ORDER BY id LIMIT 1')
         .get(role, scopeType, scopeId, id)
-      : db.prepare('SELECT name FROM users WHERE role = ? AND scope_type IS NULL AND scope_id IS NULL AND deleted_at IS NULL AND id != ? ORDER BY id LIMIT 1')
+      : await db.prepare('SELECT name FROM users WHERE role = ? AND scope_type IS NULL AND scope_id IS NULL AND deleted_at IS NULL AND id != ? ORDER BY id LIMIT 1')
         .get(role, id);
     if (occupied) {
       return res.status(400).json({ error: `That ${roleDefinition.label} role is already occupied by ${occupied.name}.` });
     }
 
     const appointment = role === 'programme'
-      ? db.prepare('SELECT u.name FROM programmes p JOIN users u ON u.id = p.head_user_id WHERE p.id = ? AND p.deleted_at IS NULL AND u.deleted_at IS NULL AND p.head_user_id != ?').get(scopeId, id)
+      ? await db.prepare('SELECT u.name FROM programmes p JOIN users u ON u.id = p.head_user_id WHERE p.id = ? AND p.deleted_at IS NULL AND u.deleted_at IS NULL AND p.head_user_id != ?').get(scopeId, id)
       : role === 'rep'
-        ? db.prepare('SELECT u.name FROM subs s JOIN users u ON u.id = s.rep_user_id WHERE s.id = ? AND s.deleted_at IS NULL AND u.deleted_at IS NULL AND s.rep_user_id != ?').get(scopeId, id)
+        ? await db.prepare('SELECT u.name FROM subs s JOIN users u ON u.id = s.rep_user_id WHERE s.id = ? AND s.deleted_at IS NULL AND u.deleted_at IS NULL AND s.rep_user_id != ?').get(scopeId, id)
         : role === 'unithead'
-          ? db.prepare('SELECT u.name FROM units n JOIN users u ON u.id = n.head_user_id WHERE n.id = ? AND n.deleted_at IS NULL AND u.deleted_at IS NULL AND n.head_user_id != ?').get(scopeId, id)
+          ? await db.prepare('SELECT u.name FROM units n JOIN users u ON u.id = n.head_user_id WHERE n.id = ? AND n.deleted_at IS NULL AND u.deleted_at IS NULL AND n.head_user_id != ?').get(scopeId, id)
           : null;
     if (appointment) {
       return res.status(400).json({ error: `That ${roleDefinition.label} appointment is already occupied by ${appointment.name}.` });
     }
   }
 
-  const change = db.transaction(() => {
-    db.prepare('UPDATE individuals SET user_id = NULL WHERE user_id = ?').run(id);
-    db.prepare('UPDATE programmes SET head_user_id = NULL WHERE head_user_id = ?').run(id);
-    db.prepare('UPDATE subs SET rep_user_id = NULL WHERE rep_user_id = ?').run(id);
-    db.prepare('UPDATE units SET head_user_id = NULL WHERE head_user_id = ?').run(id);
-    db.prepare('UPDATE users SET role = ?, title = ?, scope_type = ?, scope_id = ? WHERE id = ?')
+  const change = db.transaction(async () => {
+    await db.prepare('UPDATE individuals SET user_id = NULL WHERE user_id = ?').run(id);
+    await db.prepare('UPDATE programmes SET head_user_id = NULL WHERE head_user_id = ?').run(id);
+    await db.prepare('UPDATE subs SET rep_user_id = NULL WHERE rep_user_id = ?').run(id);
+    await db.prepare('UPDATE units SET head_user_id = NULL WHERE head_user_id = ?').run(id);
+    await db.prepare('UPDATE users SET role = ?, title = ?, scope_type = ?, scope_id = ? WHERE id = ?')
       .run(role, roleDefinition.label, scopeType || null, scopeId || null, id);
-    if (role === 'individual' && scopeType === 'individual') db.prepare('UPDATE individuals SET user_id = ? WHERE id = ?').run(id, scopeId);
-    if (role === 'programme') db.prepare('UPDATE programmes SET head_user_id = ? WHERE id = ?').run(id, scopeId);
-    if (role === 'rep') db.prepare('UPDATE subs SET rep_user_id = ? WHERE id = ?').run(id, scopeId);
-    if (role === 'unithead') db.prepare('UPDATE units SET head_user_id = ? WHERE id = ?').run(id, scopeId);
+    if (role === 'individual' && scopeType === 'individual') await db.prepare('UPDATE individuals SET user_id = ? WHERE id = ?').run(id, scopeId);
+    if (role === 'programme') await db.prepare('UPDATE programmes SET head_user_id = ? WHERE id = ?').run(id, scopeId);
+    if (role === 'rep') await db.prepare('UPDATE subs SET rep_user_id = ? WHERE id = ?').run(id, scopeId);
+    if (role === 'unithead') await db.prepare('UPDATE units SET head_user_id = ? WHERE id = ?').run(id, scopeId);
     // A tier change changes the account's authority everywhere, not just its
     // label. Replace the previous tier's default grants so old access cannot
     // leak into the new role.
-    db.prepare('DELETE FROM user_permissions WHERE user_id = ?').run(id);
-    const addPermission = db.prepare('INSERT INTO user_permissions (user_id, permission_key) VALUES (?, ?)');
-    (DEFAULT_PERMS_BY_ROLE[role] || []).forEach((permission) => addPermission.run(id, permission));
+    await db.prepare('DELETE FROM user_permissions WHERE user_id = ?').run(id);
+    await applyRolePermissions(id, role);
   });
-  change();
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await change();
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'change_role', 'user', id, `${target.name}: role changed from "${target.role}" to "${role}".`
   );
-  res.json({ user: db.prepare('SELECT id, name, title, email, role, scope_type, scope_id FROM users WHERE id = ?').get(id) });
+  res.json({ user: await db.prepare('SELECT id, name, title, email, role, scope_type, scope_id FROM users WHERE id = ?').get(id) });
 });
 
 // Sets (or clears) how deep this account may drill into Overview's
@@ -249,16 +357,16 @@ router.patch('/:id/role', (req, res) => {
 // or any other permission (see db.js's users.overview_limit / lib/scope.js's
 // canDrillToKind on the frontend, which is what actually enforces it).
 // null clears the restriction entirely ("the overall structure" — no cap).
-router.patch('/:id/overview-limit', (req, res) => {
+router.patch('/:id/overview-limit', async (req, res) => {
   const { id } = req.params;
   const { overviewLimit } = req.body || {};
   if (overviewLimit != null && !OVERVIEW_LIMITS.includes(overviewLimit)) {
     return res.status(400).json({ error: `overviewLimit must be one of: ${OVERVIEW_LIMITS.join(', ')}, or null.` });
   }
-  const target = db.prepare('SELECT id, name FROM users WHERE id = ?').get(id);
+  const target = await db.prepare('SELECT id, name FROM users WHERE id = ?').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
-  db.prepare('UPDATE users SET overview_limit = ? WHERE id = ?').run(overviewLimit || null, id);
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('UPDATE users SET overview_limit = ? WHERE id = ?').run(overviewLimit || null, id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'set_overview_limit', 'user', id,
     overviewLimit ? `${target.name}'s Overview navigation was capped at "${overviewLimit}" level.` : `${target.name}'s Overview navigation restriction was cleared.`
   );
@@ -271,17 +379,17 @@ router.patch('/:id/overview-limit', (req, res) => {
 // Overview.jsx's "Overall Institutional Performance" card). Deliberately
 // single-holder: setting it on one account clears it from every other in
 // the same transaction, so "who is accountable" is never ambiguous.
-router.patch('/:id/executive-owner', (req, res) => {
+router.patch('/:id/executive-owner', async (req, res) => {
   const { id } = req.params;
   const { executiveOwner } = req.body || {};
-  const target = db.prepare('SELECT id, name FROM users WHERE id = ?').get(id);
+  const target = await db.prepare('SELECT id, name FROM users WHERE id = ?').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
-  const txn = db.transaction(() => {
-    if (executiveOwner) db.prepare('UPDATE users SET is_executive_owner = 0 WHERE is_executive_owner = 1').run();
-    db.prepare('UPDATE users SET is_executive_owner = ? WHERE id = ?').run(executiveOwner ? 1 : 0, id);
+  const txn = db.transaction(async () => {
+    if (executiveOwner) await db.prepare('UPDATE users SET is_executive_owner = 0 WHERE is_executive_owner = 1').run();
+    await db.prepare('UPDATE users SET is_executive_owner = ? WHERE id = ?').run(executiveOwner ? 1 : 0, id);
   });
-  txn();
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await txn();
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'set_executive_owner', 'user', id,
     executiveOwner ? `${target.name} designated Executive Owner — accountable for overall institutional performance.` : `${target.name} un-designated as Executive Owner.`
   );
@@ -311,22 +419,22 @@ router.patch('/:id/executive-owner', (req, res) => {
 // so this list only ever shows accounts removed by that DELETE route
 // directly, which had no restore path visible anywhere in the UI at all
 // until this endpoint existed to back one.
-router.get('/removed', (req, res) => {
-  const users = db.prepare(
+router.get('/removed', async (req, res) => {
+  const users = await db.prepare(
     'SELECT id, name, title, email, role, scope_type, scope_id, deleted_at FROM users WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC'
   ).all();
   res.json({ users });
 });
 
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
   const { id } = req.params;
   if (Number(id) === req.user.id) return res.status(400).json({ error: 'You cannot remove your own account.' });
-  const target = db.prepare('SELECT id, name FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
+  const target = await db.prepare('SELECT id, name FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
 
-  db.prepare("UPDATE users SET deleted_at = datetime('now') WHERE id = ?").run(id);
+  await db.prepare("UPDATE users SET deleted_at = datetime('now') WHERE id = ?").run(id);
 
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'remove_account', 'user', id, `Account removed: ${target.name}. Recoverable from Recently Removed.`
   );
   res.json({ ok: true });
@@ -335,14 +443,14 @@ router.delete('/:id', (req, res) => {
 // Restore a previously-removed account — clears deleted_at so it can sign
 // in again immediately, with its permissions, role, and every link to it
 // (Unit/Sub headship, Individual record) intact exactly as they were.
-router.post('/:id/restore', (req, res) => {
+router.post('/:id/restore', async (req, res) => {
   const { id } = req.params;
-  const target = db.prepare('SELECT id, name FROM users WHERE id = ? AND deleted_at IS NOT NULL').get(id);
+  const target = await db.prepare('SELECT id, name FROM users WHERE id = ? AND deleted_at IS NOT NULL').get(id);
   if (!target) return res.status(404).json({ error: 'Removed account not found.' });
 
-  db.prepare('UPDATE users SET deleted_at = NULL WHERE id = ?').run(id);
+  await db.prepare('UPDATE users SET deleted_at = NULL WHERE id = ?').run(id);
 
-  db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'restore_account', 'user', id, `Account restored: ${target.name}.`
   );
   res.json({ ok: true });
