@@ -39,13 +39,13 @@ const PERMISSIONS = [
   { key: 'edit_units', label: 'Edit Units / Departments / Regions', group: 'Framework' },
   { key: 'delete_units', label: 'Delete Units / Departments / Regions', group: 'Framework' },
   // Deliberately separate from manage_org_units: lets ICT admin hand a Sub
-  // Rep or Unit Head just the ability to add an Individual under their own
+  // Rep or Unit Head just the ability to add an Employee under their own
   // scope, without also granting them unit-creation. See routes/org.js for
   // the scope check this permission is bound by when granted on its own.
-  { key: 'add_individual', label: 'Add an Individual (within own scope)', group: 'Framework' },
-  { key: 'create_individuals', label: 'Create Individuals', group: 'Framework' },
-  { key: 'edit_individuals', label: 'Edit Individuals', group: 'Framework' },
-  { key: 'delete_individuals', label: 'Delete Individuals', group: 'Framework' },
+  { key: 'add_employee', label: 'Add an Employee (within own scope)', group: 'Framework' },
+  { key: 'create_employees', label: 'Create Employees', group: 'Framework' },
+  { key: 'edit_employees', label: 'Edit Employees', group: 'Framework' },
+  { key: 'delete_employees', label: 'Delete Employees', group: 'Framework' },
   { key: 'manage_framework', label: 'Propose structural changes', group: 'Framework' },
   { key: 'submit_annual_plan', label: 'Compile & submit the university annual plan', group: 'Framework' },
   // The University Council's own authority: the one gate the compiled
@@ -58,6 +58,16 @@ const PERMISSIONS = [
   { key: 'validate_annual_plan', label: 'Validate & approve the University Annual Plan (University Council)', group: 'Governance' },
   { key: 'manage_settings', label: 'Manage RAG thresholds & cutoffs', group: 'Admin' },
   { key: 'manage_users', label: 'Grant & revoke permissions', group: 'Admin' },
+  // Deliberately separate from manage_users: the Users directory is
+  // otherwise reachable only by the same account that can grant/revoke
+  // permissions and change roles (ICT Systems Administrator). This lets
+  // someone see the account directory — who exists, their role, their
+  // organisation scope — without being able to act on any of it; every
+  // mutating route in routes/users.js (profile edits, password/MFA reset,
+  // role/scope change, Executive Owner, remove/restore) stays hard-gated
+  // to the ictadmin role itself (requireRole('ictadmin')), never just this
+  // permission, so granting view_users can never become edit access.
+  { key: 'view_users', label: 'View the Users directory (read-only)', group: 'Visibility' },
   { key: 'view_reports', label: 'View Reports', group: 'Visibility' },
   { key: 'view_audit', label: 'View Audit Log', group: 'Visibility' },
   // Overview and Framework used to be unconditionally visible to every
@@ -84,9 +94,24 @@ const PERMISSIONS = [
 // per-user in the database from then on, not hardcoded to role at request time.
 const DEFAULT_PERMS_BY_ROLE = {
   exec: ['view_reports', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
-  cpu: ['approve_own_tier', 'manage_settings', 'create_kpi', 'edit_kpi', 'delete_kpi', 'edit_targets', 'manage_org_units', 'manage_framework', 'submit_annual_plan', 'view_reports', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
+  // Vice Chancellor: the university's Executive Owner (see seed.js's own
+  // comment and users.is_executive_owner) — a distinct, single-seat role of
+  // its own now rather than an ordinary 'exec' account carrying that flag,
+  // but with exactly the same read-only privilege set 'exec' already has —
+  // Reports/Audit/Overview/Framework/Institutional Performance, nothing
+  // that writes or approves anything. Fully manageable like every other
+  // role: reassignable, removable/restorable, and revocable permission by
+  // permission from the Permissions & Roles page, the same as exec/cpu/
+  // ictadmin/council.
+  vc: ['view_reports', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
+  // view_users: CPU can see the Users directory (who exists, their role,
+  // their organisation scope) but holds none of manage_users' actual
+  // authority — every edit/remove/role-change/permission-grant action on
+  // that page stays reserved for ICT Systems Administrator alone (see the
+  // comment on 'view_users' above and routes/users.js's per-route gating).
+  cpu: ['approve_own_tier', 'manage_settings', 'create_kpi', 'edit_kpi', 'delete_kpi', 'edit_targets', 'manage_org_units', 'manage_framework', 'submit_annual_plan', 'view_reports', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance', 'view_users'],
   // ICT System Administrators manage the organisational structure (units,
-  // departments, faculties, regions, and individuals), the KPI catalogue
+  // departments, faculties, regions, and employees), the KPI catalogue
   // itself (creating new KPIs, not just editing targets on existing ones),
   // and overrides, by default, in addition to their exclusive
   // permission-management role — they don't have to grant these to
@@ -94,9 +119,9 @@ const DEFAULT_PERMS_BY_ROLE = {
   ictadmin: ['manage_users', 'manage_org_units', 'create_kpi', 'edit_kpi', 'delete_kpi', 'edit_targets', 'apply_override', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
   rep: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
   unithead: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
-  individual: ['data_entry', 'view_overview', 'view_framework'],
+  employee: ['data_entry', 'view_overview', 'view_framework'],
   // A bare, scope-less, read-only account (see routes/org.js's POST
-  // /individuals) — identical to 'individual' minus 'data_entry', so
+  // /employees) — identical to 'employee' minus 'data_entry', so
   // nothing about it can enter, submit, or edit anything; it can only look.
   default: ['view_overview', 'view_framework'],
   // Programme Head: oversees one whole Programme — every Sub-programme
@@ -108,8 +133,19 @@ const DEFAULT_PERMS_BY_ROLE = {
   // Sub-programme under them has been approved (see routes/plans.js's
   // isProgrammeHeadOwner). 'data_entry' is what gates that write, the same
   // permission every other tier's plan-entry route already checks.
-  programme: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
-  programmehead: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
+  //
+  // 'view_reports' was missing here originally — every other acting role
+  // (rep, unithead) could see Reports but a Programme Head, who sits one
+  // tier ABOVE them in the same cascade, couldn't. Fixed so Programme Head
+  // can see performance reports for their own Programme. Because
+  // permissions are read live via getUserPermissions()'s UNION of
+  // user_permissions and role_permissions (see middleware/auth.js), this
+  // takes effect immediately for every existing Programme Head account —
+  // no backfill migration needed.
+  programme: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework', 'view_reports'],
+  // Dead/unused key (not in db.js's BUILT_IN_ROLES) — kept in sync for
+  // consistency only.
+  programmehead: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework', 'view_reports'],
   // University Council: holds explicit governance authority over the structural
   // compilation. They can approve or return the completed Annual Plan layout via 
   // the `validate_annual_plan` checkpoint, and have broad visibility over historical 

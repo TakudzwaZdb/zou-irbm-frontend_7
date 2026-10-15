@@ -7,44 +7,44 @@ export function unitSubId(org, unitId) {
   const u = byId(org.units, unitId);
   return u ? u.sub_id : null;
 }
-export function individualUnitId(org, individualId) {
-  const i = byId(org.individuals, individualId);
+export function employeeUnitId(org, employeeId) {
+  const i = byId(org.employees, employeeId);
   return i ? i.unit_id : null;
 }
 export function kpiSubId(org, kpi) {
   if (kpi.owner_type === 'sub') return kpi.owner_id;
   if (kpi.owner_type === 'unit') return unitSubId(org, kpi.owner_id);
-  return unitSubId(org, individualUnitId(org, kpi.owner_id));
+  return unitSubId(org, employeeUnitId(org, kpi.owner_id));
 }
 export function isOwner(user, kpi) {
   if (kpi.owner_type === 'sub') return user.role === 'rep' && user.scope_id === kpi.owner_id;
   if (kpi.owner_type === 'unit') return user.role === 'unithead' && user.scope_id === kpi.owner_id;
-  return user.role === 'individual' && user.scope_type === 'individual' && user.scope_id === kpi.owner_id;
+  return user.role === 'employee' && user.scope_type === 'employee' && user.scope_id === kpi.owner_id;
 }
 // Mirrors backend/src/routes/kpis.js's isApprover exactly: single-stage,
-// one real approver per tier — Individual-owned by its Unit Head,
+// one real approver per tier — Employee-owned by its Unit Head,
 // Unit-owned by its Sub-programme Rep, and Sub-owned by that
 // Sub-programme's own Programme Head, final, with no further CPU stage.
 // (A sub-owned KPI used to pass through a second CPU sign-off stage after
 // the Programme Head, gated on a now-retired `status === 'programme_approved'`
 // check here; that's been removed by deliberate request.)
 export function isApprover(org, user, kpi) {
-  if (kpi.owner_type === 'individual') return user.role === 'unithead' && user.scope_id === individualUnitId(org, kpi.owner_id);
+  if (kpi.owner_type === 'employee') return user.role === 'unithead' && user.scope_id === employeeUnitId(org, kpi.owner_id);
   if (kpi.owner_type === 'unit') return user.role === 'rep' && user.scope_id === unitSubId(org, kpi.owner_id);
   const programmeId = byId(org.subs, kpi.owner_id)?.programme_id;
   return user.role === 'programme' && programmeId != null && user.scope_id === programmeId;
 }
 export function inJurisdiction(org, user, kpi) {
-  if (['cpu', 'ictadmin', 'exec'].includes(user.role)) return true;
+  if (['cpu', 'ictadmin', 'exec', 'vc'].includes(user.role)) return true;
   if (user.role === 'rep') return kpiSubId(org, kpi) === user.scope_id;
   if (user.role === 'unithead') {
     if (kpi.owner_type === 'unit') return kpi.owner_id === user.scope_id;
-    if (kpi.owner_type === 'individual') return individualUnitId(org, kpi.owner_id) === user.scope_id;
+    if (kpi.owner_type === 'employee') return employeeUnitId(org, kpi.owner_id) === user.scope_id;
     return false;
   }
-  if (user.role === 'individual') {
-    if (user.scope_type === 'individual') return kpi.owner_type === 'individual' && kpi.owner_id === user.scope_id;
-    if (user.scope_type === 'unit') return kpi.owner_type === 'unit' && kpi.owner_id === user.scope_id || kpi.owner_type === 'individual' && individualUnitId(org, kpi.owner_id) === user.scope_id;
+  if (user.role === 'employee') {
+    if (user.scope_type === 'employee') return kpi.owner_type === 'employee' && kpi.owner_id === user.scope_id;
+    if (user.scope_type === 'unit') return kpi.owner_type === 'unit' && kpi.owner_id === user.scope_id || kpi.owner_type === 'employee' && employeeUnitId(org, kpi.owner_id) === user.scope_id;
     if (user.scope_type === 'sub') return kpiSubId(org, kpi) === user.scope_id;
     if (user.scope_type === 'programme') return byId(org.subs, kpiSubId(org, kpi))?.programme_id === user.scope_id;
   }
@@ -61,42 +61,42 @@ export function inJurisdiction(org, user, kpi) {
 export function ownerName(org, kpi) {
   if (kpi.owner_type === 'sub') return byId(org.subs, kpi.owner_id)?.name || '—';
   if (kpi.owner_type === 'unit') return byId(org.units, kpi.owner_id)?.name || '—';
-  return byId(org.individuals, kpi.owner_id)?.name || '—';
+  return byId(org.employees, kpi.owner_id)?.name || '—';
 }
 
 // The owner's tier, in plain words — shown alongside ownerName() wherever a
 // chart or list needs to disambiguate two same-named KPIs owned by two
-// different people/units/sub-programmes (e.g. two Individuals both holding
+// different people/units/sub-programmes (e.g. two Employees both holding
 // a "Vacuum Cleaning" duty KPI in different Units — the name alone doesn't
-// tell them apart, but "T. Moyo — Individual" vs "R. Banda — Individual"
+// tell them apart, but "T. Moyo — Employee" vs "R. Banda — Employee"
 // does, and the chart still shows both bars distinctly by owner name too).
 export function ownerKindLabel(kpi) {
   if (kpi.owner_type === 'sub') return 'Sub-programme';
   if (kpi.owner_type === 'unit') return 'Unit';
-  return 'Individual';
+  return 'Employee';
 }
 
 // ---- org-tree navigation helpers (Overview drill-down + sidebar tree) ----
 // Mirrors the original prototype's Programme → Sub-programme → Unit →
-// Individual browsing: click a node, see its own breadcrumb and its own
+// Employee browsing: click a node, see its own breadcrumb and its own
 // cascaded performance (see nodeOwnKpis below), with its children one click
 // further in.
 export const ROLE_LABEL = {
-  exec: 'Executive', cpu: 'Corporate Planning Unit', ictadmin: 'ICT Systems Administrator',
-  rep: 'Sub-programme Rep', unithead: 'Unit Head', individual: 'Individual', programme: 'Programme Head',
+  exec: 'Executive', vc: 'Vice Chancellor', cpu: 'Corporate Planning Unit', ictadmin: 'ICT Systems Administrator',
+  rep: 'Sub-programme Rep', unithead: 'Unit Head', employee: 'Employee', programme: 'Programme Head',
   council: 'University Council',
 };
 
-// How deep Overview's Programme -> Sub-programme -> Unit -> Individual
+// How deep Overview's Programme -> Sub-programme -> Unit -> Employee
 // drill-down may go for one account — see db.js's users.overview_limit /
 // routes/users.js's PATCH /:id/overview-limit. A visibility ceiling ICT
 // admin can place on top of whatever a role would otherwise see; unset
 // (null/undefined) means no cap at all — "the overall structure", every
-// tier down to Individual. This only ever gates the exploratory Overview
+// tier down to Employee. This only ever gates the exploratory Overview
 // browse (AppContext's selectNode / Overview.jsx's ChildCards) — never an
 // accountability surface (My Data Entry, Approvals Queue, alerts), which
 // always show a person's own real duties regardless of this setting.
-const OVERVIEW_KIND_DEPTH = { programme: 0, sub: 1, unit: 2, individual: 3 };
+const OVERVIEW_KIND_DEPTH = { programme: 0, sub: 1, unit: 2, employee: 3 };
 export function overviewCapDepth(user) {
   const limit = user?.overview_limit;
   return limit && OVERVIEW_KIND_DEPTH[limit] != null ? OVERVIEW_KIND_DEPTH[limit] : Infinity;
@@ -106,26 +106,26 @@ export function canDrillToKind(user, kind) {
 }
 export function subsOfProgramme(org, programmeId) { return org.subs.filter((s) => s.programme_id === programmeId); }
 export function unitsOfSub(org, subId) { return org.units.filter((u) => u.sub_id === subId); }
-export function individualsOfUnit(org, unitId) { return org.individuals.filter((i) => i.unit_id === unitId); }
+export function employeesOfUnit(org, unitId) { return org.employees.filter((i) => i.unit_id === unitId); }
 export function kpisOf(kpis, ownerType, ownerId) { return kpis.filter((k) => k.owner_type === ownerType && k.owner_id === ownerId); }
 
 // The KPIs that count toward a given node's performance score — a full
 // cascade, not just what that tier owns directly: a Unit's score is its own
-// Unit KPIs PLUS every KPI owned by an Individual in that Unit; a
+// Unit KPIs PLUS every KPI owned by an Employee in that Unit; a
 // Sub-programme's score is its own Sub KPIs PLUS every Unit beneath it
-// (transitively, so Individuals count too); a Programme's score is its
-// Sub-programmes' own KPIs PLUS everything beneath THEM. An Individual's
-// score is just their own KPIs — nothing sits below an Individual to fold
+// (transitively, so Employees count too); a Programme's score is its
+// Sub-programmes' own KPIs PLUS everything beneath THEM. An Employee's
+// score is just their own KPIs — nothing sits below an Employee to fold
 // in. This is deliberate: a real person's real monthly number should move
 // the needle at every tier above them, not stay siloed at the level it was
 // entered — the same principle the shared-KPI contribution system (see
 // kpi_contributions on the backend) already applies within one Unit, now
 // carried all the way up to Sub-programme and Programme.
 export function nodeOwnKpis(org, kpis, kind, id) {
-  if (kind === 'individual') return kpisOf(kpis, 'individual', id);
+  if (kind === 'employee') return kpisOf(kpis, 'employee', id);
   if (kind === 'unit') {
     return kpisOf(kpis, 'unit', id).concat(
-      individualsOfUnit(org, id).reduce((acc, i) => acc.concat(kpisOf(kpis, 'individual', i.id)), [])
+      employeesOfUnit(org, id).reduce((acc, i) => acc.concat(kpisOf(kpis, 'employee', i.id)), [])
     );
   }
   if (kind === 'sub') {
@@ -148,7 +148,7 @@ export function nodeRagCls(rollup, settings) {
 
 // The node kind+id an org node's own entity sits at, and its full ancestor
 // chain from Programme down to itself (inclusive) — used for the "Home /
-// Programme / Sub-programme / Unit / Individual" breadcrumb.
+// Programme / Sub-programme / Unit / Employee" breadcrumb.
 export function nodeAncestryChain(org, kind, id) {
   if (kind === 'programme') {
     const p = byId(org.programmes, id);
@@ -167,7 +167,7 @@ export function nodeAncestryChain(org, kind, id) {
     const p = s && byId(org.programmes, s.programme_id);
     return [p && { kind: 'programme', id: p.id, name: p.name }, s && { kind: 'sub', id: s.id, name: s.name }, { kind: 'unit', id: u.id, name: u.name }].filter(Boolean);
   }
-  const ind = byId(org.individuals, id);
+  const ind = byId(org.employees, id);
   if (!ind) return [];
   const u = byId(org.units, ind.unit_id);
   const s = u && byId(org.subs, u.sub_id);
@@ -176,31 +176,121 @@ export function nodeAncestryChain(org, kind, id) {
     p && { kind: 'programme', id: p.id, name: p.name },
     s && { kind: 'sub', id: s.id, name: s.name },
     u && { kind: 'unit', id: u.id, name: u.name },
-    { kind: 'individual', id: ind.id, name: ind.name },
+    { kind: 'employee', id: ind.id, name: ind.name },
   ].filter(Boolean);
 }
 
 // The org node a scoped (non-global) role always lands on by default — a
 // Sub-programme Rep's own Sub-programme, a Unit Head's own Unit, an
-// Individual's own record. Global roles (cpu/exec/ictadmin) have none —
+// Employee's own record. Global roles (cpu/exec/vc/ictadmin) have none —
 // their default is "All Programmes", driven entirely by selNode.
 export function defaultNodeForRole(user) {
-  if (user.role === 'individual') return { kind: user.scope_type || 'individual', id: user.scope_id };
+  if (user.role === 'employee') return { kind: user.scope_type || 'employee', id: user.scope_id };
   if (user.role === 'unithead') return { kind: 'unit', id: user.scope_id };
   if (user.role === 'rep') return { kind: 'sub', id: user.scope_id };
   if (user.role === 'programme') return { kind: 'programme', id: user.scope_id };
   return null;
 }
-// An Individual's own personally-owned KPIs were previously the only thing
+
+// Roles whose real jurisdiction is the whole university, not one branch of
+// it — mirrors backend/src/utils/scope.js's GLOBAL_READ_ROLES exactly (plus
+// ictadmin, who reads everything for administrative reasons even though
+// they don't own a KPI tier). Used by Reports.jsx's focused-report
+// generator to decide whether "Overall" means the whole institution or
+// just a scoped account's own branch.
+export const GLOBAL_REPORT_ROLES = ['cpu', 'ictadmin', 'exec', 'vc', 'council'];
+
+// The slice of the org tree one account is allowed to generate a FOCUSED
+// report about — every Programme/Sub-programme/Unit/Employee at or beneath
+// `root` (its own node for a scoped role, from defaultNodeForRole), or the
+// whole tree when `root` is null (a global role). This deliberately never
+// includes anything ABOVE root (an ancestor Programme a Unit Head's own
+// Unit sits under, say) — the KPI data such a person can actually see
+// (GET /kpis is scope-filtered server-side the same way) never covers that
+// ancestor's other branches, so offering it as a pickable report target
+// would produce a report titled "Programme X" built from a small, silently
+// partial slice of that Programme's real numbers. Restricting the picker to
+// root-and-below keeps every generated report's data honestly complete for
+// whatever it claims to be about.
+export function reachableOrgSlice(org, root) {
+  if (!root || root.id == null) {
+    return { programmes: org.programmes, subs: org.subs, units: org.units, employees: org.employees };
+  }
+  if (root.kind === 'programme') {
+    const subs = subsOfProgramme(org, root.id);
+    const units = subs.flatMap((s) => unitsOfSub(org, s.id));
+    return {
+      programmes: [byId(org.programmes, root.id)].filter(Boolean),
+      subs, units,
+      employees: units.flatMap((u) => employeesOfUnit(org, u.id)),
+    };
+  }
+  if (root.kind === 'sub') {
+    const sub = byId(org.subs, root.id);
+    const units = unitsOfSub(org, root.id);
+    return {
+      programmes: sub ? [byId(org.programmes, sub.programme_id)].filter(Boolean) : [],
+      subs: sub ? [sub] : [],
+      units,
+      employees: units.flatMap((u) => employeesOfUnit(org, u.id)),
+    };
+  }
+  if (root.kind === 'unit') {
+    const unit = byId(org.units, root.id);
+    const sub = unit ? byId(org.subs, unit.sub_id) : null;
+    return {
+      programmes: sub ? [byId(org.programmes, sub.programme_id)].filter(Boolean) : [],
+      subs: sub ? [sub] : [],
+      units: unit ? [unit] : [],
+      employees: employeesOfUnit(org, root.id),
+    };
+  }
+  // employee
+  const emp = byId(org.employees, root.id);
+  const unit = emp ? byId(org.units, emp.unit_id) : null;
+  const sub = unit ? byId(org.subs, unit.sub_id) : null;
+  return {
+    programmes: sub ? [byId(org.programmes, sub.programme_id)].filter(Boolean) : [],
+    subs: sub ? [sub] : [],
+    units: unit ? [unit] : [],
+    employees: emp ? [emp] : [],
+  };
+}
+
+// Which report "levels" (Overall / Programme / Sub-programme / Unit /
+// Employee) a signed-in account may pick from in the focused-report
+// generator. A global role gets every level; a scoped role gets only its
+// own root level and everything beneath it (never an ancestor — see
+// reachableOrgSlice above) — so a Unit Head sees Unit + Employee, a
+// Sub-programme Rep sees Sub-programme + Unit + Employee, and so on. The
+// Employee level itself is dropped for anyone signed in as a plain
+// Employee, even for their own scope — an individual's own performance
+// report is oversight-only by deliberate policy, generated by whoever
+// already reviews their work (their own Unit Head and above), never
+// self-served.
+export function availableReportKinds(user) {
+  const canPickStaff = user.role !== 'employee';
+  if (GLOBAL_REPORT_ROLES.includes(user.role)) {
+    return canPickStaff ? ['overall', 'programme', 'sub', 'unit', 'employee'] : ['overall', 'programme', 'sub', 'unit'];
+  }
+  const order = ['programme', 'sub', 'unit', 'employee'];
+  const root = defaultNodeForRole(user);
+  const startIdx = root ? order.indexOf(root.kind) : -1;
+  if (startIdx === -1) return [];
+  const kinds = order.slice(startIdx);
+  return canPickStaff ? kinds : kinds.filter((k) => k !== 'employee');
+}
+
+// An Employee's own personally-owned KPIs were previously the only thing
 // relevantKpis ever showed them — nothing about the department/unit/
 // faculty/regional campus they actually belong to. They now also see every
 // KPI their own Unit owns (read-only unless it's also been assigned to
-// them — see isAssignedIndividual/canEnterData below), so "what is my unit
+// them — see isAssignedEmployee/canEnterData below), so "what is my unit
 // being measured on" is visible even for the KPIs someone else enters.
 export function relevantKpis(org, kpis, user) {
-  if (['cpu', 'exec', 'ictadmin', 'council'].includes(user.role)) return kpis;
-  if (user.role === 'individual') {
-    const unitId = user.scope_type === 'unit' ? user.scope_id : individualUnitId(org, user.scope_id);
+  if (['cpu', 'exec', 'vc', 'ictadmin', 'council'].includes(user.role)) return kpis;
+  if (user.role === 'employee') {
+    const unitId = user.scope_type === 'unit' ? user.scope_id : employeeUnitId(org, user.scope_id);
     return kpis.filter((k) =>
       isOwner(user, k) || isApprover(org, user, k) || inJurisdiction(org, user, k) ||
       (unitId != null && k.owner_type === 'unit' && k.owner_id === unitId)
@@ -209,18 +299,18 @@ export function relevantKpis(org, kpis, user) {
   return kpis.filter((k) => isOwner(user, k) || isApprover(org, user, k) || inJurisdiction(org, user, k));
 }
 
-// Has this Individual been delegated one of their Unit's KPIs by their Unit
+// Has this Employee been delegated one of their Unit's KPIs by their Unit
 // Head (a real, persisted grant — see kpi_assignments / POST /kpis/:id/assign
 // on the backend), not just able to see it read-only?
-export function isAssignedIndividual(user, kpi, assignments = []) {
-  if (kpi.owner_type !== 'unit' || user.role !== 'individual') return false;
-  return assignments.some((a) => a.kpi_id === kpi.id && a.individual_id === user.scope_id);
+export function isAssignedEmployee(user, kpi, assignments = []) {
+  if (kpi.owner_type !== 'unit' || user.role !== 'employee') return false;
+  return assignments.some((a) => a.kpi_id === kpi.id && a.employee_id === user.scope_id);
 }
 
 // Can this person fill in and submit this KPI's own official value
 // directly? Strict ownership only — mirrors backend/src/routes/kpis.js's
 // own isOwner exactly, which is the actual enforcement. An assigned
-// Individual is deliberately NOT included here any more: they contribute
+// Employee is deliberately NOT included here any more: they contribute
 // their own figure toward the KPI instead (see canContribute below), which
 // their Unit Head reviews before it ever becomes this KPI's real value.
 export function canEnterData(user, kpi) {
@@ -232,7 +322,7 @@ export function canEnterData(user, kpi) {
 // into kpi_contributions, reviewed by the Unit Head, and only then summed
 // into the KPI's real value — never a direct write to it.
 export function canContribute(user, kpi, assignments = []) {
-  return isAssignedIndividual(user, kpi, assignments);
+  return isAssignedEmployee(user, kpi, assignments);
 }
 export function computeRag(kpi, valueRow, settings) {
   const v = valueRow ? (valueRow.override_value != null ? valueRow.override_value : valueRow.value) : null;
@@ -298,7 +388,7 @@ export function scopeBreadcrumb(org, user) {
     const programme = sub ? byId(org.programmes, sub.programme_id) : null;
     return [programme?.name, sub?.name, unit.name].filter(Boolean);
   }
-  if (user.role === 'individual') {
+  if (user.role === 'employee') {
     if (user.scope_type === 'programme') {
       const programme = byId(org.programmes, user.scope_id);
       return programme ? [programme.name] : null;
@@ -316,7 +406,7 @@ export function scopeBreadcrumb(org, user) {
       const programme = sub ? byId(org.programmes, sub.programme_id) : null;
       return [programme?.name, sub?.name, `${unit.kind || 'Unit'}: ${unit.name}`].filter(Boolean);
     }
-    const ind = byId(org.individuals, user.scope_id);
+    const ind = byId(org.employees, user.scope_id);
     if (!ind) return null;
     const unit = byId(org.units, ind.unit_id);
     const sub = unit ? byId(org.subs, unit.sub_id) : null;
@@ -326,7 +416,7 @@ export function scopeBreadcrumb(org, user) {
   return null;
 }
 
-// An automated appraisal result for any list of KPIs (an individual's own,
+// An automated appraisal result for any list of KPIs (an employee's own,
 // a Unit's own, a Sub-programme's own, a Programme's own — whichever the
 // caller passes in) against a performance-lens values map keyed by kpi id
 // (see lib/period.js's latestInRange / AppContext's perfValues) — no manual
@@ -499,12 +589,12 @@ export function varianceRollup(kpiList, valuesByKpiId, settings) {
 }
 
 // "Overall Institutional Performance" is the average of the Programmes'
-// OWN averages — never a flat average across every individual KPI in the
+// OWN averages — never a flat average across every employee KPI in the
 // system, which would silently let whichever Programme happens to have the
 // most KPIs dominate the institutional figure. Each Programme's own
 // avgPct/avgVariance (the exact same performanceRollup/varianceRollup every
 // Programme's own Overview card already computes, via nodeOwnKpis's full
-// Programme -> Sub-programme -> Unit -> Individual cascade) is given equal
+// Programme -> Sub-programme -> Unit -> Employee cascade) is given equal
 // weight, one Programme, one vote, then averaged across however many
 // Programmes actually have at least one scored KPI — a Programme with
 // genuinely nothing scored yet is excluded rather than dragging the

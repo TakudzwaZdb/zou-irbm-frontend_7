@@ -20,9 +20,9 @@ const DEMO_PASSWORD = 'Zou@2026';
 // startTestServer below) — exported so a test can mint its own real,
 // signature-valid token the same way routes/auth.js's signToken() would
 // (`{ sub: userId, tv: tokenVersion }`), for the one case that can't sign in
-// through /login: a 'default'-role Individual account, which is
+// through /login: a 'default'-role Employee account, which is
 // auth_provider = 'azure' and has no password at all (see routes/org.js's
-// POST /individuals) — its actual sign-in only completes through a real
+// POST /employees) — its actual sign-in only completes through a real
 // Microsoft Entra ID tenant, which this test suite has no way to reach, so
 // a hand-signed token is how its downstream permission enforcement gets
 // exercised with a real, non-mocked HTTP request instead of being skipped.

@@ -4,7 +4,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const db = require('../db');
-const { requireAuth, getUserPermissions, JWT_SECRET } = require('../middleware/auth');
+const { requireAuth, getUserPermissions, JWT_SECRET, applyRolePermissions } = require('../middleware/auth');
 const { generateSecret, verifyTotp, otpauthUrl } = require('../utils/totp');
 const azureAuth = require('../utils/azureAuth');
 
@@ -170,7 +170,7 @@ router.post('/login', ipLoginLimiter, accountLoginLimiter, async (req, res) => {
   const genericError = () => res.status(401).json({ error: 'Incorrect email or password.' });
   if (!user) return genericError();
   // An auth_provider='azure' account (see routes/org.js's POST
-  // /individuals) has no password_hash at all — it signs in exclusively
+  // /employees) has no password_hash at all — it signs in exclusively
   // through "Sign in with Microsoft" (GET /azure/login below). A distinct,
   // helpful message here, not the generic wrong-password one, since this
   // isn't a wrong guess — this account was never given a password to guess.
@@ -412,12 +412,14 @@ router.delete('/me/avatar', requireAuth, async (req, res) => {
 // via GET /api/messages/directory, just reachable one step earlier.
 // ---- Microsoft Entra ID (Azure AD) sign-in ---------------------------
 // The only sign-in path for an auth_provider='azure' account (see
-// routes/org.js's POST /individuals and db.js's users.auth_provider) — an
-// admin adds the person's name + email through Organisation Builder first
-// (a "pre-approved email"), and this is how they actually complete their
-// own sign-in afterwards. See AZURE_SETUP.md for the one-time Azure Portal
-// setup (App Registration, redirect URI, client secret) these two routes
-// depend on.
+// routes/org.js's POST /employees and db.js's users.auth_provider). Two
+// ways in: (1) someone with add_employee/create_employees/manage_org_units
+// adds the person's name + email through Organisation Builder ahead of
+// time, or (2) nobody does anything first, and the person's own first
+// "Sign in with Microsoft" auto-provisions a bare, read-only account for
+// them — see autoProvisionAzureUser below for why that's safe unattended.
+// See AZURE_SETUP.md for the one-time Azure Portal setup (App Registration,
+// redirect URI, client secret) these two routes depend on.
 //
 // Deliberately NOT behind requireAuth — this is the sign-in step itself,
 // reached from the Login screen before any token exists.
@@ -437,6 +439,45 @@ router.get('/azure/login', (req, res) => {
       console.error('Azure getAuthCodeUrl failed:', err.message);
       res.status(502).json({ error: 'Could not reach Microsoft sign-in. Please try again shortly.' });
     });
+});
+
+// Auto-provisions the same bare, read-only 'default' account routes/org.js's
+// POST /employees creates by hand — but unattended, the first time someone
+// signs in with Microsoft and no users row exists yet for their email. Safe
+// to do without a human in the loop because:
+//   (1) claims.email only exists if Microsoft itself authenticated this
+//       person against OUR OWN tenant — azureAuth.js's authority is locked
+//       to AZURE_TENANT_ID ("accounts in this organizational directory
+//       only"), so nobody outside the organisation's Entra ID can reach
+//       this; and
+//   (2) the account it creates is exactly as powerless as a hand-added one:
+//       the built-in 'default' role, no department, no permissions beyond
+//       whatever BUILT_IN_ROLES.default grants — someone with manage_users
+//       still has to deliberately promote it to a real role from the
+//       Permissions & Roles page before it can do anything but sign in and
+//       look around. Every auto-provision is written to audit_log so that
+//       review is easy to do after the fact instead of gating sign-in on it.
+// Wrapped in one transaction (see db.js's transaction() helper) so a crash
+// partway through never leaves an orphaned users row with no matching
+// employees row, or vice versa.
+const autoProvisionAzureUser = db.transaction(async ({ name, email, oid }) => {
+  const { lastInsertRowid: userId } = await db
+    .prepare("INSERT INTO users (name, title, email, password_hash, role, scope_type, scope_id, auth_provider, must_change_password, azure_oid) VALUES (?, 'Default (Read-only)', ?, NULL, 'default', 'employee', NULL, 'azure', 0, ?)")
+    .run(name, email, oid || null);
+
+  const { lastInsertRowid: employeeId } = await db
+    .prepare("INSERT INTO employees (unit_id, name, role_title, user_id) VALUES (NULL, ?, 'Default', ?)")
+    .run(name, userId);
+
+  await db.prepare('UPDATE users SET scope_id = ? WHERE id = ?').run(employeeId, userId);
+  await applyRolePermissions(userId, 'default');
+
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
+    userId, 'auto_provision_azure', 'employee', employeeId,
+    `"${name}" (${email}) signed in with Microsoft for the first time and was automatically added as a read-only Employee (no department). An administrator can assign them a real role from Permissions & Roles.`
+  );
+
+  return db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
 });
 
 router.get('/azure/callback', async (req, res) => {
@@ -462,11 +503,31 @@ router.get('/azure/callback', async (req, res) => {
   }
   if (!claims.email) return fail('Your Microsoft account did not provide an email address.');
 
-  const user = await db.prepare('SELECT * FROM users WHERE email = ?').get(claims.email);
-  if (!user || user.deleted_at) {
-    return fail('No account is set up for this email address. Ask an administrator to add you first.');
+  let user = await db.prepare('SELECT * FROM users WHERE email = ?').get(claims.email);
+
+  if (user && user.deleted_at) {
+    return fail('This account has been removed. Ask an administrator to restore it.');
   }
-  if (user.auth_provider !== 'azure') {
+
+  if (!user) {
+    const name = claims.name || claims.email.split('@')[0];
+    try {
+      user = await autoProvisionAzureUser({ name, email: claims.email, oid: claims.oid });
+    } catch (err) {
+      // A near-simultaneous first sign-in from the same person (e.g. a
+      // double-click, or two tabs) can lose a duplicate-email race against
+      // itself — fall back to the row the other request just created
+      // instead of surfacing an error for what is, from the person's own
+      // point of view, a completely normal sign-in.
+      if (String(err.message).includes('duplicate key') || String(err.message).includes('UNIQUE')) {
+        user = await db.prepare('SELECT * FROM users WHERE email = ?').get(claims.email);
+      }
+      if (!user) {
+        console.error('Azure auto-provision failed:', err.message);
+        return fail('Could not create your account automatically. Please try again or contact an administrator.');
+      }
+    }
+  } else if (user.auth_provider !== 'azure') {
     return fail('This account signs in with a password, not Microsoft.');
   }
 

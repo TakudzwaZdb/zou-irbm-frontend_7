@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import {
-  subsOfProgramme, unitsOfSub, individualsOfUnit, nodeOwnKpis, nodeRagCls,
+  subsOfProgramme, unitsOfSub, employeesOfUnit, nodeOwnKpis, nodeRagCls,
   performanceRollup, institutionalRollup, defaultNodeForRole, nodeAncestryChain, canDrillToKind,
 } from '../lib/scope.js';
 
@@ -11,7 +11,7 @@ const RAG_DOT = {
 
 // The sidebar's "Programme structure" tree — the same click-to-drill-down
 // navigation as the original prototype. A global role (cpu/exec/ictadmin)
-// sees the whole org; a scoped role (rep/unithead/individual) sees only
+// sees the whole org; a scoped role (rep/unithead/employee) sees only
 // their own branch (their Programme → their Sub-programme → …), matching
 // what they're actually allowed to view elsewhere in the app.
 export default function OrgTree({ setRoute, onNavigate }) {
@@ -49,9 +49,9 @@ export default function OrgTree({ setRoute, onNavigate }) {
 
   // A scoped role's own ancestor chain — used below to restrict the tree to
   // just their own branch, at each level, the same as the original: a Rep
-  // sees only their own Sub-programme (but every Unit and Individual under
+  // sees only their own Sub-programme (but every Unit and Employee under
   // it, since they manage the whole thing); a Unit Head sees only their own
-  // Unit within it (but everyone in it); an Individual sees only themself.
+  // Unit within it (but everyone in it); an Employee sees only themself.
   const ownChain = forced ? nodeAncestryChain(org, forced.kind, forced.id) : null;
   const ownProgrammeId = ownChain?.find((c) => c.kind === 'programme')?.id;
   const ownSubId = ownChain?.find((c) => c.kind === 'sub')?.id;
@@ -65,19 +65,19 @@ export default function OrgTree({ setRoute, onNavigate }) {
 
   function visibleSubs(programmeId) {
     const subs = subsOfProgramme(org, programmeId);
-    if (user.role === 'individual' && forced?.kind === 'programme') return subs;
-    if (['rep', 'unithead', 'individual'].includes(user.role)) return subs.filter((s) => s.id === ownSubId);
+    if (user.role === 'employee' && forced?.kind === 'programme') return subs;
+    if (['rep', 'unithead', 'employee'].includes(user.role)) return subs.filter((s) => s.id === ownSubId);
     return subs;
   }
   function visibleUnits(subId) {
     const units = unitsOfSub(org, subId);
-    if (user.role === 'individual' && ['programme', 'sub'].includes(forced?.kind)) return units;
-    if (['unithead', 'individual'].includes(user.role)) return units.filter((u) => u.id === ownUnitId);
+    if (user.role === 'employee' && ['programme', 'sub'].includes(forced?.kind)) return units;
+    if (['unithead', 'employee'].includes(user.role)) return units.filter((u) => u.id === ownUnitId);
     return units;
   }
-  function visibleIndividuals(unitId) {
-    const inds = individualsOfUnit(org, unitId);
-    if (user.role === 'individual' && forced?.kind === 'individual') return inds.filter((i) => i.id === forced.id);
+  function visibleEmployees(unitId) {
+    const inds = employeesOfUnit(org, unitId);
+    if (user.role === 'employee' && forced?.kind === 'employee') return inds.filter((i) => i.id === forced.id);
     return inds;
   }
 
@@ -186,12 +186,12 @@ export default function OrgTree({ setRoute, onNavigate }) {
                   {row('sub', s.id, s.name, 1, true, sKey)}
                   {sOpen && visibleUnits(s.id).map((u) => {
                     const uKey = `u:${u.id}`;
-                    const inds = visibleIndividuals(u.id);
+                    const inds = visibleEmployees(u.id);
                     const uOpen = inds.length > 0 && isOpen(uKey);
                     return (
                       <div key={u.id}>
                         {row('unit', u.id, u.name, 2, inds.length > 0, uKey)}
-                        {uOpen && inds.map((i) => row('individual', i.id, i.name, 3, false, `i:${i.id}`))}
+                        {uOpen && inds.map((i) => row('employee', i.id, i.name, 3, false, `i:${i.id}`))}
                       </div>
                     );
                   })}

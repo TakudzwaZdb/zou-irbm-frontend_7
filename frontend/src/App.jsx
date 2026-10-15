@@ -1,31 +1,40 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { useApp } from './context/AppContext.jsx';
 import { currentNav } from './lib/nav.js';
+// Login and ForcedPasswordChange render before the route switch below even
+// exists (see the early returns further down) — they're what every signed-
+// out visitor sees first, so they stay ordinary eager imports rather than
+// adding a loading flicker to the very first screen for a saving that's
+// small anyway (neither pulls in a heavy library).
 import Login from './pages/Login.jsx';
 import ForcedPasswordChange from './pages/ForcedPasswordChange.jsx';
 import Layout from './components/Layout.jsx';
-import Overview from './pages/Overview.jsx';
-import Entry from './pages/Entry.jsx';
-import Approvals from './pages/Approvals.jsx';
-import Framework from './pages/Framework.jsx';
-import KpiManagement from './pages/KpiManagement.jsx';
-import OrganisationBuilder from './pages/OrganisationBuilder.jsx';
-import Compliance from './pages/Compliance.jsx';
-import Audit from './pages/Audit.jsx';
-import Settings from './pages/Settings.jsx';
-import Users from './pages/Users.jsx';
-import Permissions from './pages/Permissions.jsx';
-import Profile from './pages/Profile.jsx';
-import Messages from './pages/Messages.jsx';
 
-// Reports and Planning are the two pages that pull in jsPDF/jspdf-autotable
-// (now themselves dynamically imported only when their Download PDF button
-// is actually clicked — see each page's own downloadPdf), so lazy-loading
-// the PAGE component too means neither page's own code, let alone the PDF
-// libraries, is fetched at all until someone with them in their nav
-// actually opens one — every other role/page pays nothing for either.
+// Every other page is lazy-loaded — this app renders exactly one page at a
+// time (no nested routes), so a given signed-in account only ever fetches
+// the handful of pages actually in their own nav, not all fifteen bundled
+// together. Originally only Planning/Reports were split out this way,
+// specifically because they pull in jsPDF/jspdf-autotable (themselves
+// further dynamically imported only when Download PDF is actually
+// clicked — see each page's own downloadPdf); every page below gets the
+// same treatment now for the same reason at smaller scale — an Employee
+// account, say, never pays for Organisation Builder's or Permissions'
+// code just because those exist in the bundle for CPU/ICT admin.
+const Overview = lazy(() => import('./pages/Overview.jsx'));
+const Entry = lazy(() => import('./pages/Entry.jsx'));
+const Approvals = lazy(() => import('./pages/Approvals.jsx'));
+const Framework = lazy(() => import('./pages/Framework.jsx'));
+const KpiManagement = lazy(() => import('./pages/KpiManagement.jsx'));
+const OrganisationBuilder = lazy(() => import('./pages/OrganisationBuilder.jsx'));
 const Planning = lazy(() => import('./pages/Planning.jsx'));
+const Compliance = lazy(() => import('./pages/Compliance.jsx'));
 const Reports = lazy(() => import('./pages/Reports.jsx'));
+const Audit = lazy(() => import('./pages/Audit.jsx'));
+const Settings = lazy(() => import('./pages/Settings.jsx'));
+const Users = lazy(() => import('./pages/Users.jsx'));
+const Permissions = lazy(() => import('./pages/Permissions.jsx'));
+const Profile = lazy(() => import('./pages/Profile.jsx'));
+const Messages = lazy(() => import('./pages/Messages.jsx'));
 
 const PAGES = {
   overview: Overview,

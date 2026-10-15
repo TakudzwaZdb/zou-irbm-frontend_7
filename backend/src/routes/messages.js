@@ -1,5 +1,5 @@
 // Internal messaging — a real, working "email system" used ACROSS every
-// tier (Individual <-> Unit Head <-> Sub-programme Rep <-> Programme Head
+// tier (Employee <-> Unit Head <-> Sub-programme Rep <-> Programme Head
 // <-> Corporate Planning Unit <-> Executive <-> ICT Admin). There's no
 // outbound SMTP/email-delivery service configured for this reference
 // deployment (same reasoning as the admin-assisted password reset in
@@ -11,16 +11,36 @@
 // Deliberately NOT scope-restricted like the KPI/plan cascades — the whole
 // point of "used across the tier" is that any signed-in account can message
 // any other, regardless of where either of them sits in the org tree (an
-// Individual can write straight to the Vice Chancellor, same as any other
+// Employee can write straight to the Vice Chancellor, same as any other
 // pair). What IS enforced server-side: you can only read a message you are
 // actually a sender or recipient of, and every recipient id must be a real
 // account.
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 router.use(requireAuth);
+
+// Every route here already requires a signed-in account (router.use above),
+// so this isn't guarding a stranger the way auth.js's login limiters are —
+// it's a backstop against one account (compromised, scripted, or just
+// mis-clicking) flooding every other account's inbox. Keyed on the sender's
+// own user id, not IP, since the caller is always already authenticated;
+// worker-count-divided the same way auth.js's login limiters are, since
+// server.js runs one process per CPU core and each has its own in-memory
+// counter.
+const WORKER_COUNT = Math.max(1, Number(process.env.WEB_CONCURRENCY) || 1);
+const sendMessageLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: Math.max(2, Math.ceil(30 / WORKER_COUNT)),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `send:${req.user?.id ?? 'unknown'}`,
+  validate: { keyGeneratorIpFallback: false },
+  message: { error: 'Too many messages sent in a short window. Please wait a few minutes and try again.' },
+});
 
 // Everyone a person could possibly message — real names/emails/roles, never
 // permissions or scope_id (that's the ICT-admin-only /api/users view).
@@ -71,7 +91,7 @@ router.get('/', async (req, res) => {
   res.json({ messages });
 });
 
-router.post('/', async (req, res) => {
+router.post('/', sendMessageLimiter, async (req, res) => {
   const { recipientIds, subject, body } = req.body || {};
   if (!Array.isArray(recipientIds) || recipientIds.length === 0) {
     return res.status(400).json({ error: 'Choose at least one recipient.' });

@@ -10,16 +10,16 @@ export function AppProvider({ children }) {
   const [booting, setBooting] = useState(true);
   const [user, setUser] = useState(null);
   const [loginError, setLoginError] = useState(null);
-  const [org, setOrg] = useState({ programmes: [], subs: [], units: [], individuals: [] });
+  const [org, setOrg] = useState({ programmes: [], subs: [], units: [], employees: [] });
   const [kpis, setKpis] = useState([]);
-  // The Unit-scoped "KPI for individuals" pool (see backend's kpi_templates
+  // The Unit-scoped "KPI for employees" pool (see backend's kpi_templates
   // table / routes/kpiTemplates.js) — created once against a Unit, then
-  // picked up by individuals in that unit as their own real KPI. Loaded
+  // picked up by employees in that unit as their own real KPI. Loaded
   // alongside kpis/org since it's the same kind of slow-changing catalog
   // data, not a per-period figure.
   const [templates, setTemplates] = useState([]);
-  // Which Individual has been delegated which Unit-owned KPI as one of
-  // their duties — see lib/scope.js's canEnterData/isAssignedIndividual and
+  // Which Employee has been delegated which Unit-owned KPI as one of
+  // their duties — see lib/scope.js's canEnterData/isAssignedEmployee and
   // backend/src/routes/kpis.js's kpi_assignments-backed isOwner.
   const [assignments, setAssignments] = useState([]);
   // A personal, per-user "not relevant to me" list (see backend's kpi_hidden
@@ -60,7 +60,7 @@ export function AppProvider({ children }) {
   // when the "received" ring tone below is earned.
   const unreadKnownRef = useRef(null);
 
-  // Which org node (Programme / Sub-programme / Unit / Individual) the
+  // Which org node (Programme / Sub-programme / Unit / Employee) the
   // sidebar tree / Overview drill-down is currently focused on — shared
   // between the two so clicking a tree row and clicking a card on Overview
   // are the same navigation action. null = "no explicit selection" (a

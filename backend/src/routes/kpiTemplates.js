@@ -8,9 +8,9 @@ router.use(requireAuth);
 // A KPI "template" is created once against a Unit instead of one named
 // person (see db.js's kpi_templates table for the full rationale). This is
 // the catalog side of that: creating one, listing what exists (with real
-// adoption numbers), removing one, and an Individual picking one up as
+// adoption numbers), removing one, and an Employee picking one up as
 // their own. The actual per-person KPI a pick creates is a completely
-// normal owner_type='individual' row in the `kpis` table — everything else
+// normal owner_type='employee' row in the `kpis` table — everything else
 // in this app (data entry, submission, approval, RAG, overrides, hiding)
 // already works on it with zero special-casing, exactly like the shared-KPI
 // self-claim mechanism this replaces.
@@ -23,7 +23,7 @@ async function unitOr404(unitId, res) {
 
 // Everyone signed in can read the catalog (same openness as GET /api/kpis) —
 // the frontend narrows what it shows per role. Each template carries
-// `pickedCount` (how many individuals in that unit have already made it
+// `pickedCount` (how many employees in that unit have already made it
 // theirs) so whoever created it can see real adoption, not just a static
 // definition sitting unused.
 router.get('/', async (req, res) => {
@@ -71,7 +71,7 @@ router.post('/', requirePerm('create_kpi'), async (req, res) => {
 
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'create_kpi_template', 'kpi_template', id,
-    `KPI template "${name}" created for individuals in ${unit.name} (baseline ${baseline}, target ${target}).`
+    `KPI template "${name}" created for employees in ${unit.name} (baseline ${baseline}, target ${target}).`
   );
   res.status(201).json({ template: await db.prepare('SELECT * FROM kpi_templates WHERE id = ?').get(id) });
 });
@@ -108,27 +108,27 @@ router.post('/:id/restore', requireAnyPerm('create_kpi', 'delete_kpi'), async (r
   res.json({ ok: true });
 });
 
-// The self-service moment: an Individual in the template's own Unit makes
+// The self-service moment: an Employee in the template's own Unit makes
 // it theirs. This creates a real kpis row exactly the way POST /api/kpis
-// does for a directly-created individual KPI (same initial draft
+// does for a directly-created employee KPI (same initial draft
 // kpi_values row for the current period), just with owner_id set to the
-// picking Individual and template_id recorded for adoption tracking.
+// picking Employee and template_id recorded for adoption tracking.
 router.post('/:id/pick', requirePerm('data_entry'), async (req, res) => {
   const template = await db.prepare('SELECT * FROM kpi_templates WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!template) return res.status(404).json({ error: 'Template not found.' });
-  if (req.user.role !== 'individual') return res.status(403).json({ error: 'Only an Individual can pick up a KPI template.' });
+  if (req.user.role !== 'employee') return res.status(403).json({ error: 'Only an Employee can pick up a KPI template.' });
 
-  const individual = await db.prepare('SELECT * FROM individuals WHERE id = ?').get(req.user.scope_id);
-  if (!individual || individual.unit_id !== template.unit_id) {
+  const employee = await db.prepare('SELECT * FROM employees WHERE id = ?').get(req.user.scope_id);
+  if (!employee || employee.unit_id !== template.unit_id) {
     return res.status(403).json({ error: 'This KPI template was created for a different unit than your own.' });
   }
-  const already = await db.prepare("SELECT 1 FROM kpis WHERE template_id = ? AND owner_type = 'individual' AND owner_id = ? AND deleted_at IS NULL").get(template.id, individual.id);
+  const already = await db.prepare("SELECT 1 FROM kpis WHERE template_id = ? AND owner_type = 'employee' AND owner_id = ? AND deleted_at IS NULL").get(template.id, employee.id);
   if (already) return res.status(400).json({ error: 'You have already added this KPI.' });
 
   const pickTxn = db.transaction(async () => {
     const { lastInsertRowid: id } = await db
       .prepare('INSERT INTO kpis (owner_type, owner_id, name, type, measure, baseline, target, template_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run('individual', individual.id, template.name, template.type, template.measure, template.baseline, template.target, template.id);
+      .run('employee', employee.id, template.name, template.type, template.measure, template.baseline, template.target, template.id);
     const now = new Date();
     await db.prepare('INSERT INTO kpi_values (kpi_id, year, month, status) VALUES (?, ?, ?, \'draft\')').run(id, now.getFullYear(), now.getMonth() + 1);
     return id;
@@ -136,7 +136,7 @@ router.post('/:id/pick', requirePerm('data_entry'), async (req, res) => {
   const id = await pickTxn();
 
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'pick_kpi_template', 'kpi', id, `Picked up "${template.name}" from ${individual.name}'s unit's KPI pool as a personal KPI.`
+    req.user.id, 'pick_kpi_template', 'kpi', id, `Picked up "${template.name}" from ${employee.name}'s unit's KPI pool as a personal KPI.`
   );
   res.status(201).json({ kpi: await db.prepare('SELECT * FROM kpis WHERE id = ?').get(id) });
 });

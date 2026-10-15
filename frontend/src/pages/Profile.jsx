@@ -1,13 +1,14 @@
 import { useRef, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
+import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
 import { avatarClass, initialsOf } from '../lib/scope.js';
 import PhotoLightbox from '../components/PhotoLightbox.jsx';
 
 const ROLE_LABEL = {
-  exec: 'Executive', cpu: 'Corporate Planning Unit', ictadmin: 'ICT Systems Administrator',
-  rep: 'Sub-programme Rep', unithead: 'Unit Head', individual: 'Individual', programme: 'Programme Head',
+  exec: 'Executive', vc: 'Vice Chancellor', cpu: 'Corporate Planning Unit', ictadmin: 'ICT Systems Administrator',
+  rep: 'Sub-programme Rep', unithead: 'Unit Head', employee: 'Employee', programme: 'Programme Head',
 };
 
 // Resizes/compresses an image client-side before it ever reaches the
@@ -43,6 +44,7 @@ function resizeImageFile(file, maxSize = 320, quality = 0.85) {
 export default function Profile() {
   const { user, refreshUser } = useApp();
   const toast = useToast();
+  const confirm = useConfirm();
   const fileRef = useRef(null);
   const [uploading, setUploading] = useState(false);
   const [viewingPhoto, setViewingPhoto] = useState(false);
@@ -63,7 +65,7 @@ export default function Profile() {
   }
 
   async function removePhoto() {
-    if (!window.confirm('Remove your profile photo?')) return;
+    if (!(await confirm({ title: 'Remove profile photo?', message: 'This removes your current profile photo. You can upload a new one any time.', confirmLabel: 'Remove photo', tone: 'danger' }))) return;
     setUploading(true);
     try {
       await api('/auth/me/avatar', { method: 'DELETE' });

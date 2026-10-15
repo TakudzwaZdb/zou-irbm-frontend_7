@@ -1,21 +1,26 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useToast } from '../context/ToastContext.jsx';
+import { useConfirm } from '../context/ConfirmContext.jsx';
 import { useApp } from '../context/AppContext.jsx';
 import { api } from '../lib/api.js';
 import { avatarClass, initialsOf, scopeBreadcrumb } from '../lib/scope.js';
 import PhotoLightbox from '../components/PhotoLightbox.jsx';
 
-// Exported so OrgStructure.jsx's own (narrower — individuals only) role
-// control uses the exact same role list/labels rather than a second,
-// driftable copy.
-export const ROLES = ['exec', 'cpu', 'ictadmin', 'rep', 'unithead', 'individual', 'programme', 'council'];
+// Exported so every other page that needs to show or pick a role — right
+// now just Permissions.jsx's role/scope-assignment popup (see its own
+// import of these four) — uses the exact same role list/labels/scope rules
+// rather than a second, driftable copy. This file stays their one
+// canonical source even though Users.jsx itself no longer edits role or
+// scope at all — see the note above UserManagementDialog for why, and
+// OrgStructure.jsx's own note on why its former, separate, scope-blind
+// role-change control was removed rather than also reading from here.
+export const ROLES = ['exec', 'vc', 'cpu', 'ictadmin', 'rep', 'unithead', 'employee', 'programme', 'council'];
 export const ROLE_LABEL = {
-  exec: 'Executive', cpu: 'Corporate Planning Unit', ictadmin: 'ICT Systems Administrator',
-  rep: 'Sub-programme Rep', unithead: 'Unit Head', individual: 'Individual', programme: 'Programme Head',
+  exec: 'Executive', vc: 'Vice Chancellor', cpu: 'Corporate Planning Unit', ictadmin: 'ICT Systems Administrator',
+  rep: 'Sub-programme Rep', unithead: 'Unit Head', employee: 'Employee', programme: 'Programme Head',
   council: 'University Council',
 };
-const ROLE_SCOPE_TYPES = { rep: 'sub', unithead: 'unit', programme: 'programme' };
-const UNIT_KIND_OPTIONS = ['All organisation units', 'Unit', 'Department', 'Faculty', 'Region', 'Regional Campus'];
+export const UNIT_KIND_OPTIONS = ['All organisation units', 'Unit', 'Department', 'Faculty', 'Region', 'Regional Campus'];
 const OVERVIEW_LIMIT_LABEL = {
   '': 'No restriction — the overall structure',
   programme: 'Up to Programme level only',
@@ -32,17 +37,20 @@ function isActivationKey(event) {
 }
 
 export default function Users() {
-  const { user: me, org, refreshUser, reloadCore } = useApp();
+  const { user: me, org, refreshUser, reloadCore, hasPerm } = useApp();
   const toast = useToast();
+  const confirm = useConfirm();
+  // manage_users (ictadmin) is full edit access; view_users (granted to CPU
+  // by default — see utils/permissions.js) reaches this same page but gets
+  // a read-only version of it — every action below is gated on this, not
+  // just the backend routes (which 403 on their own regardless), so a
+  // view-only visitor never sees a button that would just fail.
+  const canEdit = hasPerm('manage_users');
   const [users, setUsers] = useState(null);
   const [busyId, setBusyId] = useState(null);
-  const [scopeDraft, setScopeDraft] = useState({});
-  const [unitKindDraft, setUnitKindDraft] = useState({});
   const [q, setQ] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [profileDraft, setProfileDraft] = useState({ name: '', email: '' });
-  const [resetDraft, setResetDraft] = useState({});
-  const [resetResult, setResetResult] = useState({});
   const [viewingUser, setViewingUser] = useState(null);
   const [removedUsers, setRemovedUsers] = useState([]);
   const [removedOpen, setRemovedOpen] = useState(false);
@@ -55,6 +63,8 @@ export default function Users() {
   // MFA, overview limit, Executive Owner, remove account) now lives in
   // this one dialog together.
   const [managementUser, setManagementUser] = useState(null);
+  // Starts collapsed — a click on the header is required to view the
+  // account directory, same as every other collapsible table in the app.
   const [usersOpen, setUsersOpen] = useState(false);
 
   async function load() {
@@ -101,18 +111,12 @@ export default function Users() {
   }, [users, q, org]);
 
   // Opens the one popup for a row — called from the row's onClick/onKeyDown
-  // below. Seeds the scope draft from whatever the account actually has
-  // right now (locked to the role's required scope type for rep/unit
-  // head/programme — see ScopePicker) so the dialog always starts in sync
-  // with the database, never with leftover state from a previously-opened
-  // user.
+  // below. Role and organisation scope are both shown read-only in this
+  // dialog now (edited from the Permissions page instead — see the note
+  // above UserManagementDialog), so there's no draft state to seed here.
   function openUser(u) {
     setManagementUser(u);
     setEditingId(null);
-    const requiredType = ROLE_SCOPE_TYPES[u.role];
-    setScopeDraft((draft) => ({ ...draft, [u.id]: { type: requiredType || u.scope_type || '', id: u.scope_id || '' } }));
-    const unit = org.units.find((item) => item.id === Number(u.scope_id));
-    setUnitKindDraft((draft) => ({ ...draft, [u.id]: unit?.kind || 'All organisation units' }));
   }
 
   function startEdit(u) {
@@ -132,65 +136,48 @@ export default function Users() {
     finally { setBusyId(null); }
   }
 
-  // Organisation scope only now — role itself is assigned from the
-  // Permissions page ("Assign Roles to Users"), not here. The same
-  // PATCH /:id/role endpoint still backs this (it's the one place the
-  // database ties role + scope together and re-derives `title` from the
-  // role's label), it's just always sent the account's own unchanged role.
-  async function applyScope(u) {
-    const scope = scopeDraft[u.id] || { type: u.scope_type || '', id: u.scope_id || '' };
-    if (String(scope.type || '') === String(u.scope_type || '') && String(scope.id || '') === String(u.scope_id || '')) return;
-    const scopeName = scopeLabel(scope.type, scope.id, org);
-    if (!window.confirm(`Move ${u.name}'s organisation scope${scopeName ? ` to ${scopeName}` : ' to no scope'}?`)) return;
-    setBusyId(u.id);
-    try {
-      await api(`/users/${u.id}/role`, { method: 'PATCH', body: { role: u.role, scopeType: scope.type || null, scopeId: scope.id ? Number(scope.id) : null } });
-      toast(`${u.name}'s organisation scope updated.`);
-      await load();
-    } catch (err) { toast(err.message, 'err'); }
-    finally { setBusyId(null); }
-  }
-
-  async function removeIndividual(u) {
+  async function removeEmployee(u) {
     if (!u.scope_id) return;
-    if (!window.confirm(`Remove ${u.name} and their Individual record? Their account, KPIs, and history will be deactivated but can be restored from Organisation Maintenance's Recently Removed.`)) return;
+    if (!(await confirm({
+      title: `Remove ${u.name}'s Employee record?`,
+      message: `Their account, KPIs, and history will be deactivated but can be restored from Organisation Maintenance's Recently Removed.`,
+      confirmLabel: 'Remove',
+      tone: 'danger',
+    }))) return;
     setBusyId(u.id);
     try {
-      await api(`/org/individuals/${u.scope_id}`, { method: 'DELETE' });
-      toast(`${u.name}'s Individual record was removed.`);
+      await api(`/org/employees/${u.scope_id}`, { method: 'DELETE' });
+      toast(`${u.name}'s Employee record was removed.`);
       await Promise.all([load(), reloadCore()]);
       setManagementUser(null);
     } catch (err) { toast(err.message, 'err'); }
     finally { setBusyId(null); }
   }
 
-  // Admin-assisted reset — the real answer to "when they forget" for a
-  // system with no email/SMS delivery to send a reset link through (see
-  // Profile.jsx's own note to the same effect). Leaving the field blank
-  // generates a random one; either way the plaintext is only ever shown
-  // here, once, to the admin who just set it.
-  async function resetPassword(u) {
-    const typed = (resetDraft[u.id] || '').trim();
-    if (!window.confirm(typed
-      ? `Set ${u.name}'s password to the value you entered?`
-      : `Generate a new random password for ${u.name}?`)) return;
-    setBusyId(u.id);
-    try {
-      const r = await api(`/users/${u.id}/reset-password`, { method: 'POST', body: { newPassword: typed || undefined } });
-      setResetResult((s) => ({ ...s, [u.id]: r.newPassword }));
-      setResetDraft((s) => ({ ...s, [u.id]: '' }));
-      toast(`Password reset for ${u.name}.`);
-    } catch (err) { toast(err.message, 'err'); }
-    finally { setBusyId(null); }
-  }
+  // Admin-assisted local password reset used to live here (POST /users/:id/
+  // reset-password, still on the backend and still covered by its own
+  // test — see auth.test.js — but deliberately no longer wired to any UI).
+  // Every account this app creates signs in with "Sign in with Microsoft"
+  // (see OrganisationBuilder.jsx's AddAccountModal and routes/org.js's POST
+  // /employees), so password reset and management belong to Azure AD
+  // (Entra ID) now, not to a button here — see the read-only note in
+  // UserManagementDialog's PASSWORD section below.
 
   // Admin-assisted MFA reset — the same "when they can't help themselves"
-  // shape as resetPassword above, for the one other credential this app
-  // now has (see routes/users.js's POST /:id/mfa/disable). Only ever turns
-  // it OFF for a locked-out person; they set it back up themselves from
-  // their own Profile page with a new device whenever they're ready.
+  // shape the old resetPassword above used, for the one other credential
+  // this app still manages itself (see routes/users.js's POST /:id/mfa/
+  // disable) — two-factor authentication is a separate credential from the
+  // password and isn't part of Azure AD sign-in here, so it stays. Only
+  // ever turns it OFF for a locked-out person; they set it back up
+  // themselves from their own Profile page with a new device whenever
+  // they're ready.
   async function resetMfa(u) {
-    if (!window.confirm(`Turn off two-factor authentication for ${u.name}? Use this only if they've lost their authenticator device and their recovery codes — they can set it back up themselves afterward.`)) return;
+    if (!(await confirm({
+      title: `Turn off two-factor authentication for ${u.name}?`,
+      message: `Use this only if they've lost their authenticator device and their recovery codes — they can set it back up themselves afterward.`,
+      confirmLabel: 'Turn off',
+      tone: 'danger',
+    }))) return;
     setBusyId(u.id);
     try {
       await api(`/users/${u.id}/mfa/disable`, { method: 'POST' });
@@ -218,7 +205,11 @@ export default function Users() {
   // the Vice Chancellor. Setting it on one account clears it from any
   // other, server-side, in one transaction.
   async function setExecutiveOwner(u, on) {
-    if (on && !window.confirm(`Designate ${u.name} as Executive Owner? This clears the designation from anyone who currently holds it.`)) return;
+    if (on && !(await confirm({
+      title: `Designate ${u.name} as Executive Owner?`,
+      message: 'This clears the designation from anyone who currently holds it.',
+      confirmLabel: 'Designate',
+    }))) return;
     setBusyId(u.id);
     try {
       await api(`/users/${u.id}/executive-owner`, { method: 'PATCH', body: { executiveOwner: on } });
@@ -228,7 +219,12 @@ export default function Users() {
   }
 
   async function removeAccount(u) {
-    if (!window.confirm(`Remove ${u.name}'s account? They're deactivated, not deleted — their permissions, role, and full history (audit log, messages, past KPI submissions) stay intact, and it's recoverable from Recently Removed below.`)) return;
+    if (!(await confirm({
+      title: `Remove ${u.name}'s account?`,
+      message: `They're deactivated, not deleted — their permissions, role, and full history (audit log, messages, past KPI submissions) stay intact, and it's recoverable from Recently Removed below.`,
+      confirmLabel: 'Remove',
+      tone: 'danger',
+    }))) return;
     setBusyId(u.id);
     try {
       await api(`/users/${u.id}`, { method: 'DELETE' });
@@ -244,15 +240,27 @@ export default function Users() {
     <div>
       <div className="flex justify-between gap-4 flex-wrap items-start mb-5">
         <div>
-          <h1 className="text-xl font-bold mb-0.5">User &amp; Roles</h1>
+          <h1 className="text-xl font-bold mb-0.5">Users</h1>
           <p className="text-[13px] text-ink-secondary max-w-[62ch]">
-            Every account in the system, with its full profile. Only ICT System Administrators can update a
-            profile, reset a forgotten password, adjust organisation scope, or remove an account. Roles
-            themselves are assigned from the Permissions page's "Assign Roles to Users".
+            {canEdit ? (
+              <>
+                Every account in the system, with its full profile. Only ICT System Administrators can update a
+                profile, reset a forgotten password, or remove an account. Role and organisation scope are both
+                shown here read-only — assign or change either one from the Permissions &amp; Roles page's bulk
+                "Assign Roles to Users" (university-wide roles) or a row's own "Assign role &amp; scope" (Unit Head,
+                Sub-programme Rep, Programme Head, Employee).
+              </>
+            ) : (
+              <>
+                Every account in the system, with its full profile — view only. Updating a profile, resetting a
+                password, changing a role or organisation scope, or removing an account is reserved for ICT
+                System Administrators.
+              </>
+            )}
           </p>
         </div>
         <input
-          className="field-input w-auto min-w-[220px]"
+          className="field-input w-auto min-w-[280px]"
           placeholder="Search name, email, role, unit…"
           aria-label="Search users"
           value={q}
@@ -274,10 +282,12 @@ export default function Users() {
             Users
             <span className="chip">{filtered?.length || 0}</span>
           </span>
-          <span className="text-ink-muted text-[12px]">{usersOpen ? 'Hide ▲' : 'Click to view ▼'}</span>
+          <span className="text-accent-600 font-semibold text-[12px]">{usersOpen ? 'Hide ▲' : 'Click to view ▼'}</span>
         </button>
         {usersOpen && <>
-          <p className="text-[12px] text-ink-muted mt-1">Click anywhere on an account's row to open its management popup.</p>
+          <p className="text-[12px] text-ink-muted mt-1">
+            {canEdit ? 'Click anywhere on an account’s row to open its management popup.' : 'Click anywhere on an account’s row to view its full profile.'}
+          </p>
           <div className="mt-3 overflow-x-auto max-h-[65vh] overflow-y-auto rounded-lg border border-line">
           <table className="w-full text-left text-[12px]">
             <thead className="bg-sunken border-b border-line sticky top-0 z-10">
@@ -343,7 +353,7 @@ export default function Users() {
             <td className="px-3 py-2.5 text-ink-secondary">{u.title || '—'}</td>
             <td className="px-3 py-2.5">{ROLE_LABEL[u.role] || u.role}{isSelf ? ' · you' : ''}</td>
             <td className="px-3 py-2.5 text-ink-secondary">{breadcrumb?.join(' › ') || 'No scope'}</td>
-            <td className="px-3 py-2.5 text-ink-muted text-[11px] whitespace-nowrap">Click to manage ›</td>
+            <td className="px-3 py-2.5 text-accent-600 font-semibold text-[11px] whitespace-nowrap">{canEdit ? 'Click to manage ›' : 'Click to view ›'}</td>
           </tr>
         );
       })}
@@ -359,12 +369,12 @@ export default function Users() {
             Recently Removed
             <span className={`chip ${removedUsers.length ? 'chip-rag-amber' : ''}`}>{removedUsers.length}</span>
           </span>
-          <span className="text-ink-muted text-[12px]">{removedOpen ? 'Hide ▲' : 'Show ▼'}</span>
+          <span className="text-accent-600 font-semibold text-[12px]">{removedOpen ? 'Hide ▲' : 'Show ▼'}</span>
         </button>
         <p className="text-[12px] text-ink-muted mt-1">
           Accounts removed directly from this Directory — nothing here is deleted; restoring lets them sign in again
           immediately with their role, permissions, and full history intact. (An account deactivated because its
-          Individual/Unit-head/Sub-Rep/Programme-head was removed shows up on Organisation Maintenance's own Recently
+          Employee/Unit-head/Sub-Rep/Programme-head was removed shows up on Organisation Maintenance's own Recently
           Removed instead — restoring the person there reactivates the account too.)
         </p>
         {removedOpen && (
@@ -375,9 +385,11 @@ export default function Users() {
               {removedUsers.map((u) => (
                 <div key={u.id} className="flex items-center justify-between gap-2 bg-sunken rounded-lg px-2.5 py-1.5">
                   <span className="text-ink-muted">{u.name} — {u.email} ({ROLE_LABEL[u.role] || u.role})</span>
-                  <button className="btn btn-sm btn-primary" disabled={restoreBusyId === u.id} onClick={() => restoreAccount(u)}>
-                    {restoreBusyId === u.id ? 'Restoring…' : 'Restore'}
-                  </button>
+                  {canEdit && (
+                    <button className="btn btn-sm btn-primary" disabled={restoreBusyId === u.id} onClick={() => restoreAccount(u)}>
+                      {restoreBusyId === u.id ? 'Restoring…' : 'Restore'}
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -389,13 +401,9 @@ export default function Users() {
         user={managementUser}
         me={me}
         org={org}
-        scopeDraft={scopeDraft}
-        setScopeDraft={setScopeDraft}
-        unitKindDraft={unitKindDraft}
-        setUnitKindDraft={setUnitKindDraft}
+        canEdit={canEdit}
         busy={busyId === managementUser.id}
-        onApplyScope={applyScope}
-        onRemoveIndividual={removeIndividual}
+        onRemoveEmployee={removeEmployee}
         onClose={() => { setManagementUser(null); setEditingId(null); }}
         editingId={editingId}
         profileDraft={profileDraft}
@@ -403,11 +411,6 @@ export default function Users() {
         onStartEdit={startEdit}
         onCancelEdit={() => setEditingId(null)}
         onSaveProfile={saveProfile}
-        resetDraft={resetDraft}
-        setResetDraft={setResetDraft}
-        resetResult={resetResult}
-        onDismissResetResult={(id) => setResetResult((s) => { const n = { ...s }; delete n[id]; return n; })}
-        onResetPassword={resetPassword}
         onResetMfa={resetMfa}
         onSetOverviewLimit={setOverviewLimit}
         onSetExecutiveOwner={setExecutiveOwner}
@@ -419,25 +422,23 @@ export default function Users() {
   );
 }
 
-// One popup covering everything an ICT admin can do to an account: role is
-// shown but read-only (changed from the Permissions page instead — see
-// Users()'s header note), organisation scope, profile (name/email —
-// title is never a free-text field, it's always the role's own label, set
-// server-side whenever role/scope changes), password/MFA reset, the
-// Overview navigation ceiling, Executive Owner, and account removal. This
-// replaces what used to be two separate surfaces (a "Select user" popup for
-// role+scope, and a second inline "account controls" disclosure for
-// everything else) with the one dialog opened by clicking the row.
+// One popup covering everything an ICT admin can do to an account: role and
+// organisation scope are both shown read-only (both assigned/changed from
+// the Permissions & Roles page instead — see Users()'s header note),
+// profile (name/email — title is never a free-text field, it's always the
+// role's own label, set server-side whenever role/scope changes),
+// password/MFA reset, the Overview navigation ceiling, Executive Owner, and
+// account removal. This replaces what used to be two separate surfaces (a
+// "Select user" popup for role+scope, and a second inline "account
+// controls" disclosure for everything else) with the one dialog opened by
+// clicking the row.
 function UserManagementDialog({
-  user, me, org, scopeDraft, setScopeDraft, unitKindDraft, setUnitKindDraft, busy,
-  onApplyScope, onRemoveIndividual, onClose,
+  user, me, org, canEdit, busy,
+  onRemoveEmployee, onClose,
   editingId, profileDraft, setProfileDraft, onStartEdit, onCancelEdit, onSaveProfile,
-  resetDraft, setResetDraft, resetResult, onDismissResetResult, onResetPassword, onResetMfa,
+  onResetMfa,
   onSetOverviewLimit, onSetExecutiveOwner, onRemoveAccount,
 }) {
-  const currentScope = scopeDraft[user.id] || { type: user.scope_type || '', id: user.scope_id || '' };
-  const scopeChanged = String(currentScope.type || '') !== String(user.scope_type || '')
-    || String(currentScope.id || '') !== String(user.scope_id || '');
   const isSelf = user.id === me.id;
   const isEditing = editingId === user.id;
   const breadcrumb = scopeBreadcrumb(org, user);
@@ -471,7 +472,7 @@ function UserManagementDialog({
       <div className="bg-surface border border-line rounded-xl shadow-xl w-full max-w-2xl max-h-[85vh] overflow-y-auto p-4" onMouseDown={stopMouseDownPropagation}>
         <div className="flex items-start justify-between gap-3 mb-3">
           <div>
-            <h2 id="user-management-dialog-title" className="font-display font-bold text-[16px]">Manage {user.name}</h2>
+            <h2 id="user-management-dialog-title" className="font-display font-bold text-[16px]">{canEdit ? 'Manage' : 'View'} {user.name}</h2>
             <p className="text-[12px] text-ink-muted">
               {user.email} · {user.title || '—'}
               {breadcrumb && breadcrumb.length > 0 && <span> · {breadcrumb.join(' › ')}</span>}
@@ -481,33 +482,25 @@ function UserManagementDialog({
           <button type="button" className="btn btn-sm" onClick={onClose}>Close</button>
         </div>
 
-        {/* ROLE (read-only) + ORGANISATION SCOPE */}
+        {/* ROLE + ORGANISATION SCOPE — both read-only here */}
         <div className="space-y-3 pb-3 border-b border-line">
           <div className="space-y-1">
             <label className="field-label">Role</label>
             <div className="field-input bg-sunken text-ink-secondary cursor-not-allowed">
               {ROLE_LABEL[user.role] || user.role}
             </div>
-            <p className="text-[11px] text-ink-muted">
-              Roles are assigned from the Permissions page's "Assign Roles to Users" — not here.
-            </p>
           </div>
-          <ScopePicker
-            user={user}
-            org={org}
-            scopeDraft={scopeDraft}
-            setScopeDraft={setScopeDraft}
-            unitKindDraft={unitKindDraft}
-            setUnitKindDraft={setUnitKindDraft}
-            disabled={isSelf || busy}
-          />
-          {!isSelf && (
-            <div className="flex justify-end">
-              <button className="btn btn-sm btn-primary" disabled={!scopeChanged || busy} onClick={() => onApplyScope(user)}>
-                Apply scope change
-              </button>
+          <div className="space-y-1">
+            <label className="field-label">Organisation scope</label>
+            <div className="field-input bg-sunken text-ink-secondary cursor-not-allowed">
+              {breadcrumb && breadcrumb.length > 0 ? breadcrumb.join(' › ') : 'No scope'}
             </div>
-          )}
+          </div>
+          <p className="text-[11px] text-ink-muted">
+            Role and organisation scope are both assigned from the Permissions &amp; Roles page — bulk "Assign
+            Roles to Users" for a university-wide role, or that row's own "Assign role &amp; scope" for Unit Head,
+            Sub-programme Rep, Programme Head, or Employee — never from here.
+          </p>
         </div>
 
         {/* PROFILE */}
@@ -519,19 +512,19 @@ function UserManagementDialog({
                 {user.name} · {user.email}
                 <span className="text-ink-muted"> — title "{user.title || '—'}" is set automatically from the role above.</span>
               </p>
-              <button className="btn btn-sm" onClick={() => onStartEdit(user)}>Edit profile</button>
+              {canEdit && <button className="btn btn-sm" onClick={() => onStartEdit(user)}>Edit profile</button>}
             </div>
           )}
-          {isEditing && (
+          {isEditing && canEdit && (
             <div className="max-w-md space-y-2.5">
               <div className="space-y-1">
-                <label className="field-label">Full name</label>
-                <input className="field-input" value={profileDraft.name}
+                <label htmlFor="user-profile-name" className="field-label">Full name</label>
+                <input id="user-profile-name" className="field-input" value={profileDraft.name}
                   onChange={(e) => setProfileDraft((d) => ({ ...d, name: e.target.value }))} />
               </div>
               <div className="space-y-1">
-                <label className="field-label">Email</label>
-                <input type="email" className="field-input" value={profileDraft.email}
+                <label htmlFor="user-profile-email" className="field-label">Email</label>
+                <input id="user-profile-email" type="email" className="field-input" value={profileDraft.email}
                   onChange={(e) => setProfileDraft((d) => ({ ...d, email: e.target.value }))} />
               </div>
               <p className="text-[11px] text-ink-muted">
@@ -548,49 +541,56 @@ function UserManagementDialog({
           )}
         </div>
 
-        {/* PASSWORD / MFA */}
-        <div className="mt-3 pt-3 border-b border-line pb-3">
-          <label className="field-label block mb-1">Password</label>
-          {resetResult[user.id] && (
-            <div className="mb-2 rounded-lg bg-good-soft text-good text-[12.3px] px-3 py-2 flex items-center gap-2 flex-wrap">
-              <span>New password: <b className="font-mono">{resetResult[user.id]}</b> — share it with {user.name} now, it won't be shown again.</span>
-              <button className="ml-auto text-good/70 hover:text-good font-bold" onClick={() => onDismissResetResult(user.id)} aria-label="Dismiss">✕</button>
+        {/* PASSWORD / MFA — ICT admin only. There is no local password
+            reset here any more: every account signs in with "Sign in with
+            Microsoft" (see OrganisationBuilder.jsx's AddAccountModal /
+            routes/org.js's POST /employees), so password reset and
+            management belong to Azure AD (Entra ID), not this app. Two-
+            factor authentication is a separate credential from the
+            password and isn't part of Azure AD sign-in here, so its reset
+            control stays. */}
+        {canEdit && (
+          <div className="mt-3 pt-3 border-b border-line pb-3">
+            <label className="field-label block mb-1">Password</label>
+            <p className="text-[12px] text-ink-secondary max-w-[52ch]">
+              Managed in Microsoft / Azure AD (Entra ID), not here — there's no local password reset for any
+              account in this app.
+            </p>
+            <div className="flex gap-2 flex-wrap items-center mt-1.5">
+              {user.mfa_enabled && (
+                <button className="btn btn-sm btn-danger" disabled={busy} onClick={() => onResetMfa(user)}>
+                  Turn off two-factor authentication
+                </button>
+              )}
             </div>
-          )}
-          <div className="flex gap-2 flex-wrap items-center">
-            <input
-              className="field-input py-1.5 w-auto min-w-[180px]"
-              placeholder="New password (blank = generate one)"
-              value={resetDraft[user.id] || ''}
-              onChange={(e) => setResetDraft((s) => ({ ...s, [user.id]: e.target.value }))}
-            />
-            <button className="btn btn-sm" disabled={busy} onClick={() => onResetPassword(user)}>Reset password</button>
-            {user.mfa_enabled && (
-              <button className="btn btn-sm btn-danger" disabled={busy} onClick={() => onResetMfa(user)}>
-                Turn off two-factor authentication
-              </button>
-            )}
           </div>
-        </div>
+        )}
 
-        {/* OVERVIEW LIMIT / EXECUTIVE OWNER */}
+        {/* OVERVIEW LIMIT / EXECUTIVE OWNER — shown either way; editable controls only for ICT admin */}
         <div className="flex flex-wrap items-end gap-2.5 mt-3 pt-3 border-b border-line pb-3">
           <div className="space-y-1">
-            <label className="field-label">Overview navigation limit</label>
-            <select
-              className="field-input py-1.5"
-              value={user.overview_limit || ''}
-              disabled={busy}
-              onChange={(e) => onSetOverviewLimit(user, e.target.value)}
-            >
-              {Object.entries(OVERVIEW_LIMIT_LABEL).map(([v, label]) => <option key={v} value={v}>{label}</option>)}
-            </select>
+            <label htmlFor="user-overview-limit" className="field-label">Overview navigation limit</label>
+            {canEdit ? (
+              <select
+                id="user-overview-limit"
+                className="field-input py-1.5"
+                value={user.overview_limit || ''}
+                disabled={busy}
+                onChange={(e) => onSetOverviewLimit(user, e.target.value)}
+              >
+                {Object.entries(OVERVIEW_LIMIT_LABEL).map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+              </select>
+            ) : (
+              <div className="field-input py-1.5 bg-sunken text-ink-secondary cursor-not-allowed">
+                {OVERVIEW_LIMIT_LABEL[user.overview_limit || '']}
+              </div>
+            )}
           </div>
-          <label className="flex items-center gap-1.5 text-[12px] font-semibold cursor-pointer select-none pb-1.5">
+          <label className="flex items-center gap-1.5 text-[12px] font-semibold select-none pb-1.5">
             <input
               type="checkbox"
               checked={!!user.is_executive_owner}
-              disabled={busy}
+              disabled={!canEdit || busy}
               onChange={(e) => onSetExecutiveOwner(user, e.target.checked)}
             />
             Executive Owner
@@ -598,99 +598,33 @@ function UserManagementDialog({
           </label>
         </div>
 
-        {/* REMOVE */}
-        <div className="flex items-center justify-between gap-2 flex-wrap mt-3 pt-3">
-          {user.role === 'individual' ? (
-            <button className="btn btn-sm btn-danger" disabled={isSelf || busy} onClick={() => onRemoveIndividual(user)}>Remove Individual</button>
-          ) : <span />}
-          {!isSelf && (
-            <button className="btn btn-sm btn-danger" disabled={busy} onClick={() => onRemoveAccount(user)}>Remove account</button>
-          )}
-        </div>
+        {/* REMOVE — ICT admin only */}
+        {canEdit && (
+          <div className="flex items-center justify-between gap-2 flex-wrap mt-3 pt-3">
+            {user.role === 'employee' ? (
+              <button className="btn btn-sm btn-danger" disabled={isSelf || busy} onClick={() => onRemoveEmployee(user)}>Remove Employee</button>
+            ) : <span />}
+            {!isSelf && (
+              <button className="btn btn-sm btn-danger" disabled={busy} onClick={() => onRemoveAccount(user)}>Remove account</button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-// Scope type is now derived from the account's (fixed, read-only) role —
-// Sub-programme Rep/Unit Head/Programme Head each have exactly one valid
-// scope type (ROLE_SCOPE_TYPES) so there's nothing to choose; Individual is
-// the one role with a real choice of container (Programme/Sub-programme/
-// Unit/Individual); every other role (exec/cpu/ictadmin/council) is
-// university-wide and simply has no scope to set.
-function ScopePicker({ user, org, scopeDraft, setScopeDraft, unitKindDraft, setUnitKindDraft, disabled = false }) {
-  const requiredType = ROLE_SCOPE_TYPES[user.role];
-  const isIndividual = user.role === 'individual';
-  const isUniversityWide = !requiredType && !isIndividual;
-
-  if (isUniversityWide) {
-    return (
-      <div className="space-y-1">
-        <label className="field-label">Organisation scope</label>
-        <p className="text-[12px] text-ink-muted">No scope — {ROLE_LABEL[user.role] || user.role} accounts are university-wide.</p>
-      </div>
-    );
-  }
-
-  const current = scopeDraft[user.id] || { type: requiredType || user.scope_type || '', id: user.scope_id || '' };
-  const effectiveType = requiredType || current.type;
-  const selectedUnit = org.units.find((unit) => unit.id === Number(current.id));
-  const selectedKind = unitKindDraft[user.id] || selectedUnit?.kind || 'All organisation units';
-  const options = effectiveType === 'programme' ? org.programmes
-    : effectiveType === 'sub' ? org.subs
-      : effectiveType === 'unit' ? org.units.filter((unit) => selectedKind === 'All organisation units' || unit.kind === selectedKind)
-        : effectiveType === 'individual' ? org.individuals
-          : [];
-  function update(key, value) {
-    setScopeDraft((draft) => ({ ...draft, [user.id]: { ...current, type: effectiveType, [key]: value } }));
-  }
-  return <div className="space-y-1">
-    <label className="field-label">Organisation scope</label>
-    <div className="flex gap-1.5 flex-wrap items-center">
-      {isIndividual ? (
-        <select className="field-input py-1.5" value={current.type} disabled={disabled} onChange={(e) => { setScopeDraft((draft) => ({ ...draft, [user.id]: { type: e.target.value, id: '' } })); }}>
-          <option value="">No scope</option>
-          <option value="unit">Unit / Department / Faculty / Region</option>
-          <option value="programme">Programme</option>
-          <option value="sub">Sub-programme</option>
-          <option value="individual">Individual</option>
-        </select>
-      ) : (
-        <span className="field-input py-1.5 bg-sunken text-ink-secondary cursor-not-allowed w-auto">
-          {requiredType === 'sub' ? 'Sub-programme' : requiredType === 'unit' ? 'Unit / Department / Faculty / Region' : 'Programme'}
-        </span>
-      )}
-      {effectiveType === 'unit' && <select
-        className="field-input py-1.5"
-        value={selectedKind}
-        disabled={disabled}
-        onChange={(e) => {
-          setUnitKindDraft((draft) => ({ ...draft, [user.id]: e.target.value }));
-          update('id', '');
-        }}
-        aria-label={`Organisation unit kind for ${user.name}`}
-      >
-        {UNIT_KIND_OPTIONS.map((kind) => <option key={kind} value={kind}>{kind}</option>)}
-      </select>}
-      {effectiveType && <select className="field-input py-1.5" value={current.id} disabled={disabled} onChange={(e) => update('id', e.target.value)}>
-        <option value="">Select scope</option>
-        {options.map((item) => <option key={item.id} value={item.id}>{effectiveType === 'individual' ? individualScopeLabel(item, org) : item.kind ? `${item.kind} — ${item.name}` : item.name}</option>)}
-      </select>}
-    </div>
-  </div>;
-}
-
-function individualScopeLabel(individual, org) {
-  const unit = org.units.find((item) => item.id === individual.unit_id);
-  const sub = unit && org.subs.find((item) => item.id === unit.sub_id);
-  const programme = sub && org.programmes.find((item) => item.id === sub.programme_id);
-  const unitLabel = unit ? `${unit.kind || 'Unit'} — ${unit.name}` : 'Unit not found';
-  return `${individual.name} · ${programme?.name || 'Programme not found'} / ${sub?.name || 'Sub-programme not found'} / ${unitLabel}`;
-}
-
-function scopeLabel(type, id, org) {
-  if (!type || !id) return '';
-  const items = type === 'programme' ? org.programmes : type === 'sub' ? org.subs : type === 'unit' ? org.units : org.individuals;
-  const item = items.find((entry) => entry.id === Number(id));
-  return item ? `${type} "${item.name}"` : '';
-}
+// ScopePicker, employeeScopeLabel, and scopeLabel used to live here —
+// they now live in Permissions.jsx, which is where organisation scope is
+// actually edited from (see the header note above and Users()'s own
+// description paragraph). ROLES/ROLE_LABEL/UNIT_KIND_OPTIONS stay exported
+// from this file as the one canonical source Permissions.jsx shares.
+//
+// ROLE_SCOPE_TYPES — a hardcoded { rep: 'sub', unithead: 'unit', programme:
+// 'programme' } mapping each role to the one scope type it required — used
+// to live here too. It's gone for good, not moved: organisation scope is a
+// property of the PERSON, not the role (see routes/users.js's PATCH
+// /:id/role), so no role — built-in or custom — declares or requires a
+// scope type any more. The one exception is the built-in Employee role,
+// which is just a literal `role === 'employee'` check wherever it matters
+// (Permissions.jsx, routes/users.js), not a lookup table.

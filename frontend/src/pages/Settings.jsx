@@ -26,8 +26,8 @@ const SECTIONS = [
     hint: 'How many days after month-end each tier has to submit before it counts as late.',
     fields: [
       {
-        key: 'lateCutoffIndividual',
-        label: 'Individual (days)',
+        key: 'lateCutoffEmployee',
+        label: 'Employee (days)',
         fallback: 3,
       },
       {
@@ -181,7 +181,7 @@ export default function Settings() {
   }, [search]);
 
   /* --------------------------------
-     SAVE INDIVIDUAL SETTING
+     SAVE EMPLOYEE SETTING
   -------------------------------- */
   async function saveSetting(key, sectionTitle) {
     setBusy(key);

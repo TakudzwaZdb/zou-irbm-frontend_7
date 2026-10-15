@@ -2,16 +2,6 @@ import { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { api } from '../lib/api.js';
 
-const DEMO_ACCOUNTS = [
-  { role: 'Vice Chancellor (Executive)', email: 'l.chareka@zou.ac.zw', note: 'Read-only reports view' },
-  { role: 'Corporate Planning Unit (CPU)', email: 't.moyo@zou.ac.zw', note: 'Approves sub-programmes, manages org & KPIs' },
-  { role: 'ICT Systems Administrator', email: 'l.chikomo@zou.ac.zw', note: 'Only role that can grant/revoke permissions' },
-  { role: 'Programme Head', email: 's.chitiyo@zou.ac.zw', note: 'Oversees one Programme\'s Sub-programmes; approves their Annual Plans' },
-  { role: 'Sub-programme Representative', email: 'b.gwatidzo@zou.ac.zw', note: 'Enters sub-owned KPIs, approves units below' },
-  { role: 'Unit Head', email: 'f.rusike@zou.ac.zw', note: 'Enters unit-owned KPIs, approves individuals below' },
-  { role: 'Individual Staff Member', email: 'n.moyana@zou.ac.zw', note: 'Enters their own KPI data only' },
-];
-
 export default function Login() {
   const { login, verifyMfa, loginError, completeAzureLogin, reportAzureLoginError } = useApp();
   const [email, setEmail] = useState('');
@@ -96,8 +86,8 @@ export default function Login() {
           </button>
         </form>
 
-        {/* A "default" (read-only, no department) Individual account never has
-            a password at all — see routes/org.js's POST /individuals — so it
+        {/* A "default" (read-only, no department) Employee account never has
+            a password at all — see routes/org.js's POST /employees — so it
             can only ever get in through Microsoft, never the form above. */}
         <div className="my-2.5 flex items-center gap-2 text-[10.5px] text-ink-muted">
           <div className="h-px flex-1 bg-line" /> or <div className="h-px flex-1 bg-line" />
@@ -112,24 +102,6 @@ export default function Login() {
         </a>
 
         <ForgotPassword />
-
-        <details className="mt-3 pt-3 border-t border-line text-[11px] text-ink-secondary leading-relaxed">
-          <summary className="cursor-pointer font-semibold text-ink-secondary select-none">
-            Demo accounts for testing (one per access level)
-          </summary>
-          <div className="mt-2.5 space-y-2">
-            {DEMO_ACCOUNTS.map((a) => (
-              <div key={a.email} className="flex items-baseline justify-between gap-3">
-                <div>
-                  <div className="font-semibold text-ink-secondary">{a.role}</div>
-                  <div className="text-ink-secondary">{a.note}</div>
-                </div>
-                <code className="shrink-0 bg-sunken rounded px-1.5 py-0.5 text-[10.5px] text-ink-secondary">{a.email}</code>
-              </div>
-            ))}
-            <div className="pt-1">Password for every account: <code className="bg-sunken rounded px-1.5 py-0.5 text-[10.5px] text-ink-secondary">Zou@2026</code></div>
-          </div>
-        </details>
       </div>
     </div>
   );

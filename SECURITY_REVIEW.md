@@ -19,7 +19,7 @@ Findings are ordered by severity. Each one names the exact file/line, explains t
 ### 1. Every new account is provisioned with a shared, predictable default password — FIXED
 **Files:** `backend/src/routes/org.js:44,63,92,111`, `backend/src/seed.js:11`
 
-**Fixed:** `POST /api/org/units` and `POST /api/org/individuals` now generate a
+**Fixed:** `POST /api/org/units` and `POST /api/org/employees` now generate a
 real random one-time password (`utils/password.js`'s `generateTempPassword`)
 and set the new `must_change_password` flag; `POST /api/users/:id/reset-password`
 does the same for admin resets. `middleware/auth.js`'s `requireAuth` blocks
@@ -30,7 +30,7 @@ accounts deliberately keep the documented shared password — see
 README.md's "Before using this for anything real" for why that's a
 conscious exception, not an oversight.
 
-Both `POST /api/org/units` (creates a Unit Head account) and `POST /api/org/individuals` (creates an Individual account) hash the password with:
+Both `POST /api/org/units` (creates a Unit Head account) and `POST /api/org/employees` (creates an Employee account) hash the password with:
 ```js
 bcrypt.hashSync(process.env.SEED_PASSWORD || 'Zou@2026', 10)
 ```
@@ -96,16 +96,16 @@ and `compliance.js` (`GET /`) now filter every row through the relevant
 predicate before it reaches the response, instead of returning the
 unfiltered table. A global oversight role (CPU, ICT Admin, Executive,
 Council) still sees everything, unchanged. One deliberate exception:
-`plans.js` treats the `individual` role the same as a global reader for
+`plans.js` treats the `employee` role the same as a global reader for
 this one endpoint, matching `pages/Planning.jsx`'s existing read-only
-institutional-plan view for individuals — narrowing it there would have
+institutional-plan view for employees — narrowing it there would have
 broken a screen that was already correctly showing the whole plan by
 design, not by oversight. Verified with a dedicated automated test file
 (`backend/test/scope-filtering.test.js`) that logs in as each scoped role
 and confirms both that out-of-scope data is now rejected/absent and that
 global roles see no regression.
 
-Every `GET` in these files used to sit behind `requireAuth` only — no `requirePerm`/role/scope check. So `GET /api/kpis`, `GET /api/kpis/values`, `GET /api/kpis/contributions`, `GET /api/org`, `GET /api/plans`, and `GET /api/compliance` all returned **every KPI, every value, every contribution, the full org tree, and the full budget/compliance picture, system-wide**, to any authenticated user regardless of role or scope. The frontend narrowed what it *shows* per role (an Individual's UI only browses their own branch), and the "view_overview" / "view_framework" / "view_institutional_performance" permissions gated *navigation*, but none of it was enforced server-side — a scoped user (e.g. an Individual or Unit Head) could call these endpoints directly (browser devtools, curl with their own real token) and get data far outside what the UI ever showed them: other units' and other Programmes' KPI figures, other people's submitted explanations, and the full budget roll-up.
+Every `GET` in these files used to sit behind `requireAuth` only — no `requirePerm`/role/scope check. So `GET /api/kpis`, `GET /api/kpis/values`, `GET /api/kpis/contributions`, `GET /api/org`, `GET /api/plans`, and `GET /api/compliance` all returned **every KPI, every value, every contribution, the full org tree, and the full budget/compliance picture, system-wide**, to any authenticated user regardless of role or scope. The frontend narrowed what it *shows* per role (an Employee's UI only browses their own branch), and the "view_overview" / "view_framework" / "view_institutional_performance" permissions gated *navigation*, but none of it was enforced server-side — a scoped user (e.g. an Employee or Unit Head) could call these endpoints directly (browser devtools, curl with their own real token) and get data far outside what the UI ever showed them: other units' and other Programmes' KPI figures, other people's submitted explanations, and the full budget roll-up.
 
 This was a real, working codebase, and the code comments showed it was a deliberate, acknowledged simplification ("the frontend narrows what it SHOWS... a larger deployment would filter server-side too" — `org.js:11-14`), not an oversight nobody noticed. It was flagged because "acceptable for a reference build" and "acceptable once this is used with real staff performance data" are different bars, and worth a conscious decision rather than an inherited default — the decision made was to fix it.
 
@@ -192,7 +192,7 @@ Tokens are stateless, 12-hour bearer tokens with no server-side session/allow-li
 Worth saying plainly, since a security review can read as all-bad-news otherwise: the things that matter most here are done right.
 
 - **Passwords are real bcrypt hashes** (`bcryptjs`, cost factor 10), never stored or compared in plaintext; login always returns the same generic "Incorrect email or password" error whether the email doesn't exist or the password is wrong, so the login form doesn't leak which accounts exist.
-- **Every mutating (`POST`/`PUT`/`PATCH`/`DELETE`) endpoint I checked re-derives ownership/scope from the database and checks it against `req.user`, never trusting anything the client claims** — `kpis.js`'s `isOwner`/`isApprover`/`isUnitHeadOwner`/`inJurisdiction`, `plans.js`'s `isUnitOwner`/`isSubOwner`/`isProgrammeHeadOwner`, and `org.js`'s inline scope check on `POST /individuals` are all real, server-side, can't-be-bypassed-from-devtools checks, not decorative ones.
+- **Every mutating (`POST`/`PUT`/`PATCH`/`DELETE`) endpoint I checked re-derives ownership/scope from the database and checks it against `req.user`, never trusting anything the client claims** — `kpis.js`'s `isOwner`/`isApprover`/`isUnitHeadOwner`/`inJurisdiction`, `plans.js`'s `isUnitOwner`/`isSubOwner`/`isProgrammeHeadOwner`, and `org.js`'s inline scope check on `POST /employees` are all real, server-side, can't-be-bypassed-from-devtools checks, not decorative ones.
 - **Permission checks are live, not cached in the token.** `requireAuth` reloads `req.user.permissions` from the `user_permissions` table on every single request (`middleware/auth.js:13-18`), so revoking a permission takes effect on the very next request — I confirmed this behavior directly in this session's earlier grant/revoke testing of `view_institutional_performance`.
 - **Messaging is correctly scoped**: inbox/sent queries filter by `recipient_id`/`sender_id = req.user.id`, and read/delete both re-check that the caller is actually a party to the message before acting (`messages.js:103-140`) — no IDOR there.
 - **The centralized error handler never leaks stack traces** (`server.js:53-56`) — every unhandled exception becomes a generic `Internal server error` to the client while the real error is logged server-side only.

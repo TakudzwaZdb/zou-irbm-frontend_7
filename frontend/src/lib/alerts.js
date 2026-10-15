@@ -28,7 +28,7 @@ export function computeAlerts(org, kpis, values, settings, user, period, assignm
     // Your own contribution toward a shared Unit KPI was sent back by your
     // Unit Head — same "returned" alert as a normal KPI, one tier down.
     if (canContribute(user, k, assignments)) {
-      const c = contributions.find((row) => row.kpi_id === k.id && row.individual_id === user.scope_id);
+      const c = contributions.find((row) => row.kpi_id === k.id && row.employee_id === user.scope_id);
       if (c?.return_comment && c.status === 'draft') {
         alerts.push({
           id: `returned-contrib-${k.id}`, kind: 'returned', route: 'entry',

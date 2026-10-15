@@ -8,17 +8,17 @@ export const NAV_ITEMS = {
   // array of permissions (see currentNav below): visible to whoever holds
   // ANY one of them, since a permission in this app can be granted to a
   // single account independent of role (e.g. `edit_targets` or
-  // `add_individual` handed to just one person), not only to its default
+  // `add_employee` handed to just one person), not only to its default
   // holders (cpu/ictadmin). Organisation Maintenance used to be two separate
   // pages (Organisation Structure + People & Roles), each showing its own
   // full copy of the org tree — merged into one page/one nav entry so
   // every structural and personnel change (create/delete Programmes/Subs/
-  // Units, add/edit/remove Individuals, change an account's role) happens
+  // Units, add/edit/remove Employees, change an account's role) happens
   // on the one platform, not a repeated tree display across pages.
   kpiManagement: { label: 'KPI Management', icon: '🎯', perm: ['create_kpi', 'edit_targets'] },
   // Organisation Setup (create a Programme/Sub-programme/Unit, update an
-  // existing one's own name/head, add an Individual) and Organisation
-  // Maintenance (remove/restore, edit/role-change an existing Individual)
+  // existing one's own name/head, add an Employee) and Organisation
+  // Maintenance (remove/restore, edit/role-change an existing Employee)
   // are two distinct nav entries for what used to be one page mixing create,
   // update, remove, and restore in a single scroll — same "any one of
   // these" permission-array gating as every other admin page here.
@@ -27,14 +27,23 @@ export const NAV_ITEMS = {
   // backend) — either one alone is enough to reach this page (its own
   // Create/Update navigation then further narrows what a holder of just one
   // of them can actually do — see OrganisationBuilder.jsx).
-  orgBuilder: { label: 'Organisation Setup', icon: '🏗', perm: ['manage_org_units', 'create_org_units', 'edit_org_units', 'add_individual'] },
+  orgBuilder: { label: 'Organisation Setup', icon: '🏗', perm: ['manage_org_units', 'create_org_units', 'edit_org_units', 'add_employee'] },
   planning: { label: 'Annual Plan & Budget', icon: '🧾' },
   compliance: { label: 'Compliance & Escalations', icon: '⏱' },
   reports: { label: 'Reports', icon: '▤', perm: 'view_reports' },
   audit: { label: 'Audit Log', icon: '≣', perm: 'view_audit' },
   settings: { label: 'Settings', icon: '⚙', perm: 'manage_settings' },
-  users: { label: 'User & Roles', icon: '🔑', perm: 'manage_users' },
-  permissions: { label: 'Permissions', icon: '☷', perm: 'manage_users' },
+  // Users is the account directory (profile, password/MFA, overview limit,
+  // Executive Owner, remove) — role assignment and organisation-scope
+  // changes both moved to Permissions & Roles below (see pages/Users.jsx
+  // and pages/Permissions.jsx's own header notes). Reachable on EITHER
+  // manage_users (ictadmin — full edit access) OR the narrower view_users
+  // (granted to cpu by default — read-only: Users.jsx itself hides every
+  // action button when the viewer holds view_users but not manage_users).
+  // Permissions & Roles stays manage_users-only, full stop — there is no
+  // view-only version of granting/revoking permissions or changing roles.
+  users: { label: 'Users', icon: '🔑', perm: ['manage_users', 'view_users'] },
+  permissions: { label: 'Permissions & Roles', icon: '☷', perm: 'manage_users' },
   // No `perm` gate — internal messaging is deliberately open to every
   // signed-in account regardless of role or permissions, since the whole
   // point is real communication reaching straight across tiers.
@@ -42,7 +51,7 @@ export const NAV_ITEMS = {
 };
 
 // Framework is on every role's nav — everyone can see the programmes /
-// sub-programmes / units / individuals tree read-only (it's the org chart
+// sub-programmes / units / employees tree read-only (it's the org chart
 // they're part of), even if they hold none of the permissions that would
 // let them add a unit, create a KPI, or edit targets from that same page.
 // Compliance & Escalations is the org-wide oversight view (late-submission
@@ -50,7 +59,7 @@ export const NAV_ITEMS = {
 // data — see lib/compliance usage in pages/Compliance.jsx) — visible to the
 // two roles who actually act on an escalation (Programme Head / VC chain):
 // Corporate Planning Unit and Executives. It isn't a per-tier data-entry
-// concern, so Reps/Unit Heads/Individuals don't need it in their nav.
+// concern, so Reps/Unit Heads/Employees don't need it in their nav.
 // Overview and Framework are visible to every role by default (every seeded
 // account holds view_overview/view_framework — see utils/permissions.js on
 // the backend) but, like Reports/Audit/Settings/Users below, that's now a
@@ -60,7 +69,7 @@ export const NAV_ITEMS = {
 // Units submit a narrative + budget proposal for the next cycle, Sub-programme
 // Reps approve those and submit their own sub-level narrative (its budget is
 // always the derived sum of its units, never typed in), and CPU compiles each
-// Programme and finally the whole University Annual Plan. Individuals and ICT
+// Programme and finally the whole University Annual Plan. Employees and ICT
 // Admin don't own a unit/sub in this workflow, so it's not in their nav.
 // Order mirrors the original prototype's flow: a person whose job is data
 // entry sees "My Data Entry" (and, once they have someone reporting to
@@ -77,8 +86,8 @@ export const NAV_ITEMS = {
 // tier to fill in.
 // kpiManagement/orgBuilder/orgStructure are added to exactly the role lists
 // whose DEFAULT permission set (utils/permissions.js, backend) can hold
-// create_kpi/edit_targets/manage_org_units/add_individual, plus
-// rep/unithead for orgBuilder/orgStructure specifically — add_individual is
+// create_kpi/edit_targets/manage_org_units/add_employee, plus
+// rep/unithead for orgBuilder/orgStructure specifically — add_employee is
 // grantable to a Sub Rep or Unit Head same as anyone else (see the note
 // above OrganisationBuilder.jsx's Field component for why there's no
 // own-scope restriction on it), so their nav needs the key present for
@@ -90,10 +99,20 @@ export const NAV_ITEMS = {
 // one.
 export const ROLE_NAV_KEYS = {
   exec: ['overview', 'framework', 'planning', 'compliance', 'reports', 'messages'],
-  individual: ['entry', 'overview', 'framework', 'messages'],
+  // Vice Chancellor — same read-only nav as Executive (see utils/permissions.js
+  // on the backend: identical default permission set), now its own role
+  // instead of an 'exec' account carrying the Executive Owner flag.
+  vc: ['overview', 'framework', 'planning', 'compliance', 'reports', 'messages'],
+  employee: ['entry', 'overview', 'framework', 'messages'],
   unithead: ['entry', 'approvals', 'overview', 'framework', 'orgBuilder', 'planning', 'messages'],
   rep: ['entry', 'approvals', 'overview', 'framework', 'orgBuilder', 'planning', 'messages'],
-  cpu: ['overview', 'approvals', 'framework', 'kpiManagement', 'orgBuilder', 'planning', 'compliance', 'reports', 'audit', 'settings', 'messages'],
+  // 'users' added explicitly (not left to the granted-permission fallback
+  // in currentNav below) so it lands in this deliberate position rather
+  // than tacked on at the very end — CPU holds view_users by default (see
+  // utils/permissions.js on the backend), which gets it into the Users
+  // directory read-only; Users.jsx itself hides every action button for a
+  // viewer who lacks manage_users.
+  cpu: ['overview', 'approvals', 'framework', 'kpiManagement', 'orgBuilder', 'planning', 'compliance', 'reports', 'users', 'audit', 'settings', 'messages'],
   // ICT System Administrator keeps 'framework' — the org chart read-only,
   // same as every other role — alongside the pages that act on the org
   // (KPI Management / Organisation Setup / Organisation Maintenance).

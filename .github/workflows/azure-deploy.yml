@@ -1,69 +1,67 @@
 name: Build and deploy to Azure App Service
 
-# Builds the frontend, packages it alongside the backend exactly the way
-# `backend/src/server.js` expects to find it on disk (frontend/dist as a
-# sibling of backend/ — see server.js's own comment on frontendDir), then
-# zip-deploys that prebuilt artifact straight to the App Service. The build
-# happens here in CI, not on the App Service itself (SCM_DO_BUILD_DURING_
-# DEPLOYMENT is left off below) — this repo has no root package.json for
-# Oryx's default Node detection to key off, and building once in CI instead
-# of on every deploy is simpler and faster anyway.
-#
-# One-time setup before this workflow can run — see AZURE_SETUP.md's
-# "Part C — Deploying to Azure App Service":
-#   1. Create the App Service (Linux, Node 22 runtime).
-#   2. Set its Application settings — JWT_SECRET, PG*/DATABASE_URL, DB_SSL,
-#      the AZURE_* Entra ID variables, WEB_CONCURRENCY — see AZURE_SETUP.md.
-#   3. Download its publish profile (Portal → the App Service → Overview →
-#      "Download publish profile") and save it as a GitHub Actions secret
-#      named AZURE_WEBAPP_PUBLISH_PROFILE on this repo (Settings → Secrets
-#      and variables → Actions).
-#   4. Set AZURE_WEBAPP_NAME below (or as a repo variable) to the App
-#      Service's actual name.
+# Builds the frontend, assembles it next to the backend the way
+# backend/src/server.js's static-file serving expects (frontend/dist/ as a
+# sibling of backend/, matching the Startup Command `node backend/src/server.js`
+# documented in AZURE_SETUP.md Part C, step 4), and zip-deploys that package
+# on every push to main. See AZURE_SETUP.md's "8. Deploying: GitHub Actions"
+# for the one-time setup this workflow needs (AZURE_WEBAPP_NAME below, and
+# the AZURE_WEBAPP_PUBLISH_PROFILE repo secret).
 
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 env:
-  AZURE_WEBAPP_NAME: your-app-service-name # TODO: replace with the real App Service name
+  # Replace with your App Service's actual name (Azure Portal → App
+  # Service → Overview → Name) before the first real deploy.
+  AZURE_WEBAPP_NAME: your-app-service-name
   NODE_VERSION: '22.x'
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-
-      - name: Build frontend
-        working-directory: frontend
-        run: |
-          npm ci
-          npm run build
 
       - name: Install backend production dependencies
         working-directory: backend
         run: npm ci --omit=dev
 
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
       - name: Assemble deployment package
-        # Copies exactly what server.js needs at runtime — backend/ (with its
-        # already-installed node_modules) plus frontend/dist as its sibling —
-        # into its own directory so nothing else (frontend/src, frontend/
-        # node_modules, test files, .env, this workflow file) ships to Azure.
+        # backend/ and frontend/dist/ as siblings under one folder, matching
+        # what AZURE_SETUP.md's Startup Command (node backend/src/server.js)
+        # and server.js's static-file serving both expect.
         run: |
-          mkdir -p deploy/backend deploy/frontend
-          cp -r backend/. deploy/backend/
-          rm -rf deploy/backend/node_modules/.cache deploy/backend/data
-          cp -r frontend/dist deploy/frontend/dist
+          mkdir -p deploy_package/backend
+          mkdir -p deploy_package/frontend
+          cp -r backend/. deploy_package/backend/
+          cp -r frontend/dist deploy_package/frontend/dist
+          rm -rf deploy_package/backend/.env
+
+      - name: Zip deployment package
+        working-directory: deploy_package
+        run: zip -r ../release.zip . -x "*.git*"
 
       - name: Deploy to Azure App Service
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          package: deploy
+          package: release.zip

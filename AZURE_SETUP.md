@@ -10,12 +10,24 @@ unconfigured (the app falls back to local behavior, or returns a clear
    any Postgres works, this just documents the Azure option since it's the
    natural pairing for an org already on Azure.
 2. **Microsoft Entra ID (work/school account sign-in)** — how every
-   **Individual** account (see `routes/org.js`'s `POST /individuals`) signs
-   in. An Individual is created with just a name and a pre-approved email —
-   no password is ever set for them — and they complete their own sign-in
-   by clicking **"Sign in with Microsoft"** on the login page. No other
-   role (exec, CPU, ICT admin, Programme Head, Sub Rep, Unit Head) is
-   affected — they keep signing in with a password exactly as before.
+   **Employee** account (see `routes/org.js`'s `POST /employees`) signs
+   in, with no password ever set for them. There are two ways an Employee
+   account comes to exist: someone adds their name + email through
+   Organisation Builder ahead of time, or — since this is auto-provisioning,
+   not just sign-in — nobody does, and the person's own first click on
+   **"Sign in with Microsoft"** creates the account for them automatically
+   (see `routes/auth.js`'s `autoProvisionAzureUser`). Either way it's the
+   same bare, read-only, scope-less `default` role; an administrator still
+   has to promote it to a real role from Permissions & Roles before it can
+   do anything but sign in and look around, and every auto-provision is
+   written to the audit log for later review. Because ANY account in your
+   configured tenant can self-provision this way, the tenant restriction
+   covered in Part B, step 1.3 below is the actual access boundary, not
+   the Organisation Builder step — including a real, common gap (external
+   guest accounts) that "single tenant" alone doesn't close — so read that
+   before enabling this. No other role (exec, CPU, ICT admin, Programme
+   Head, Sub Rep, Unit Head) is affected — they keep signing in with a
+   password exactly as before.
 3. **Azure App Service** — an optional place to actually host the running
    app (both parts above work the same wherever the app runs). Part C below
    covers this.
@@ -66,10 +78,10 @@ who's hosting the server.
 
 ---
 
-## Part B — Microsoft Entra ID sign-in for Individuals
+## Part B — Microsoft Entra ID sign-in for Employees
 
 This is what actually powers the "Sign in with Microsoft" button. Every
-Individual account signs in this way exclusively — there is no password
+Employee account signs in this way exclusively — there is no password
 fallback for them (see `routes/auth.js`'s `/login` guard, which rejects a
 password attempt against an `auth_provider = 'azure'` account with a clear
 message pointing at this button instead).
@@ -80,11 +92,83 @@ message pointing at this button instead).
    Entra ID → App registrations → New registration**.
 2. Name it something recognizable, e.g. "ZOU IRBM Strategic Plan Monitor".
 3. Under **Supported account types**, choose **"Accounts in this
-   organizational directory only (single tenant)"** — this restricts
-   sign-in to your own organization's Microsoft accounts, matching the
-   pre-approved-email model (only a name+email an admin already entered in
-   Organisation Builder can ever complete this flow successfully — see the
-   email-match check in `routes/auth.js`'s `/azure/callback`).
+   organizational directory only (single tenant)"**.
+
+   This setting — combined with a second, independent check in this app's
+   own code — is the real access boundary for who can get an account at
+   all, not the Organisation Builder step: anyone who reaches "Sign in
+   with Microsoft" and completes sign-in gets a bare, read-only account
+   auto-provisioned automatically on their first login if one doesn't
+   already exist (see `routes/auth.js`'s `autoProvisionAzureUser`). It's
+   worth understanding exactly what "single tenant" does and doesn't cover
+   before relying on it:
+
+   - **What it blocks.** A personal Microsoft account (outlook.com,
+     hotmail.com, live.com, Xbox, etc.) and a work/school account
+     belonging to a *different* organization's tenant both fail before
+     Microsoft ever shows a sign-in prompt — rejected at the authorization
+     request itself. That's true for two independent reasons, not just
+     this Portal setting: this app also pins its own authority URL to
+     your specific tenant (`https://login.microsoftonline.com/<AZURE_TENANT_ID>`,
+     built in `backend/src/utils/azureAuth.js`'s `client()`), so even if
+     this Portal setting were accidentally left on a broader option
+     (multitenant, or multitenant + personal accounts), the app's own code
+     still only ever requests tokens from the one tenant named in
+     `AZURE_TENANT_ID` — there's no realistic way to widen access purely
+     through a Portal misconfiguration here.
+   - **What it does NOT block.** A **guest (B2B) account** — someone from
+     another organization, or even a personal Microsoft account, whom your
+     organization's Entra ID admins have already invited into your tenant
+     for collaboration (shared documents, Teams channels, and so on) — is,
+     from this app's point of view, indistinguishable from a full member
+     of your organization. "Single tenant" restricts by *which tenant*,
+     not by *member vs. guest status*, and this app doesn't currently
+     inspect the ID token's `idtyp`/guest-vs-member claim to tell the two
+     apart. If your tenant has any external guests, they can sign in here
+     and get an account auto-provisioned exactly as an employee would.
+
+   Whether that guest exposure matters depends on your organization — a
+   guest who signs in still only gets the same scope-less, permission-less
+   `default` role a stray typo in Organisation Builder would have produced
+   (see `utils/permissions.js`), and every auto-provision lands in
+   `audit_log` for later review. If you'd rather close it off entirely,
+   restrict who can reach this app at all, independent of the tenant
+   boundary:
+
+   1. After registering (step 5 below), go to **Microsoft Entra ID →
+      Enterprise applications**, find this app — it appears automatically
+      under the same name once the App Registration exists — and open its
+      **Properties** page.
+   2. Set **Assignment required?** to **Yes**. This is the actual "who's
+      let in" switch: with it off (the default), anyone in the tenant,
+      guests included, can sign in; with it on, only the specific people
+      or groups you assign below can.
+   3. Go to the **Users and groups** tab, click **Add user/group**, and
+      assign exactly who should be able to reach this app — ideally a
+      security group your IT team already maintains (e.g. "ZOU Staff")
+      rather than individually-added people, so departures and new hires
+      stay in sync without touching this app's configuration at all.
+      Everyone else's sign-in attempt now fails on Microsoft's side,
+      before this app ever receives a token — no code change needed, and
+      it composes cleanly with the auto-provisioning behavior: only an
+      assigned person's first sign-in ever reaches `autoProvisionAzureUser`.
+
+   **This step is required, not optional, if "only people this
+   organisation has actually approved can ever get an account — nobody
+   outside it" is a requirement you're relying on.** The app's own code
+   deliberately does not enforce that distinction (see the auto-provision
+   note above) — this Portal setting is the *only* thing standing between
+   "in our tenant" and "approved for this app." Do it before the first
+   real person ever clicks "Sign in with Microsoft" against production,
+   not after.
+
+   To confirm it's actually taking effect once set: sign in with an
+   account that is a real tenant member but has **not** been assigned. You
+   should land on an `AADSTS50105`-style Microsoft error page (something
+   like "you have not been granted access to this application") *before*
+   ever reaching this app's own `/azure/callback` — if you instead land
+   back on this app's login page (success or its own `#azure_error=`),
+   the restriction isn't actually active and needs rechecking.
 4. Under **Redirect URI**, choose platform **Web** and enter your backend's
    callback URL:
    - Local development: `http://localhost:4000/api/auth/azure/callback`
@@ -153,14 +237,14 @@ process manager) after editing `.env` for the new values to take effect.
 
 ### 7. Try it
 
-1. Add a test Individual in **Organisation Builder** using a real email
+1. Add a test Employee in **Organisation Builder** using a real email
    address that belongs to your Azure AD tenant (any account in the
    directory — it doesn't need to already exist as an app user; the app
    creates the account with `auth_provider = 'azure'` at that point, and
    it's this exact email the person must sign in with).
 2. From the login page, click **Sign in with Microsoft**, and sign in with
    that same Microsoft account. On success you land back on the app,
-   already authenticated as that Individual, read-only (`default` role —
+   already authenticated as that Employee, read-only (`default` role —
    `view_overview` + `view_framework` only, per `utils/permissions.js`).
 3. If the email you sign in with doesn't match any account in the
    database (or matches one that isn't `auth_provider = 'azure'`), the
@@ -179,10 +263,24 @@ process manager) after editing `.env` for the new values to take effect.
 - **Signs in successfully but lands on an error screen** — the signed-in
   email doesn't match any `auth_provider = 'azure'` account in `users`.
   Check the email was entered exactly (case-insensitively; `org.js` lowers
-  it on creation) when the Individual was added in Organisation Builder.
+  it on creation) when the Employee was added in Organisation Builder.
 - **Client secret stopped working** — it expired (step 3's expiry).
   Generate a new one in **Certificates & secrets** and update
   `AZURE_CLIENT_SECRET`.
+- **An unexpected person (a guest/B2B account) signed in and got an
+  auto-provisioned account** — expected unless you set up the "Assignment
+  required" restriction in step 1.3 above; "single tenant" alone allows
+  any guest already invited into your tenant, not just full members. Add
+  the restriction there, and remove the unwanted account (Users page →
+  delete — fully recoverable, but delete it) in the meantime.
+- **A legitimate person got assigned to the Enterprise Application (step
+  1.3) but still can't sign in** — "Assignment required? = Yes" only
+  gates the Microsoft side of sign-in; it doesn't create anything in this
+  app's own `users` table. Their first successful sign-in still either
+  matches an account already added in Organisation Builder, or
+  auto-provisions a fresh `default`-role one — if neither is happening,
+  check the actual error in `#azure_error=...` on the login page rather
+  than assuming it's an assignment problem.
 
 ---
 
@@ -245,7 +343,53 @@ You do **not** need to set `PORT` — Azure's Linux Node containers inject
 their own `PORT` and this app already listens on `process.env.PORT` (see
 `server.js`), so it picks that up automatically.
 
-### 3. Startup command
+### 3. Restrict who can sign in (required before going live)
+
+Skip this entirely if you're not enabling "Sign in with Microsoft" at all
+— nothing here applies without the `AZURE_*` variables from step 2 above.
+
+If you are: **this step is not optional.** This app's own code
+deliberately does not check whether someone is a genuine, approved member
+of your organisation versus a guest — it only checks whether Microsoft
+authenticated them against your tenant at all (see Part B's step 1.3 for
+the full reasoning). That means this Azure Portal setting is the *entire*
+enforcement of "only people this organisation has approved get an
+account; nobody outside it." There is no backstop in the app if it's left
+off. The moment
+`AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`/`AZURE_REDIRECT_URI`
+are set, anyone in your tenant — including any external guest your Entra
+ID admins invited for something entirely unrelated to this app — can
+auto-provision themselves a read-only account the moment they click "Sign
+in with Microsoft" (see `routes/auth.js`'s `autoProvisionAzureUser`). Do
+this **before** pointing real users at the production URL, not after:
+
+1. In the Azure Portal, go to **Microsoft Entra ID → Enterprise
+   applications**, find this app — it has the same name as the App
+   Registration from Part B — and open its **Properties** page.
+2. Set **Assignment required?** to **Yes**.
+3. Under the **Users and groups** tab, click **Add user/group** and assign
+   the specific people who should be able to reach this app — ideally a
+   security group your IT team already maintains (e.g. "ZOU Staff") rather
+   than individually-added people, so staff turnover stays in sync without
+   touching this app's configuration. See Part B's step 1.3 for the full
+   explanation of what this does and doesn't restrict.
+4. **Verify it's actually enforced** before calling this done: sign in
+   with a real tenant account that is deliberately *not* on the assigned
+   list. You should be stopped on Microsoft's own page (an
+   `AADSTS50105`-style "you have not been granted access to this
+   application" error) before you're ever redirected back to this app. If
+   you instead land back on the login page at all — even with an
+   `#azure_error=` from this app rather than a token — the restriction
+   isn't actually active yet and needs rechecking in the Portal. Repeat
+   this check any time someone changes the Enterprise Application's
+   assignment list, since it's easy to accidentally leave "Assignment
+   required" toggled off again after troubleshooting something else.
+
+This is an Entra ID-side setting, not an App Service one — it takes
+effect immediately and needs no redeploy, restart, or code change, so
+there's no reason to defer it past this point in the checklist.
+
+### 4. Startup command
 
 Under **Settings → Configuration → General settings → Startup Command**,
 set:
@@ -260,7 +404,7 @@ is exactly what the deployment package below produces. App Service runs
 the startup command from `/home/site/wwwroot`, which is where a deployed
 zip's contents land.
 
-### 4. Health check
+### 5. Health check
 
 Set **Settings → Health check** to `/api/health` (already implemented in
 `server.js`, returns `{ ok: true, time, worker }`) so App Service can
@@ -268,7 +412,7 @@ detect and recycle an unhealthy instance automatically, and so a rolling
 deploy or scale-out waits for a new instance to actually be serving before
 sending it traffic.
 
-### 5. Always On
+### 6. Always On
 
 Turn on **Settings → Configuration → General settings → Always On** (Basic
 tier and above). Without it, App Service unloads an idle app and the next
@@ -279,7 +423,7 @@ after idling isn't something either of those measurements covers, and a
 monitoring dashboard someone actually depends on shouldn't have a cold
 first load.
 
-### 6. A note on local disk
+### 7. A note on local disk
 
 App Service's local filesystem (`/home` inside the container) is **not**
 guaranteed durable or shared across scale-out instances the way a
@@ -298,7 +442,7 @@ Either way, do this before relying on backups in production — the default
 (`backend/data/backups/` inside the container) is fine for a quick manual
 check but not for anything you'd actually restore from later.
 
-### 7. Deploying: GitHub Actions
+### 8. Deploying: GitHub Actions
 
 `.github/workflows/azure-deploy.yml` in this repo builds the frontend,
 assembles it next to the backend the way `server.js` expects, and
@@ -327,7 +471,7 @@ together with that same sibling layout, and either `az webapp deploy
 --src-path <zip> --name <app-name> --resource-group <rg>` or drag the zip
 onto the Portal's **Deployment Center → ZIP Deploy**.
 
-### 8. Verify
+### 9. Verify
 
 After the first deploy: `https://<your-app-name>.azurewebsites.net/api/health`
 should return `{ "ok": true, ... }`, and the login page should load at the

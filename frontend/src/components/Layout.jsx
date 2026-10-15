@@ -8,7 +8,7 @@ import OrgTree from './OrgTree.jsx';
 import SoundToggle from './SoundToggle.jsx';
 import ThemeToggle from './ThemeToggle.jsx';
 
-const SCOPED_ROLES = ['rep', 'unithead', 'individual', 'programme'];
+const SCOPED_ROLES = ['rep', 'unithead', 'employee', 'programme'];
 
 // A one-time welcome, not a toast: Layout only ever mounts once a user is
 // actually signed in (App.jsx renders <Login/> in their place otherwise),

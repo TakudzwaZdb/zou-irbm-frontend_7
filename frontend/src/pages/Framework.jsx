@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { Children, cloneElement, useEffect, useId, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
 
 // Read-only org chart + the structural-change proposal log. Every
 // creation/edit/deletion action that used to live here — KPIs, Programmes/
-// Sub-programmes/Units, and Individuals/roles — now has its own dedicated
+// Sub-programmes/Units, and Employees/roles — now has its own dedicated
 // admin page (see KpiManagement.jsx, OrgStructure.jsx),
 // reached from the sidebar for whoever holds the relevant permission. This
 // page stays what its own nav entry has always promised everyone: the org
@@ -13,7 +13,7 @@ import { api } from '../lib/api.js';
 // role or permissions to manage anything in it.
 export default function Framework() {
   const { org, hasPerm } = useApp();
-  const canManageAnything = hasPerm('create_kpi') || hasPerm('edit_targets') || hasPerm('manage_org_units') || hasPerm('add_individual');
+  const canManageAnything = hasPerm('create_kpi') || hasPerm('edit_targets') || hasPerm('manage_org_units') || hasPerm('add_employee');
   const canPropose = hasPerm('manage_framework');
 
   return (
@@ -26,7 +26,7 @@ export default function Framework() {
       {canManageAnything && (
         <div className="mb-4 rounded-lg bg-accent-50 text-accent-600 text-[12.3px] px-3.5 py-2.5">
           Looking to make a change? KPIs are created/edited/removed from <b>KPI Management</b>, and Programmes/
-          Sub-programmes/Units/Individuals/roles are all managed from <b>Organisation Maintenance</b> — see the sidebar.
+          Sub-programmes/Units/Employees/roles are all managed from <b>Organisation Maintenance</b> — see the sidebar.
         </div>
       )}
 
@@ -111,17 +111,17 @@ function OrgTree({ org }) {
         const subs = org.subs.filter((s) => s.programme_id === p.id);
         return (
           <div key={p.id} className="card">
-            <div><b>{p.name}</b> <span className="text-ink-muted text-[12px]">Head: {p.head}</span></div>
+            <div><b>{p.name}</b> <span className="text-ink-muted text-[12px]">Head: {p.head || '—'}</span></div>
             {subs.map((s) => {
               const units = org.units.filter((u) => u.sub_id === s.id);
               return (
                 <div key={s.id} className="pl-2 mt-1.5 text-[12.8px]">
-                  ◆ <b>{s.name}</b> <span className="text-ink-muted">(Head: {s.head})</span>
+                  ◆ <b>{s.name}</b> <span className="text-ink-muted">(Head: {s.head || '—'})</span>
                   {units.map((u) => {
-                    const inds = org.individuals.filter((i) => i.unit_id === u.id);
+                    const inds = org.employees.filter((i) => i.unit_id === u.id);
                     return (
                       <div key={u.id} className="pl-5 mt-1 text-[12.8px]">
-                        ▸ <b>{u.name}</b> <span className="text-ink-muted">({u.kind} · Head: {u.head})</span>
+                        ▸ <b>{u.name}</b> <span className="text-ink-muted">({u.kind} · Head: {u.head || '—'})</span>
                         {inds.map((i) => (
                           <div key={i.id} className="pl-8 text-ink-muted text-[12px]">
                             • {i.name} — {i.role_title || ''}
@@ -140,11 +140,22 @@ function OrgTree({ org }) {
   );
 }
 
+// Every call site below wraps exactly one real select/textarea, so this
+// can generate one stable id per Field instance (useId) and wire it onto
+// both the <label>'s htmlFor and the child's id automatically, rather
+// than needing every call site edited by hand. Falls back to an
+// unassociated (but still visually identical) label if a caller ever
+// passes something Field can't safely clone a prop onto, instead of
+// crashing.
 function Field({ label, children }) {
+  const generatedId = useId();
+  const only = Children.count(children) === 1 ? Children.only(children) : null;
+  const child = only && typeof only === 'object' && only.type ? only : null;
+  const inputId = child ? (child.props.id || generatedId) : undefined;
   return (
     <div className="space-y-1 min-w-[160px] flex-1">
-      <label className="field-label">{label}</label>
-      {children}
+      <label htmlFor={inputId} className="field-label">{label}</label>
+      {child ? cloneElement(child, { id: inputId }) : children}
     </div>
   );
 }

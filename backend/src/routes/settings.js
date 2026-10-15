@@ -19,7 +19,7 @@ router.get('/', async (req, res) => {
 // "settings whitelist" note; still ICT-admin-only either way, this just
 // keeps the table from accumulating unrecognized keys by accident).
 const KNOWN_SETTING_KEYS = new Set([
-  'ragGreen', 'ragAmber', 'lateCutoffIndividual', 'lateCutoffUnit', 'lateCutoffSub',
+  'ragGreen', 'ragAmber', 'lateCutoffEmployee', 'lateCutoffUnit', 'lateCutoffSub',
   'escalateProgramme', 'escalateVC', 'redEscalateProgramme', 'redEscalateVC',
   'submissionOpenDay', 'submissionCloseDay',
 ]);

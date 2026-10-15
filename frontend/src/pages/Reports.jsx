@@ -1,19 +1,26 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { api } from '../lib/api.js';
-import { nodeOwnKpis, performanceRollup, varianceRollup, ownerName, VARIANCE_ATTENTION_THRESHOLD, VARIANCE_AHEAD_THRESHOLD, valueStatus, MONTHS } from '../lib/scope.js';
+import { nodeOwnKpis, performanceRollup, varianceRollup, ownerName, employeesOfUnit, VARIANCE_ATTENTION_THRESHOLD, VARIANCE_AHEAD_THRESHOLD, valueStatus, MONTHS } from '../lib/scope.js';
 import { labelFor } from '../lib/period.js';
 import RagByProgrammeChart from '../components/RagByProgrammeChart.jsx';
 import RagPieChart from '../components/RagPieChart.jsx';
 import VarianceChart from '../components/VarianceChart.jsx';
 import VarianceAlerts from '../components/VarianceAlerts.jsx';
 import PeriodTypePicker from '../components/PeriodTypePicker.jsx';
+import FocusedReportSection from '../components/FocusedReportSection.jsx';
 
 const FLOW_ACTIONS = { submit: 'Submitted', approve: 'Approved', return: 'Returned' };
 const FLOW_STYLE = { submit: 'bg-accent-50 text-accent-600', approve: 'bg-good-soft text-good', return: 'bg-warning-soft text-warning' };
 
 export default function Reports() {
-  const { org, kpis, values, period, settings, perfPeriod, perfValues, hasPerm } = useApp();
+  const { org, kpis, values, period, settings, perfPeriod, perfValues, hasPerm, user } = useApp();
+  // Individual performance reports are oversight-only by deliberate policy
+  // (see FocusedReportSection's own header note) — a plain Employee account
+  // never gets a per-staff breakdown here either, even one that happens to
+  // include their own row alongside others in their unit.
+  const canSeeStaffRows = user.role !== 'employee';
+  const [showStaff, setShowStaff] = useState(false);
   // jsPDF + jspdf-autotable are a genuinely heavy pair (see the "before"
   // bundle stats in README) that only this button ever needs — every other
   // role/page was paying for them in the main bundle on every load whether
@@ -26,13 +33,20 @@ export default function Reports() {
   // Department/Faculty/Region, Sub-programme, and Programme — computed live
   // from real KPI progress at whatever cadence is selected above, no manual
   // scoring involved. A full cascade (see lib/scope.js's nodeOwnKpis): a
-  // real Individual's own number moves their Unit's score, which moves
+  // real Employee's own number moves their Unit's score, which moves
   // their Sub-programme's, which moves their Programme's — never siloed at
   // the tier it was entered, so CPU's oversight view is always built from
-  // the same real numbers an Individual's own Overview page shows them.
+  // the same real numbers an Employee's own Overview page shows them.
   const unitRows = org.units.map((u) => {
     const unitKpis = nodeOwnKpis(org, kpis, 'unit', u.id);
-    return { unit: u, ...performanceRollup(unitKpis, perfValues, settings) };
+    // Each staff member's OWN KPIs only (nodeOwnKpis('employee', ...) never
+    // cascades anything further down — nothing sits below an Employee) —
+    // never a second, separately-scoped computation from the Unit row's own
+    // cascaded total just above, so the two can never quietly disagree.
+    const employees = employeesOfUnit(org, u.id).map((e) => ({
+      employee: e, ...performanceRollup(nodeOwnKpis(org, kpis, 'employee', e.id), perfValues, settings),
+    }));
+    return { unit: u, employees, ...performanceRollup(unitKpis, perfValues, settings) };
   });
   const subRows = org.subs.map((s) => {
     const subKpis = nodeOwnKpis(org, kpis, 'sub', s.id);
@@ -60,7 +74,7 @@ export default function Reports() {
   // recorded in — never a single date for the whole page, so switching the
   // cadence above never falsely penalizes a KPI just because the calendar
   // year it's read against hasn't finished yet. Every KPI in the system,
-  // Individual-owned ones included (they cascade into performance now too —
+  // Employee-owned ones included (they cascade into performance now too —
   // see nodeOwnKpis), so this is the one place a reviewer sees every
   // flagged KPI at once, not one node at a time like Overview.
   const orgWideKpis = kpis;
@@ -93,6 +107,11 @@ export default function Reports() {
         rows.push(['Sub-programme', sr.sub.name, sr.count, sr.avgPct ?? '', sr.counts.green, sr.counts.amber, sr.counts.red, sr.counts.none]);
         sr.units.forEach((ur) => {
           rows.push(['Unit', ur.unit.name, ur.count, ur.avgPct ?? '', ur.counts.green, ur.counts.amber, ur.counts.red, ur.counts.none]);
+          if (showStaff && canSeeStaffRows) {
+            ur.employees.forEach((er) => {
+              rows.push(['Staff', er.employee.name, er.count, er.avgPct ?? '', er.counts.green, er.counts.amber, er.counts.red, er.counts.none]);
+            });
+          }
         });
       });
     });
@@ -156,6 +175,11 @@ export default function Reports() {
         body.push([`   ${sr.sub.name}`, sr.count, sr.avgPct != null ? `${sr.avgPct}%` : '—', sr.counts.green, sr.counts.amber, sr.counts.red, sr.counts.none]);
         sr.units.forEach((ur) => {
           body.push([`      ${ur.unit.name}`, ur.count, ur.avgPct != null ? `${ur.avgPct}%` : '—', ur.counts.green, ur.counts.amber, ur.counts.red, ur.counts.none]);
+          if (showStaff && canSeeStaffRows) {
+            ur.employees.forEach((er) => {
+              body.push([`         ${er.employee.name}`, er.count, er.avgPct != null ? `${er.avgPct}%` : '—', er.counts.green, er.counts.amber, er.counts.red, er.counts.none]);
+            });
+          }
         });
       });
     });
@@ -241,7 +265,20 @@ export default function Reports() {
         </div>
       </div>
 
-      <h2 className="font-display font-bold text-[14.5px] mb-2.5">
+      <FocusedReportSection org={org} kpis={kpis} perfValues={perfValues} settings={settings} user={user} periodLabel={periodLabel} />
+
+      <div className="no-print flex justify-between items-end flex-wrap gap-2 mb-2.5">
+        <h2 className="font-display font-bold text-[14.5px]">
+          Programme, Sub-programme &amp; Unit performance appraisal — {periodLabel}
+        </h2>
+        {canSeeStaffRows && (
+          <label className="flex items-center gap-1.5 text-[12px] font-semibold select-none">
+            <input type="checkbox" checked={showStaff} onChange={(e) => setShowStaff(e.target.checked)} />
+            Show individual staff rows
+          </label>
+        )}
+      </div>
+      <h2 className="hidden print:block font-display font-bold text-[14.5px] mb-2.5">
         Programme, Sub-programme &amp; Unit performance appraisal — {periodLabel}
       </h2>
       <div className="rounded-xl border border-line bg-surface overflow-x-auto max-h-[65vh] overflow-y-auto mb-5">
@@ -275,15 +312,28 @@ export default function Reports() {
                       <Td><span className="chip chip-rag-none">{sr.counts.none}</span></Td>
                     </tr>
                     {sr.units.map((ur) => (
-                      <tr key={`u${ur.unit.id}`} className="border-t border-line">
-                        <Td className="pl-12 text-ink-secondary">↳ {ur.unit.name}</Td>
-                        <Td className="tabular-nums">{ur.count}</Td>
-                        <Td className="tabular-nums">{ur.avgPct != null ? `${ur.avgPct}%` : '—'}</Td>
-                        <Td><span className="chip chip-rag-green">{ur.counts.green}</span></Td>
-                        <Td><span className="chip chip-rag-amber">{ur.counts.amber}</span></Td>
-                        <Td><span className="chip chip-rag-red">{ur.counts.red}</span></Td>
-                        <Td><span className="chip chip-rag-none">{ur.counts.none}</span></Td>
-                      </tr>
+                      <Fragment key={`u${ur.unit.id}`}>
+                        <tr className="border-t border-line">
+                          <Td className="pl-12 text-ink-secondary">↳ {ur.unit.name}</Td>
+                          <Td className="tabular-nums">{ur.count}</Td>
+                          <Td className="tabular-nums">{ur.avgPct != null ? `${ur.avgPct}%` : '—'}</Td>
+                          <Td><span className="chip chip-rag-green">{ur.counts.green}</span></Td>
+                          <Td><span className="chip chip-rag-amber">{ur.counts.amber}</span></Td>
+                          <Td><span className="chip chip-rag-red">{ur.counts.red}</span></Td>
+                          <Td><span className="chip chip-rag-none">{ur.counts.none}</span></Td>
+                        </tr>
+                        {showStaff && canSeeStaffRows && ur.employees.map((er) => (
+                          <tr key={`e${er.employee.id}`} className="border-t border-line/60">
+                            <Td className="pl-16 text-ink-muted text-[12px]">↳ {er.employee.name}</Td>
+                            <Td className="tabular-nums text-[12px]">{er.count}</Td>
+                            <Td className="tabular-nums text-[12px]">{er.avgPct != null ? `${er.avgPct}%` : '—'}</Td>
+                            <Td><span className="chip chip-rag-green">{er.counts.green}</span></Td>
+                            <Td><span className="chip chip-rag-amber">{er.counts.amber}</span></Td>
+                            <Td><span className="chip chip-rag-red">{er.counts.red}</span></Td>
+                            <Td><span className="chip chip-rag-none">{er.counts.none}</span></Td>
+                          </tr>
+                        ))}
+                      </Fragment>
                     ))}
                   </Fragment>
                 ))}
@@ -295,7 +345,7 @@ export default function Reports() {
       <p className="text-[11.5px] text-ink-muted mb-6">
         Each row's appraisal is the average progress of its own KPIs AND everything beneath it in the structure —
         a full cascade, at whatever cadence is selected above (data entry itself always stays monthly — this is a
-        read-only rollup lens). A real Individual's monthly number moves their Unit's average, which moves their
+        read-only rollup lens). A real Employee's monthly number moves their Unit's average, which moves their
         Sub-programme's, which moves their Programme's — the same real figure at every tier, never a separate
         re-scoring.
       </p>

@@ -9,7 +9,7 @@ import MonthlyPaceBar from './MonthlyPaceBar.jsx';
 
 const STATUS_LABEL = { none: 'Not started', draft: 'Draft', returned: 'Returned', submitted: 'Submitted', approved: 'Approved' };
 
-// An Individual's own figure toward a shared Unit-owned KPI (see
+// An Employee's own figure toward a shared Unit-owned KPI (see
 // backend/src/routes/kpis.js's kpi_contributions) — deliberately a sibling
 // of KpiCard, not a mode on it: this never touches the KPI's own value, it
 // submits into kpi_contributions for the Unit Head to review, who then

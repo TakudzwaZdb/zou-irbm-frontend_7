@@ -24,29 +24,29 @@ async function getValue(token, kpiId, year, month) {
 // only the amended period itself updated, silently leaving every later
 // period's official total built on the stale number. This test builds a
 // real multi-month chain through the real API (enter → submit → approve, an
-// actual Individual and their actual Unit Head account, not a direct DB
+// actual Employee and their actual Unit Head account, not a direct DB
 // write) and then amends the first period, asserting the SECOND period's
 // value moves too.
 test('amending and re-approving an earlier period cascades the new total forward', async () => {
   const org = await api.request('/api/org', { token: ictadmin });
-  const individual = org.body.individuals[0];
-  const unit = org.body.units.find((u) => u.id === individual.unit_id);
-  assert.ok(unit, 'expected the seeded individual\'s unit to exist');
+  const employee = org.body.employees[0];
+  const unit = org.body.units.find((u) => u.id === employee.unit_id);
+  assert.ok(unit, 'expected the seeded employee\'s unit to exist');
 
-  // Find the real login accounts for this Individual and their Unit Head —
-  // exactly the two roles who actually own/approve an Individual-owned KPI
+  // Find the real login accounts for this Employee and their Unit Head —
+  // exactly the two roles who actually own/approve an Employee-owned KPI
   // (see kpis.js's isOwner/isApprover).
   const users = await api.request('/api/users', { token: ictadmin });
-  const individualUser = users.body.users.find((u) => u.role === 'individual' && u.scope_id === individual.id);
-  const headUser = users.body.users.find((u) => u.role === 'unithead' && u.scope_id === individual.unit_id);
-  assert.ok(individualUser && headUser, 'expected real login accounts for both the Individual and their Unit Head');
+  const employeeUser = users.body.users.find((u) => u.role === 'employee' && u.scope_id === employee.id);
+  const headUser = users.body.users.find((u) => u.role === 'unithead' && u.scope_id === employee.unit_id);
+  assert.ok(employeeUser && headUser, 'expected real login accounts for both the Employee and their Unit Head');
 
-  const { token: indivToken } = await api.login(individualUser.email);
+  const { token: indivToken } = await api.login(employeeUser.email);
   const { token: headToken } = await api.login(headUser.email);
 
   const kpiRes = await api.request('/api/kpis', {
     method: 'POST', token: ictadmin,
-    body: { ownerType: 'individual', ownerId: individual.id, name: 'Cascade Test KPI', type: 'Output', measure: 'units', baseline: 0, target: 1000 },
+    body: { ownerType: 'employee', ownerId: employee.id, name: 'Cascade Test KPI', type: 'Output', measure: 'units', baseline: 0, target: 1000 },
   });
   assert.equal(kpiRes.status, 201);
   const kpiId = kpiRes.body.kpi.id;

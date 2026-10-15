@@ -189,7 +189,7 @@ export default function Planning() {
       {data && user.role === 'programme' && <ProgrammeHeadPanel data={data} cycleYear={cycleYear} reload={() => load()} />}
       {data && user.role === 'cpu' && <CpuPanel data={data} cycleYear={cycleYear} reload={() => load()} />}
       {data && user.role === 'council' && <CouncilPanel data={data} cycleYear={cycleYear} reload={() => load()} />}
-      {data && ['exec', 'ictadmin', 'individual'].includes(user.role) && <ReadOnlyPanel data={data} />}
+      {data && ['exec', 'vc', 'ictadmin', 'employee'].includes(user.role) && <ReadOnlyPanel data={data} />}
     </div>
   );
 }

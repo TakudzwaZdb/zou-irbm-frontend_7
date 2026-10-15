@@ -5,7 +5,7 @@ import { api } from '../lib/api.js';
 // The real, server-enforced stop between "signed in with a temporary
 // password" and "using the app" (see SECURITY_REVIEW.md's finding #1 / db.js's
 // must_change_password migration). Rendered by App.jsx in place of Layout
-// whenever user.must_change_password is set — a new Unit Head/Individual
+// whenever user.must_change_password is set — a new Unit Head/Employee
 // account just provisioned, or any account an ICT admin just reset — and
 // there's no way around it from here: every other API route 403s until this
 // actually succeeds (see middleware/auth.js's requireAuth), this screen just

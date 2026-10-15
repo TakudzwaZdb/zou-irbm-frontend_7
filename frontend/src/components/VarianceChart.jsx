@@ -35,10 +35,10 @@ function makeOwnerTick(chartData) {
         {item?.owner && <text x={0} y={28} textAnchor="middle" fontSize={10.5} fontWeight={700} fill="var(--color-accent-600)">
           {truncateLabel(item.owner, 18)}
         </text>}
-        {/* Third line: which tier that owner is (Individual / Unit /
+        {/* Third line: which tier that owner is (Employee / Unit /
             Sub-programme) — the piece that actually disambiguates two KPIs
             that share both a name AND, in a large org, an owner's first
-            initial-plus-surname (e.g. two different Individuals each with
+            initial-plus-surname (e.g. two different Employees each with
             their own "Vacuum Cleaning" duty KPI in two different Units). */}
         {item?.ownerKind && <text x={0} y={40} textAnchor="middle" fontSize={8.8} fill="var(--color-ink-muted)">
           {item.ownerKind}
@@ -64,7 +64,7 @@ function makeOwnerTick(chartData) {
 const MIN_SLOT_WIDTH = 112;
 export default function VarianceChart({ data, height = 280 }) {
   // `_uid` — a per-row value that is ALWAYS unique, even when two (or more)
-  // KPIs share the exact same name (a real scenario: e.g. an "Individual"
+  // KPIs share the exact same name (a real scenario: e.g. an "Employee"
   // duty-KPI template like "Vacuuming" or "Bin collection" assigned to
   // several different people). This is the fix for a real, confirmed bug:
   // Recharts' own hover/tooltip machinery identifies the "active" category

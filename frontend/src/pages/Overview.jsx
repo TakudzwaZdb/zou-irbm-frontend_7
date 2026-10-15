@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import {
   relevantKpis, computeRag, canEnterData, canContribute, performanceRollup, varianceRollup, institutionalRollup, VARIANCE_ATTENTION_THRESHOLD, valueStatus, scopeBreadcrumb, MONTHS,
-  byId, subsOfProgramme, unitsOfSub, individualsOfUnit, nodeOwnKpis, nodeAncestryChain, defaultNodeForRole, canDrillToKind, ownerName, ownerKindLabel,
+  byId, subsOfProgramme, unitsOfSub, employeesOfUnit, nodeOwnKpis, nodeAncestryChain, defaultNodeForRole, canDrillToKind, ownerName, ownerKindLabel,
 } from '../lib/scope.js';
 import { labelFor } from '../lib/period.js';
 import KpiCard from '../components/KpiCard.jsx';
@@ -12,11 +12,11 @@ import VarianceChart from '../components/VarianceChart.jsx';
 import VarianceAlerts from '../components/VarianceAlerts.jsx';
 import PeriodTypePicker from '../components/PeriodTypePicker.jsx';
 
-const KIND_LABEL = { programme: 'Programme', sub: 'Sub-programme', unit: 'Unit', individual: 'Individual' };
+const KIND_LABEL = { programme: 'Programme', sub: 'Sub-programme', unit: 'Unit', employee: 'Employee' };
 
 export default function Overview() {
   const { user, org, kpis, values, contributions, settings, period, assignments, selNode, selectNode, clearSelNode, hasPerm } = useApp();
-  const isGlobal = ['cpu', 'exec', 'ictadmin', 'council'].includes(user.role);
+  const isGlobal = ['cpu', 'exec', 'vc', 'ictadmin', 'council'].includes(user.role);
   // The university-wide "All Programmes" rollup is no longer an automatic
   // consequence of holding one of the four "global" roles above — it's now
   // a real, revocable permission ICT admin grants/revokes per person (see
@@ -36,13 +36,13 @@ export default function Overview() {
   const effectiveNode = selNode || forced;
 
   // Anything YOU can act on that came back with feedback — a KPI you
-  // strictly own, or (for an Individual) your own contribution toward a
+  // strictly own, or (for an Employee) your own contribution toward a
   // shared Unit KPI your Unit Head assigned to you and then returned.
   const allRelevant = relevantKpis(org, kpis, user);
   const myReturned = allRelevant.filter((k) => canEnterData(user, k) && valueStatus(values[`${k.id}-${period.year}-${period.month}`]) === 'returned');
   const myReturnedContributions = allRelevant.filter((k) => {
     if (!canContribute(user, k, assignments)) return false;
-    const row = contributions.find((c) => c.kpi_id === k.id && c.individual_id === user.scope_id);
+    const row = contributions.find((c) => c.kpi_id === k.id && c.employee_id === user.scope_id);
     return valueStatus(row) === 'returned';
   });
   const totalReturned = myReturned.length + myReturnedContributions.length;
@@ -112,9 +112,9 @@ function InstitutionalAccessRestricted() {
 // average from `kpiList`. Only "All Programmes" passes this: the
 // institution-wide headline figures are the average of the Programmes' OWN
 // averages (one Programme, one vote), never a flat average across every
-// individual KPI, which would silently let whichever Programme has the
+// employee KPI, which would silently let whichever Programme has the
 // most KPIs dominate the number. Every other caller (a single Programme/
-// Sub-programme/Unit/Individual's own card) is unaffected — a flat average
+// Sub-programme/Unit/Employee's own card) is unaffected — a flat average
 // of that one node's own cascade is already the correct, honest figure for
 // it, so it keeps computing straight from kpiList exactly as before.
 function AppraisalCard({ kpiList, heading, rollup, avgOfProgrammes = false }) {
@@ -126,7 +126,7 @@ function AppraisalCard({ kpiList, heading, rollup, avgOfProgrammes = false }) {
   // Every KPI with a value gets its own bar here — never cut short by
   // chart width — labeled with both its own name AND who owns it (see
   // ownerName), since "Digital Theses Uploaded" means something different
-  // depending on whether it's the Library's KPI or a named individual's.
+  // depending on whether it's the Library's KPI or a named employee's.
   // VarianceChart scrolls horizontally once there are more KPIs than fit,
   // rather than squeezing bars until they're unreadable.
   // Full, untruncated name/owner — VarianceChart does its own short
@@ -208,7 +208,7 @@ function AllProgrammesView({ onSelect }) {
   // "Overall Institutional Performance" is the average of the org's 3
   // Programmes' own averages (one Programme, one vote) — see
   // lib/scope.js's institutionalRollup — never a flat average across every
-  // individual KPI regardless of which Programme it belongs to.
+  // employee KPI regardless of which Programme it belongs to.
   const institutional = institutionalRollup(org, kpis, perfValues, settings);
   const owner = org.executiveOwner;
 
@@ -237,7 +237,7 @@ function AllProgrammesView({ onSelect }) {
       <h2 className="font-display font-bold text-[14.5px] mb-2.5">Programmes</h2>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
         {org.programmes.map((p) => (
-          <NodeCard key={p.id} kind="programme" node={p} subtitle={p.head} org={org} kpis={kpis} perfValues={perfValues} settings={settings} onSelect={onSelect} />
+          <NodeCard key={p.id} kind="programme" node={p} subtitle={p.head || '—'} org={org} kpis={kpis} perfValues={perfValues} settings={settings} onSelect={onSelect} />
         ))}
       </div>
     </>
@@ -254,7 +254,7 @@ function NodeView({ node, onHome, onSelect }) {
     kind === 'programme' ? byId(org.programmes, id) :
     kind === 'sub' ? byId(org.subs, id) :
     kind === 'unit' ? byId(org.units, id) :
-    byId(org.individuals, id);
+    byId(org.employees, id);
 
   if (!entity) {
     return <div className="card text-center text-ink-muted py-10">That part of the structure is no longer available.</div>;
@@ -262,10 +262,10 @@ function NodeView({ node, onHome, onSelect }) {
 
   const chain = nodeAncestryChain(org, kind, id);
   const ownKpis = nodeOwnKpis(org, kpis, kind, id);
-  // See the comment further down — an Individual landing on their OWN
+  // See the comment further down — an Employee landing on their OWN
   // record also gets their Unit's KPIs shown, read-only, beneath their own.
-  const isOwnIndividualNode = kind === 'individual' && user.role === 'individual' && id === user.scope_id;
-  const unitKpisForContext = isOwnIndividualNode ? nodeOwnKpis(org, kpis, 'unit', entity.unit_id) : [];
+  const isOwnEmployeeNode = kind === 'employee' && user.role === 'employee' && id === user.scope_id;
+  const unitKpisForContext = isOwnEmployeeNode ? nodeOwnKpis(org, kpis, 'unit', entity.unit_id) : [];
   const counts = { draft: 0, submitted: 0, approved: 0, none: 0, returned: 0 };
   const ragCounts = { green: 0, amber: 0, red: 0, none: 0 };
   ownKpis.forEach((k) => {
@@ -274,10 +274,16 @@ function NodeView({ node, onHome, onSelect }) {
     ragCounts[computeRag(k, v, settings).cls.replace('chip-rag-', '')]++;
   });
 
+  // entity.head can be null now — Programme/Sub-programme/Unit creation no
+  // longer collects one at all (see routes/org.js); a Head/Rep is a role
+  // appointment made afterward from the Permissions & Roles page, and until
+  // someone holds it, there's simply no head text to show. Fall back to
+  // "—" rather than a raw `null` landing in a template string as the word
+  // "null".
   const subtitle =
-    kind === 'programme' ? entity.head :
-    kind === 'sub' ? `${entity.unit_label || 'Unit'}-level sub-programme · ${entity.head}` :
-    kind === 'unit' ? entity.head :
+    kind === 'programme' ? (entity.head || '—') :
+    kind === 'sub' ? `${entity.unit_label || 'Unit'}-level sub-programme · ${entity.head || '—'}` :
+    kind === 'unit' ? (entity.head || '—') :
     entity.role_title;
   const kindLabel = kind === 'unit' ? (entity.kind || 'Unit') : KIND_LABEL[kind];
 
@@ -317,7 +323,7 @@ function NodeView({ node, onHome, onSelect }) {
       <AppraisalCard kpiList={ownKpis} heading="Performance appraisal" />
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5 mb-6">
-        <Stat label={kind === 'individual' ? 'Own KPIs' : 'KPIs (incl. below)'} value={ownKpis.length} />
+        <Stat label={kind === 'employee' ? 'Own KPIs' : 'KPIs (incl. below)'} value={ownKpis.length} />
         <Stat label={`Approved (${MONTHS[period.month]} ${period.year})`} value={counts.approved} className="text-good" />
         <Stat label="Awaiting review" value={counts.submitted} className="text-accent-500" />
         <Stat label="Returned / not started" value={counts.returned + counts.draft + counts.none} className={counts.returned > 0 ? 'text-warning' : 'text-ink-muted'} />
@@ -333,39 +339,39 @@ function NodeView({ node, onHome, onSelect }) {
       {kind === 'programme' && (
         <div className="mb-4 rounded-lg bg-accent-50 text-accent-600 text-[12px] px-3.5 py-2.5">
           A Programme's score is the combined average of everything beneath it — its Sub-programmes' own KPIs, and every
-          Unit's and Individual's KPI within them — a Programme never owns KPIs directly.
+          Unit's and Employee's KPI within them — a Programme never owns KPIs directly.
         </div>
       )}
       {kind === 'sub' && (
         <div className="mb-4 rounded-lg bg-accent-50 text-accent-600 text-[12px] px-3.5 py-2.5">
-          A Sub-programme's score is the combined average of its own KPIs plus every Unit's and Individual's KPI beneath it.
+          A Sub-programme's score is the combined average of its own KPIs plus every Unit's and Employee's KPI beneath it.
         </div>
       )}
       {kind === 'unit' && (
         <div className="mb-4 rounded-lg bg-accent-50 text-accent-600 text-[12px] px-3.5 py-2.5">
-          A Unit's score is the combined average of its own KPIs plus every Individual's KPI within it.
+          A Unit's score is the combined average of its own KPIs plus every Employee's KPI within it.
         </div>
       )}
-      {kind === 'individual' && (
+      {kind === 'employee' && (
         <div className="mb-4 rounded-lg bg-accent-50 text-accent-600 text-[12px] px-3.5 py-2.5">
-          Individual targets are the 4th tier of the hierarchy (Programme → Sub-programme → Unit → Individual) — a real
+          Employee targets are the 4th tier of the hierarchy (Programme → Sub-programme → Unit → Employee) — a real
           number here moves their Unit's score, which moves their Sub-programme's, which moves their Programme's.
         </div>
       )}
 
       {ownKpis.length > 0 && (
         <KpiSection
-          title={kind === 'individual' ? 'Individual KPIs' : `KPIs in this ${KIND_LABEL[kind]}`}
+          title={kind === 'employee' ? 'Employee KPIs' : `KPIs in this ${KIND_LABEL[kind]}`}
           kpis={ownKpis}
         />
       )}
 
-      {/* An Individual lands here by default on their own record — also show
+      {/* An Employee lands here by default on their own record — also show
           their own Unit/Department/Faculty/Regional-Campus's KPIs, read-only,
           so "what is my unit being measured on" is visible without an extra
           click (this is the same scope Entry/Approvals/alerts already treat
           as relevant to them — see lib/scope.js's relevantKpis). Landing on
-          someone ELSE's individual record (drilled in from their Unit) skips
+          someone ELSE's employee record (drilled in from their Unit) skips
           this — it's their own personal targets you're looking at, not a
           detour back into the whole unit. */}
       {unitKpisForContext.length > 0 && (
@@ -377,17 +383,17 @@ function NodeView({ node, onHome, onSelect }) {
       )}
 
       {kind === 'sub' && (canDrillToKind(user, 'unit')
-        ? <ChildCards kind="unit" items={unitsOfSub(org, id)} subtitleFn={(u) => `${u.kind || 'Unit'} · ${u.head}`} onSelect={onSelect} />
+        ? <ChildCards kind="unit" items={unitsOfSub(org, id)} subtitleFn={(u) => `${u.kind || 'Unit'} · ${u.head || '—'}`} onSelect={onSelect} />
         : <OverviewRestrictedNote label="Unit" />)}
-      {kind === 'unit' && (canDrillToKind(user, 'individual')
-        ? <ChildCards kind="individual" items={individualsOfUnit(org, id)} subtitleFn={(i) => i.role_title} onSelect={onSelect} />
-        : <OverviewRestrictedNote label="Individual" />)}
+      {kind === 'unit' && (canDrillToKind(user, 'employee')
+        ? <ChildCards kind="employee" items={employeesOfUnit(org, id)} subtitleFn={(i) => i.role_title} onSelect={onSelect} />
+        : <OverviewRestrictedNote label="Employee" />)}
       {kind === 'programme' && (canDrillToKind(user, 'sub')
         ? <ChildCards kind="sub" items={subsOfProgramme(org, id)} subtitleFn={(s) => s.head} onSelect={onSelect} />
         : <OverviewRestrictedNote label="Sub-programme" />)}
 
-      {kind === 'individual' && ownKpis.length === 0 && unitKpisForContext.length === 0 && (
-        <div className="card text-center text-ink-muted py-10">No KPIs recorded for this individual yet.</div>
+      {kind === 'employee' && ownKpis.length === 0 && unitKpisForContext.length === 0 && (
+        <div className="card text-center text-ink-muted py-10">No KPIs recorded for this employee yet.</div>
       )}
     </div>
   );
@@ -395,7 +401,7 @@ function NodeView({ node, onHome, onSelect }) {
 
 // Reusable KPI section visibility control.
 //
-// IMPORTANT: This controls the whole KPI section, not individual KPI cards.
+// IMPORTANT: This controls the whole KPI section, not employee KPI cards.
 // The state is local to this mounted view, so navigating away and returning
 // starts with the KPI cards hidden again. KPI calculations still receive the
 // complete `kpis` array from the caller.
@@ -409,7 +415,7 @@ function KpiSection({ title, kpis, className = '' }) {
 
         <button
           type="button"
-          className="text-[11.5px] text-accent-500 hover:underline"
+          className="text-[11.5px] text-accent-600 font-semibold hover:underline"
           onClick={() => setShowKpis((visible) => !visible)}
           aria-expanded={showKpis}
         >
@@ -444,7 +450,7 @@ function OverviewRestrictedNote({ label }) {
 function ChildCards({ kind, items, subtitleFn, onSelect }) {
   const { org, kpis, perfValues, settings } = useApp();
   if (items.length === 0) return null;
-  const heading = kind === 'unit' ? 'Units' : kind === 'individual' ? 'Individuals' : 'Sub-programmes';
+  const heading = kind === 'unit' ? 'Units' : kind === 'employee' ? 'Employees' : 'Sub-programmes';
   return (
     <>
       <h2 className="font-display font-bold text-[14.5px] mt-6 mb-2.5">

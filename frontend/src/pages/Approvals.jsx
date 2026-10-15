@@ -5,7 +5,7 @@ import PeriodPicker from '../components/PeriodPicker.jsx';
 
 export default function Approvals() {
   const { user, org, kpis, values, contributions, assignments, period } = useApp();
-  // Single stage, every tier alike: one real approver per KPI (Individual
+  // Single stage, every tier alike: one real approver per KPI (Employee
   // by its Unit Head, Unit by its Sub-programme Rep, Sub by its own
   // Programme Head, final — no further CPU stage in this cascade).
   const mine = kpis.filter((k) => isApprover(org, user, k));

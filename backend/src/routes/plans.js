@@ -96,14 +96,14 @@ router.get('/', async (req, res) => {
   // Unit's own approvedBudget and a Sub/Programme's roll-up must stay
   // genuinely complete regardless of who's asking. Only the ARRAYS handed
   // back to the client are narrowed here, same read-visibility boundary as
-  // kpis.js/compliance.js (see utils/scope.js) — except an Individual keeps
+  // kpis.js/compliance.js (see utils/scope.js) — except an Employee keeps
   // the full institutional compilation here, same as exec/ictadmin/cpu/
   // council already did and pages/Planning.jsx's ReadOnlyPanel already shows
   // them: nothing anyone could already reach through the app changes, only
   // a Unit Head/Sub Rep/Programme Head's direct-API reach into a different
   // branch — one their own panel never requested in the first place — is
   // now actually blocked server-side too.
-  const seesWholePlan = isGlobalReader(req.user) || req.user.role === 'individual';
+  const seesWholePlan = isGlobalReader(req.user) || req.user.role === 'employee';
   let visibleUnits = units, visibleSubs = subs, visibleProgrammes = programmes;
   if (!seesWholePlan) {
     visibleUnits = [];

@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react';
+import { Children, cloneElement, useEffect, useId, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
+import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
 import { inJurisdiction, byId } from '../lib/scope.js';
 
 // Everything to do with the KPI catalogue itself — creating a new KPI,
-// managing the "for individuals" template pool, and editing or deleting an
+// managing the "for employees" template pool, and editing or deleting an
 // existing KPI's definition/targets — used to live inside Framework.jsx
-// alongside org-structure and individual management. Split out into its
+// alongside org-structure and employee management. Split out into its
 // own admin page so "manage the KPI catalogue" and "manage who's in the
 // org chart" are two distinct places, not one long scroll of unrelated
 // forms. See OrgStructure.jsx (Organisation Maintenance) for the other one.
@@ -48,8 +49,8 @@ export default function KpiManagement() {
 
 // The other half of every "nothing is deleted, it's recoverable" claim made
 // on this page: a live list of everything currently soft-removed from the
-// KPI catalogue — both individual KPIs (routes/kpis.js's GET /removed) and
-// templates from the "for individuals" pool (routes/kpiTemplates.js's GET
+// KPI catalogue — both employee KPIs (routes/kpis.js's GET /removed) and
+// templates from the "for employees" pool (routes/kpiTemplates.js's GET
 // /removed) — each with a one-click Restore, same collapsible-and-closed-
 // by-default pattern as Organisation Maintenance's own Recently Removed panel.
 // This used to have no frontend at all even though both backend routes
@@ -101,7 +102,7 @@ function RecentlyRemoved() {
           Recently Removed
           <span className={`chip ${total ? 'chip-rag-amber' : ''}`}>{total}</span>
         </span>
-        <span className="text-ink-muted text-[12px]">{open ? 'Hide ▲' : 'Show ▼'}</span>
+        <span className="text-accent-600 font-semibold text-[12px]">{open ? 'Hide ▲' : 'Show ▼'}</span>
       </button>
       <p className="text-[12px] text-ink-muted mt-1">
         Every KPI and template removed from this catalogue — nothing here is deleted; restoring puts it straight
@@ -149,11 +150,11 @@ function RecentlyRemoved() {
   );
 }
 
-// Owner type "Individual" no longer means "pick one named person" — it
-// means "pick the Unit these individuals fall under", so the KPI is
+// Owner type "Employee" no longer means "pick one named person" — it
+// means "pick the Unit these employees fall under", so the KPI is
 // created ONCE and everyone in that unit can pick it up as their own (see
 // KpiTemplatesSection below and routes/kpiTemplates.js). Creating a real,
-// single-owner individual KPI directly (the old behavior) is still exactly
+// single-owner employee KPI directly (the old behavior) is still exactly
 // what EditKpiForm's catalog edits, so nothing that already exists this way
 // breaks — this form just no longer creates NEW ones that way, since a
 // Unit-scoped pool is strictly more useful (one definition, any number of
@@ -191,14 +192,14 @@ function AddKpiForm({ onClose }) {
   const [assigneeIds, setAssigneeIds] = useState([]);
   const [busy, setBusy] = useState(false);
 
-  // Individual-type KPIs are scoped by Unit now (a template pool), so they
+  // Employee-type KPIs are scoped by Unit now (a template pool), so they
   // share the Unit picker with owner_type='unit' KPIs — the two just create
   // different things on submit.
   const options = ownerType === 'sub' ? org.subs : org.units;
   // Only meaningful once a Unit owner is actually picked — the same rule
   // the backend enforces (custodians only ever apply to a Unit-owned KPI).
-  const unitIndividuals = ownerType === 'unit' && ownerId
-    ? org.individuals.filter((i) => i.unit_id === Number(ownerId))
+  const unitEmployees = ownerType === 'unit' && ownerId
+    ? org.employees.filter((i) => i.unit_id === Number(ownerId))
     : [];
 
   function toggleAssignee(id) {
@@ -210,9 +211,9 @@ function AddKpiForm({ onClose }) {
     setBusy(true);
     try {
       const chosenId = Number(ownerId || options[0]?.id);
-      if (ownerType === 'individual') {
+      if (ownerType === 'employee') {
         await api('/kpi-templates', { method: 'POST', body: { unitId: chosenId, name, type, measure, baseline: Number(baseline), target: Number(target) } });
-        toast('KPI created for individuals in this unit — each one can now pick it up as their own from My Data Entry.');
+        toast('KPI created for staff in this unit — each one can now pick it up as their own from My Data Entry.');
       } else {
         await api('/kpis', {
           method: 'POST',
@@ -225,7 +226,7 @@ function AddKpiForm({ onClose }) {
         toast(assigneeIds.length ? `KPI created and assigned to ${assigneeIds.length} custodian(s).` : 'KPI created.');
       }
       setName(''); setType(''); setMeasure(''); setBaseline(''); setTarget(''); setAssigneeIds([]);
-      await Promise.all([reloadCore(), ownerType === 'individual' ? reloadTemplates() : Promise.resolve()]);
+      await Promise.all([reloadCore(), ownerType === 'employee' ? reloadTemplates() : Promise.resolve()]);
       onClose();
     } catch (err) { toast(err.message, 'err'); }
     finally { setBusy(false); }
@@ -244,10 +245,10 @@ function AddKpiForm({ onClose }) {
               <select className="field-input" value={ownerType} onChange={(e) => { setOwnerType(e.target.value); setOwnerId(''); setAssigneeIds([]); }}>
                 <option value="sub">Sub-programme</option>
                 <option value="unit">Unit</option>
-                <option value="individual">Individuals (under a unit)</option>
+                <option value="employee">Staff (under a unit)</option>
               </select>
             </Field>
-            <Field label={ownerType === 'individual' ? 'Unit their individuals fall under' : 'Owner'}>
+            <Field label={ownerType === 'employee' ? 'Unit their staff fall under' : 'Owner'}>
               <select className="field-input" value={ownerId} onChange={(e) => { setOwnerId(e.target.value); setAssigneeIds([]); }}>
                 {options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
               </select>
@@ -258,7 +259,7 @@ function AddKpiForm({ onClose }) {
             <Field label="Baseline"><input required type="number" step="any" className="field-input" value={baseline} onChange={(e) => setBaseline(e.target.value)} /></Field>
             <Field label="Target"><input required type="number" step="any" className="field-input" value={target} onChange={(e) => setTarget(e.target.value)} /></Field>
           </div>
-          {ownerType === 'individual' && (
+          {ownerType === 'employee' && (
             <p className="text-[11.5px] text-ink-muted max-w-[65ch]">
               This creates the KPI once, scoped to the unit you picked — nobody owns it yet. Anyone in that unit sees it
               in their own My Data Entry as something they can add as their own personal KPI (each person who picks it
@@ -272,9 +273,9 @@ function AddKpiForm({ onClose }) {
                 Head reviews and approves each one, and approved figures are summed automatically into the KPI's own
                 value, instead of creating a separate KPI per person.
               </label>
-              {unitIndividuals.length > 0 ? (
+              {unitEmployees.length > 0 ? (
                 <div className="flex flex-wrap gap-2">
-                  {unitIndividuals.map((i) => (
+                  {unitEmployees.map((i) => (
                     <label key={i.id} className={`chip cursor-pointer select-none ${assigneeIds.includes(i.id) ? 'bg-accent-50 text-accent-600' : 'bg-sunken text-ink-secondary border border-line'}`}>
                       <input type="checkbox" className="sr-only" checked={assigneeIds.includes(i.id)} onChange={() => toggleAssignee(i.id)} />
                       {i.name} — {i.role_title}
@@ -282,7 +283,7 @@ function AddKpiForm({ onClose }) {
                   ))}
                 </div>
               ) : (
-                <p className="text-[11.5px] text-ink-muted">No individuals in this unit yet — add one from People &amp; Roles first.</p>
+                <p className="text-[11.5px] text-ink-muted">No staff in this unit yet — add one from People &amp; Roles first.</p>
               )}
             </div>
           )}
@@ -297,11 +298,13 @@ function AddKpiForm({ onClose }) {
 }
 
 
-// Created KPI catalogue — hidden by default. Users click "Click to view created KPIs"
-// to reveal the table. A search filter is available only while the catalogue is open.
+// Created KPI catalogue — starts collapsed; a click on the header opens it,
+// same as every other collapsible table in the app. A search filter is
+// available only while the catalogue is open.
 function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDelete }) {
   const { org, reloadCore } = useApp();
   const toast = useToast();
+  const confirm = useConfirm();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [editingId, setEditingId] = useState(null);
@@ -338,7 +341,7 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
     const owners = {
       sub: org.subs,
       unit: org.units,
-      individual: org.individuals,
+      employee: org.employees,
     };
     return owners[k.owner_type]?.find((owner) => owner.id === k.owner_id)?.name;
   }
@@ -366,7 +369,12 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
   }
 
   async function remove(k) {
-    if (!window.confirm(`Remove "${k.name}"? Its recorded values and history are kept and it can be restored later.`)) return;
+    if (!(await confirm({
+      title: `Remove "${k.name}"?`,
+      message: 'Its recorded values and history are kept and it can be restored later.',
+      confirmLabel: 'Remove',
+      tone: 'danger',
+    }))) return;
     setBusyId(k.id);
     try {
       await api(`/kpis/${k.id}`, { method: 'DELETE' });
@@ -381,7 +389,7 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
     if (name) return name;
     if (k.owner_type === 'sub') return 'Sub-programme';
     if (k.owner_type === 'unit') return 'Unit';
-    if (k.owner_type === 'individual') return 'Individual';
+    if (k.owner_type === 'employee') return 'Staff';
     return '—';
   }
 
@@ -400,14 +408,13 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
           Created KPIs
           <span className="chip">{activeKpis.length}</span>
         </span>
-        <span className="text-ink-muted text-[12px]">
+        <span className="text-accent-600 font-semibold text-[12px]">
           {open ? 'Hide ▲' : 'Click to view ▼'}
         </span>
       </button>
 
       <p className="text-[12px] text-ink-muted mt-1">
-        Created KPIs are hidden by default. Click to view the KPI catalogue and search the
-        KPIs you need.
+        Browse the KPI catalogue below and search the KPIs you need, or click to collapse it.
       </p>
 
       {open && (
@@ -490,7 +497,7 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
   );
 }
 
-// Management view of the Individual-KPI pool created above — what exists,
+// Management view of the Employee-KPI pool created above — what exists,
 // which unit it's scoped to, and real adoption (how many people in that
 // unit have actually picked it up so far), plus removal for one that was
 // created by mistake or is no longer needed (removing it never touches
@@ -498,12 +505,18 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
 function KpiTemplatesSection() {
   const { org, templates, reloadTemplates } = useApp();
   const toast = useToast();
+  const confirm = useConfirm();
   const [busyId, setBusyId] = useState(null);
 
   useEffect(() => { reloadTemplates(); }, [reloadTemplates]);
 
   async function remove(t) {
-    if (!window.confirm(`Remove the "${t.name}" KPI template from ${t.unit_name}'s pool? Anyone who already picked it up keeps their own copy — this only takes it out of the pool for anyone who hasn't yet, and it's recoverable from Recently Removed below.`)) return;
+    if (!(await confirm({
+      title: `Remove the "${t.name}" KPI template?`,
+      message: `This takes it out of ${t.unit_name}'s pool for anyone who hasn't yet picked it up — anyone who already did keeps their own copy. Recoverable from Recently Removed below.`,
+      confirmLabel: 'Remove template',
+      tone: 'danger',
+    }))) return;
     setBusyId(t.id);
     try {
       await api(`/kpi-templates/${t.id}`, { method: 'DELETE' });
@@ -517,13 +530,13 @@ function KpiTemplatesSection() {
 
   return (
     <div className="mt-3">
-      <h3 className="font-display font-bold text-[14px] mb-2">KPIs for individuals — by unit</h3>
+      <h3 className="font-display font-bold text-[14px] mb-2">KPIs for staff — by unit</h3>
       <p className="text-[11.8px] text-ink-muted mb-2.5 max-w-[65ch]">
-        Every KPI created above for a unit's individuals, and how many people in that unit have picked it up so far.
+        Every KPI created above for a unit's staff, and how many people in that unit have picked it up so far.
       </p>
       <div className="space-y-2">
         {templates.map((t) => {
-          const eligible = org.individuals.filter((i) => i.unit_id === t.unit_id).length;
+          const eligible = org.employees.filter((i) => i.unit_id === t.unit_id).length;
           return (
             <div key={t.id} className="card flex justify-between gap-3 items-center flex-wrap py-2.5">
               <div>
@@ -553,6 +566,7 @@ function KpiTemplatesSection() {
 function EditKpiForm({ user, kpis, org, canFullEdit }) {
   const { reloadCore } = useApp();
   const toast = useToast();
+  const confirm = useConfirm();
   const eligible = kpis.filter((k) => inJurisdiction(org, user, k));
   const [kpiId, setKpiId] = useState(eligible[0]?.id || '');
   const k = byId(kpis, Number(kpiId));
@@ -587,7 +601,12 @@ function EditKpiForm({ user, kpis, org, canFullEdit }) {
 
   async function remove() {
     if (!k) return;
-    if (!window.confirm(`Remove "${k.name}"? Its recorded values, submissions, assignments, and contributions are kept, not deleted — it's recoverable from Recently Removed below.`)) return;
+    if (!(await confirm({
+      title: `Remove "${k.name}"?`,
+      message: 'Its recorded values, submissions, assignments, and contributions are kept, not deleted — it’s recoverable from Recently Removed below.',
+      confirmLabel: 'Remove',
+      tone: 'danger',
+    }))) return;
     setBusy(true);
     try {
       await api(`/kpis/${kpiId}`, { method: 'DELETE' });
@@ -643,11 +662,23 @@ function EditKpiForm({ user, kpis, org, canFullEdit }) {
 // through the same `field-input` class and this same wrapper), so the
 // input boxes themselves line up into clean columns instead of drifting to
 // whatever width their own content happened to need.
+// Every call site below wraps exactly one real input/select/textarea, so
+// this can generate one stable id per Field instance (useId — unique even
+// across many Fields rendered from a map, e.g. one per KPI row) and wire
+// it onto both the <label>'s htmlFor and the child's id automatically,
+// rather than needing every one of Field's ~15 call sites in this file
+// edited by hand. Falls back to an unassociated (but still visually
+// identical) label if a caller ever passes something Field can't safely
+// clone a prop onto, instead of crashing.
 function Field({ label, children }) {
+  const generatedId = useId();
+  const only = Children.count(children) === 1 ? Children.only(children) : null;
+  const child = only && typeof only === 'object' && only.type ? only : null;
+  const inputId = child ? (child.props.id || generatedId) : undefined;
   return (
     <div className="space-y-1 w-full">
-      <label className="field-label block">{label}</label>
-      {children}
+      <label htmlFor={inputId} className="field-label block">{label}</label>
+      {child ? cloneElement(child, { id: inputId }) : children}
     </div>
   );
 }

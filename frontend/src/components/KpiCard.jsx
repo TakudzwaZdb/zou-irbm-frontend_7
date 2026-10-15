@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
+import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
 import {
   byId, computeRag, computeVariance, ownerName, valueStatus,
@@ -18,11 +19,11 @@ const STATUS_LABEL = {
 // bleeding into each other: 'entry' (My Data Entry — the default) is a
 // Unit Head's own data-entry view of a shared KPI they own, so it stops at
 // the "Submit total to Sub-programme Rep" action and never shows their
-// team's individual contributions needing a decision; 'approvals'
+// team's employee contributions needing a decision; 'approvals'
 // (Approvals Queue only) is the one place that decision actually belongs,
 // so ContributorsBreakdown's Approve/Return buttons render only there. The
 // KPI list itself was already correctly scoped per role before this —
-// canEnterData/isOwner in lib/scope.js mean an Individual only ever sees
+// canEnterData/isOwner in lib/scope.js mean an Employee only ever sees
 // their own KPIs, a Unit Head only their own unit's, a Sub-programme Rep
 // only their own sub's — this only removes the duplicate approval actions
 // that used to also render inside My Data Entry.
@@ -36,6 +37,7 @@ const STATUS_LABEL = {
 export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', allowHide = false }) {
   const { user, org, settings, values, period, reloadValues, hasPerm, assignments, contributions, perfPeriod, perfValues, hiddenKpiIds, hideKpi, unhideKpi } = useApp();
   const toast = useToast();
+  const confirm = useConfirm();
   const isMyOwnDuty = canEnterData(user, kpi) || canContribute(user, kpi, assignments);
   const canToggleHide = allowHide && !isMyOwnDuty;
   const isHidden = hiddenKpiIds.has(kpi.id);
@@ -43,7 +45,7 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
   // duties — shown as context in every mode, and only editable by the Unit
   // Head who owns it (see AssignmentManager below).
   const assignees = kpi.owner_type === 'unit'
-    ? assignments.filter((a) => a.kpi_id === kpi.id).map((a) => byId(org.individuals, a.individual_id)).filter(Boolean)
+    ? assignments.filter((a) => a.kpi_id === kpi.id).map((a) => byId(org.employees, a.employee_id)).filter(Boolean)
     : [];
   // A shared KPI (has assignees at all) is entered a whole different way:
   // each assignee submits their own figure (see ContributionCard) which
@@ -374,8 +376,13 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
               </button>
               {valueRow?.override_value != null && (
                 <button className="btn btn-sm btn-ghost" disabled={busy}
-                  onClick={() => {
-                    if (!window.confirm(`Clear this override (${valueRow.override_value}, "${valueRow.override_note}")? Nothing is deleted — it stays recoverable with a "Restore override" button here until a new one is applied over it.`)) return;
+                  onClick={async () => {
+                    if (!(await confirm({
+                      title: 'Clear this override?',
+                      message: `Value ${valueRow.override_value} ("${valueRow.override_note}") will no longer apply. Nothing is deleted — it stays recoverable with a "Restore override" button here until a new one is applied over it.`,
+                      confirmLabel: 'Clear override',
+                      tone: 'danger',
+                    }))) return;
                     run(() => api(`/kpis/${kpi.id}/override`, { method: 'DELETE', body: { year: period.year, month: period.month } }), 'Override cleared.');
                   }}>
                   Clear override
@@ -406,28 +413,34 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
 export function AssignmentManager({ kpi, assignees }) {
   const { org, reloadAssignments } = useApp();
   const toast = useToast();
+  const confirm = useConfirm();
   const [pickId, setPickId] = useState('');
   const [busy, setBusy] = useState(false);
-  const unitIndividuals = org.individuals.filter((i) => i.unit_id === kpi.owner_id);
-  const available = unitIndividuals.filter((i) => !assignees.some((a) => a.id === i.id));
+  const unitEmployees = org.employees.filter((i) => i.unit_id === kpi.owner_id);
+  const available = unitEmployees.filter((i) => !assignees.some((a) => a.id === i.id));
 
   async function assign() {
     if (!pickId) return;
     setBusy(true);
     try {
-      await api(`/kpis/${kpi.id}/assign`, { method: 'POST', body: { individualId: Number(pickId) } });
+      await api(`/kpis/${kpi.id}/assign`, { method: 'POST', body: { employeeId: Number(pickId) } });
       toast('Assigned.');
       setPickId('');
       await reloadAssignments();
     } catch (err) { toast(err.message, 'err'); }
     finally { setBusy(false); }
   }
-  async function unassign(individualId) {
-    const person = unitIndividuals.find((i) => i.id === individualId);
-    if (!window.confirm(`Unassign ${person ? person.name : 'this person'} from "${kpi.name}"? Nothing is deleted — re-assigning them restores this exact assignment.`)) return;
+  async function unassign(employeeId) {
+    const person = unitEmployees.find((i) => i.id === employeeId);
+    if (!(await confirm({
+      title: `Unassign ${person ? person.name : 'this person'}?`,
+      message: `This removes them from "${kpi.name}". Nothing is deleted — re-assigning them restores this exact assignment.`,
+      confirmLabel: 'Unassign',
+      tone: 'danger',
+    }))) return;
     setBusy(true);
     try {
-      await api(`/kpis/${kpi.id}/assign/${individualId}`, { method: 'DELETE' });
+      await api(`/kpis/${kpi.id}/assign/${employeeId}`, { method: 'DELETE' });
       toast('Unassigned.');
       await reloadAssignments();
     } catch (err) { toast(err.message, 'err'); }
@@ -449,14 +462,14 @@ export function AssignmentManager({ kpi, assignees }) {
       )}
       {available.length > 0 ? (
         <div className="flex gap-2 flex-wrap items-center">
-          <select className="field-input py-1.5 w-auto" aria-label="Assign an individual" value={pickId} onChange={(e) => setPickId(e.target.value)}>
+          <select className="field-input py-1.5 w-auto" aria-label="Assign an employee" value={pickId} onChange={(e) => setPickId(e.target.value)}>
             <option value="">Select a person…</option>
             {available.map((i) => <option key={i.id} value={i.id}>{i.name} — {i.role_title}</option>)}
           </select>
           <button className="btn btn-sm" disabled={!pickId || busy} onClick={assign}>Assign</button>
         </div>
-      ) : unitIndividuals.length === 0 ? (
-        <p className="text-[11.5px] text-ink-muted">No individuals in this unit yet — add one from Framework.</p>
+      ) : unitEmployees.length === 0 ? (
+        <p className="text-[11.5px] text-ink-muted">No employees in this unit yet — add one from Framework.</p>
       ) : null}
       <p className="text-[11px] text-ink-muted mt-1.5">
         Each person you assign submits their own figure to you for approval — approved figures are summed
@@ -503,16 +516,16 @@ export function ContributorsBreakdown({ kpi, assignees, contributions }) {
     <div className="mt-3 pt-3 border-t border-line">
       <label className="field-label block mb-1.5">Contributions from your team</label>
       <div className="flex flex-col gap-2">
-        {assignees.map((individual) => {
-          const row = contributions.find((c) => c.individual_id === individual.id) || null;
-          return <ContributorRow key={individual.id} kpi={kpi} individual={individual} row={row} />;
+        {assignees.map((employee) => {
+          const row = contributions.find((c) => c.employee_id === employee.id) || null;
+          return <ContributorRow key={employee.id} kpi={kpi} employee={employee} row={row} />;
         })}
       </div>
     </div>
   );
 }
 
-function ContributorRow({ kpi, individual, row }) {
+function ContributorRow({ kpi, employee, row }) {
   const { period, reloadContributions } = useApp();
   const toast = useToast();
   const status = valueStatus(row);
@@ -530,7 +543,7 @@ function ContributorRow({ kpi, individual, row }) {
   return (
     <div className="rounded-lg border border-line bg-sunken/40 px-3 py-2.5">
       <div className="flex items-center gap-2.5 flex-wrap">
-        <span className="font-semibold text-[12.6px]">{individual.name}</span>
+        <span className="font-semibold text-[12.6px]">{employee.name}</span>
         <span className={`chip chip-st-${status}`}>{STATUS_LABEL[status]}</span>
         <span className="ml-auto font-display font-bold tabular-nums text-[13px]">
           {row?.value != null ? `${row.value} ${kpi.measure}` : '—'}
@@ -538,7 +551,7 @@ function ContributorRow({ kpi, individual, row }) {
         {status === 'submitted' && (
           <div className="flex gap-1.5 flex-none">
             <button className="btn btn-sm btn-primary" disabled={busy}
-              onClick={() => run(() => api(`/kpis/${kpi.id}/contribution/${individual.id}/approve`, { method: 'POST', body: { year: period.year, month: period.month } }), 'Contribution approved.')}>
+              onClick={() => run(() => api(`/kpis/${kpi.id}/contribution/${employee.id}/approve`, { method: 'POST', body: { year: period.year, month: period.month } }), 'Contribution approved.')}>
               Approve
             </button>
             <button className="btn btn-sm btn-danger" onClick={() => setShowReturn((v) => !v)}>Return…</button>
@@ -557,7 +570,7 @@ function ContributorRow({ kpi, individual, row }) {
           <button className="btn btn-sm btn-danger" disabled={busy}
             onClick={() => {
               if (!returnComment.trim()) { toast('A reason is required to return a contribution.', 'err'); return; }
-              run(() => api(`/kpis/${kpi.id}/contribution/${individual.id}/return`, { method: 'POST', body: { year: period.year, month: period.month, comment: returnComment.trim() } }), 'Returned to them.')
+              run(() => api(`/kpis/${kpi.id}/contribution/${employee.id}/return`, { method: 'POST', body: { year: period.year, month: period.month, comment: returnComment.trim() } }), 'Returned to them.')
                 .then(() => { setShowReturn(false); setReturnComment(''); });
             }}>
             Confirm return

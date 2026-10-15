@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
+import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
 import { avatarClass, initialsOf, ROLE_LABEL } from '../lib/scope.js';
 import { playTone } from '../lib/sound.js';
@@ -42,6 +43,7 @@ function fmtWhen(iso) {
 export default function Messages() {
   const { reloadUnread } = useApp();
   const toast = useToast();
+  const confirm = useConfirm();
   const [box, setBox] = useState('inbox');
   const [messages, setMessages] = useState(null);
   const [openId, setOpenId] = useState(null);
@@ -61,7 +63,12 @@ export default function Messages() {
   // from their Sent it never pulls the message out of any recipient's
   // Inbox. The other side sees no change either way.
   async function remove(m) {
-    if (!window.confirm(box === 'inbox' ? `Delete this message from your inbox?` : `Delete this message from Sent? Recipients still keep their own copy.`)) return;
+    if (!(await confirm({
+      title: box === 'inbox' ? 'Delete this message from your inbox?' : 'Delete this message from Sent?',
+      message: box === 'inbox' ? 'This can’t be undone.' : 'Recipients still keep their own copy.',
+      confirmLabel: 'Delete',
+      tone: 'danger',
+    }))) return;
     setBusyId(m.id);
     try {
       await api(`/messages/${m.id}`, { method: 'DELETE' });

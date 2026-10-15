@@ -176,26 +176,26 @@ test('POST /kpis/:id/submit and /kpis/bulk-submit are actually blocked outside t
   assert.equal(r.body.submitted, 1);
 });
 
-test('POST /kpis/:id/contribution/submit (an assigned Individual\'s own figure toward a shared Unit KPI) is gated by the same window', async () => {
+test('POST /kpis/:id/contribution/submit (an assigned Employee\'s own figure toward a shared Unit KPI) is gated by the same window', async () => {
   // GET /api/users is ICT-admin-only (see routes/users.js's requireRole)
   // and ictadmin also holds create_kpi — use it throughout, same as
   // cascade-recompute.test.js's own identical org/user lookup pattern.
   const { token: ictadmin } = await api.login('l.chikomo@zou.ac.zw');
 
-  // Pick a real seeded Individual and derive their real Unit and Unit Head
+  // Pick a real seeded Employee and derive their real Unit and Unit Head
   // login from it — rather than hardcoding a unit id whose seeded
   // population isn't guaranteed.
   const org = await api.request('/api/org', { token: ictadmin });
-  const individual = org.body.individuals[0];
-  assert.ok(individual, 'expected at least one seeded individual');
-  const unit = org.body.units.find((u) => u.id === individual.unit_id);
-  assert.ok(unit, 'expected the seeded individual\'s unit to exist');
+  const employee = org.body.employees[0];
+  assert.ok(employee, 'expected at least one seeded employee');
+  const unit = org.body.units.find((u) => u.id === employee.unit_id);
+  assert.ok(unit, 'expected the seeded employee\'s unit to exist');
 
   const users = await api.request('/api/users', { token: ictadmin });
-  const individualUser = users.body.users.find((u) => u.role === 'individual' && u.scope_id === individual.id);
+  const employeeUser = users.body.users.find((u) => u.role === 'employee' && u.scope_id === employee.id);
   const headUser = users.body.users.find((u) => u.role === 'unithead' && u.scope_id === unit.id);
-  assert.ok(individualUser && headUser, 'expected real login accounts for both the Individual and their Unit Head');
-  const { token: indivToken } = await api.login(individualUser.email);
+  assert.ok(employeeUser && headUser, 'expected real login accounts for both the Employee and their Unit Head');
+  const { token: indivToken } = await api.login(employeeUser.email);
   const { token: unitHead } = await api.login(headUser.email);
 
   const created = await api.request('/api/kpis', {
@@ -205,7 +205,7 @@ test('POST /kpis/:id/contribution/submit (an assigned Individual\'s own figure t
   assert.equal(created.status, 201);
   const kpiId = created.body.kpi.id;
 
-  const assign = await api.request(`/api/kpis/${kpiId}/assign`, { method: 'POST', token: unitHead, body: { individualId: individual.id } });
+  const assign = await api.request(`/api/kpis/${kpiId}/assign`, { method: 'POST', token: unitHead, body: { employeeId: employee.id } });
   assert.equal(assign.status, 201);
 
   const year = 2028, month = 7;
@@ -222,7 +222,7 @@ test('POST /kpis/:id/contribution/submit (an assigned Individual\'s own figure t
   assert.equal(r.body.late, false);
 
   const contributions = await api.request(`/api/kpis/contributions?year=${year}&month=${month}`, { token: unitHead });
-  const row = contributions.body.contributions.find((c) => c.kpi_id === kpiId && c.individual_id === individual.id);
+  const row = contributions.body.contributions.find((c) => c.kpi_id === kpiId && c.employee_id === employee.id);
   assert.equal(row.status, 'submitted');
   assert.equal(row.late, false);
 });

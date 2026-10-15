@@ -16,7 +16,7 @@ const txn = db.transaction(async () => {
     DELETE FROM message_recipients; DELETE FROM messages;
     DELETE FROM plan_proposals; DELETE FROM kpi_assignments; DELETE FROM structural_proposals;
     DELETE FROM audit_log; DELETE FROM kpi_values; DELETE FROM kpis;
-    DELETE FROM individuals; DELETE FROM units; DELETE FROM subs; DELETE FROM programmes;
+    DELETE FROM employees; DELETE FROM units; DELETE FROM subs; DELETE FROM programmes;
     DELETE FROM role_permissions; DELETE FROM user_permissions; DELETE FROM users; DELETE FROM permissions; DELETE FROM settings;
   `);
 
@@ -34,7 +34,7 @@ const txn = db.transaction(async () => {
   const insertSetting = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)');
   await insertSetting.run('ragGreen', '80');
   await insertSetting.run('ragAmber', '50');
-  await insertSetting.run('lateCutoffIndividual', '3');
+  await insertSetting.run('lateCutoffEmployee', '3');
   await insertSetting.run('lateCutoffUnit', '5');
   await insertSetting.run('lateCutoffSub', '7');
   await insertSetting.run('escalateProgramme', '6');
@@ -65,7 +65,7 @@ const txn = db.transaction(async () => {
   // "Overall Institutional Performance" card). A real designation, not just
   // a job title: it's what the app itself points to when it says who owns
   // that number.
-  const vcId = await makeUser('Prof. L. Chareka', 'Vice Chancellor', 'exec', null, null);
+  const vcId = await makeUser('Prof. L. Chareka', 'Vice Chancellor', 'vc', null, null);
   await db.prepare('UPDATE users SET is_executive_owner = 1 WHERE id = ?').run(vcId);
   // University Council: the final validation/approval authority over the
   // compiled University Annual Plan, above CPU's own compile-and-submit
@@ -78,11 +78,11 @@ const txn = db.transaction(async () => {
   const cpuId = await makeUser('T. Moyo', 'Corporate Planning Unit', 'cpu', null, null);
   const ictId = await makeUser('L. Chikomo', 'ICT Systems Administrator', 'ictadmin', null, null);
 
-  console.log('Seeding programmes, sub-programmes, units, individuals...');
+  console.log('Seeding programmes, sub-programmes, units, employees...');
   const insertProgramme = db.prepare('INSERT INTO programmes (name, head) VALUES (?, ?)');
   const insertSub = db.prepare('INSERT INTO subs (programme_id, name, head, unit_label, rep_user_id) VALUES (?, ?, ?, ?, ?)');
   const insertUnit = db.prepare('INSERT INTO units (sub_id, name, head, kind, head_user_id) VALUES (?, ?, ?, ?, ?)');
-  const insertIndividual = db.prepare('INSERT INTO individuals (unit_id, name, role_title, user_id) VALUES (?, ?, ?, ?)');
+  const insertEmployee = db.prepare('INSERT INTO employees (unit_id, name, role_title, user_id) VALUES (?, ?, ?, ?)');
 
   const pGovId = (await insertProgramme.run('Governance & Administration', 'Mr. S. Chitiyo — DVC Administration')).lastInsertRowid;
   const pHcdId = (await insertProgramme.run('Human Capital Development', 'Prof. B. Manyanga — DVC Academic')).lastInsertRowid;
@@ -148,18 +148,18 @@ const txn = db.transaction(async () => {
     unitIds[u.key] = id;
   }
 
-  const INDIVIDUALS_SEED = [
+  const EMPLOYEES_SEED = [
     { key: 'i1', unit: 'u9', name: 'T. Chikwanha', role: 'Programme Coordinator' },
     { key: 'i2', unit: 'u1', name: 'R. Chidziva', role: 'Student Records Officer' },
     { key: 'i3', unit: 'u13', name: 'Dr. N. Moyana', role: 'Postgraduate Coordinator' },
     { key: 'i4', unit: 'u6', name: 'S. Chikafu', role: 'Systems Support Officer' },
   ];
-  const individualIds = {};
-  for (const ind of INDIVIDUALS_SEED) {
-    const userId = await makeUser(ind.name, ind.role, 'individual', 'individual', null);
-    const { lastInsertRowid: id } = await insertIndividual.run(unitIds[ind.unit], ind.name, ind.role, userId);
+  const employeeIds = {};
+  for (const ind of EMPLOYEES_SEED) {
+    const userId = await makeUser(ind.name, ind.role, 'employee', 'employee', null);
+    const { lastInsertRowid: id } = await insertEmployee.run(unitIds[ind.unit], ind.name, ind.role, userId);
     await db.prepare('UPDATE users SET scope_id = ? WHERE id = ?').run(id, userId);
-    individualIds[ind.key] = id;
+    employeeIds[ind.key] = id;
   }
 
   console.log('Seeding KPIs...');
@@ -199,12 +199,12 @@ const txn = db.transaction(async () => {
     ['unit', 'u14', 'Research Grants Secured', 'Output', 'USD', 120000, 300000],
     ['unit', 'u15', 'Innovation Projects Incubated', 'Output', 'projects', 4, 12],
     ['unit', 'u16', 'Revenue from University Enterprises', 'Outcome', 'USD', 80000, 200000],
-    ['individual', 'i1', 'Students Mentored to Completion', 'Output', 'students', 15, 25],
-    ['individual', 'i2', 'Student Records Processed', 'Output', 'records', 200, 350],
-    ['individual', 'i3', 'Postgraduate Theses Reviewed', 'Output', 'theses', 4, 10],
-    ['individual', 'i4', 'Support Tickets Closed within SLA (personal)', 'Output', '%', 75, 95],
+    ['employee', 'i1', 'Students Mentored to Completion', 'Output', 'students', 15, 25],
+    ['employee', 'i2', 'Student Records Processed', 'Output', 'records', 200, 350],
+    ['employee', 'i3', 'Postgraduate Theses Reviewed', 'Output', 'theses', 4, 10],
+    ['employee', 'i4', 'Support Tickets Closed within SLA (personal)', 'Output', '%', 75, 95],
   ];
-  const idMaps = { sub: subIds, unit: unitIds, individual: individualIds };
+  const idMaps = { sub: subIds, unit: unitIds, employee: employeeIds };
   const kpiIds = [];
   for (const [ownerType, ownerKey, name, type, measure, baseline, target, isAutomated] of KPIS_SEED) {
     const ownerId = idMaps[ownerType][ownerKey];

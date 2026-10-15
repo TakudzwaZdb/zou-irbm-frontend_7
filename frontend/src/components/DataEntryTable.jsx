@@ -102,7 +102,7 @@ export default function DataEntryTable({ kpis, interactive = true }) {
     const current = effectiveRow ? (effectiveRow.override_value != null ? effectiveRow.override_value : effectiveRow.value) : null;
     const enteredValue = valueRow ? valueRow.entered_value : null;
     const assignees = kpi.owner_type === 'unit'
-      ? assignments.filter((a) => a.kpi_id === kpi.id).map((a) => byId(org.individuals, a.individual_id)).filter(Boolean)
+      ? assignments.filter((a) => a.kpi_id === kpi.id).map((a) => byId(org.employees, a.employee_id)).filter(Boolean)
       : [];
     const isShared = kpi.owner_type === 'unit' && assignees.length > 0;
     const kpiContributions = isShared ? contributions.filter((c) => c.kpi_id === kpi.id) : [];

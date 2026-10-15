@@ -1,6 +1,7 @@
 import { Fragment, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
+import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
 import { byId, computeRag, computeVariance, ownerName, valueStatus } from '../lib/scope.js';
 import { ContributorsBreakdown } from './KpiCard.jsx';
@@ -21,6 +22,7 @@ const STATUS_LABEL = {
 export default function ApprovalsTable({ kpis, interactive }) {
   const { user, org, values, settings, period, hasPerm, assignments, contributions, reloadValues } = useApp();
   const toast = useToast();
+  const confirm = useConfirm();
   const [expandedId, setExpandedId] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [returnDraft, setReturnDraft] = useState({});
@@ -44,7 +46,7 @@ export default function ApprovalsTable({ kpis, interactive }) {
     const variance = computeVariance(kpi, effectiveRow, settings);
     const current = effectiveRow ? (effectiveRow.override_value != null ? effectiveRow.override_value : effectiveRow.value) : null;
     const assignees = kpi.owner_type === 'unit'
-      ? assignments.filter((a) => a.kpi_id === kpi.id).map((a) => byId(org.individuals, a.individual_id)).filter(Boolean)
+      ? assignments.filter((a) => a.kpi_id === kpi.id).map((a) => byId(org.employees, a.employee_id)).filter(Boolean)
       : [];
     const isShared = kpi.owner_type === 'unit' && assignees.length > 0;
     const kpiContributions = isShared ? contributions.filter((c) => c.kpi_id === kpi.id) : [];
@@ -180,8 +182,13 @@ export default function ApprovalsTable({ kpis, interactive }) {
                             </button>
                             {r.valueRow?.override_value != null && (
                               <button className="btn btn-sm btn-ghost" disabled={busyId === kpi.id}
-                                onClick={() => {
-                                  if (!window.confirm(`Clear this override (${r.valueRow.override_value}, "${r.valueRow.override_note}")? Nothing is deleted — it stays recoverable with a "Restore override" button here until a new one is applied over it.`)) return;
+                                onClick={async () => {
+                                  if (!(await confirm({
+                                    title: 'Clear this override?',
+                                    message: `Value ${r.valueRow.override_value} ("${r.valueRow.override_note}") will no longer apply. Nothing is deleted — it stays recoverable with a "Restore override" button here until a new one is applied over it.`,
+                                    confirmLabel: 'Clear override',
+                                    tone: 'danger',
+                                  }))) return;
                                   run(kpi, () => api(`/kpis/${kpi.id}/override`, { method: 'DELETE', body: { year: period.year, month: period.month } }), 'Override cleared.');
                                 }}>
                                 Clear override
@@ -244,7 +251,7 @@ export function TeamApprovalsTable({ kpis }) {
             // Same fix as the table above: pace for THIS KPI's actual
             // current period row, not an unrelated "performance lens" period.
             const variance = computeVariance(kpi, valueRow, settings);
-            const assignees = assignments.filter((a) => a.kpi_id === kpi.id).map((a) => byId(org.individuals, a.individual_id)).filter(Boolean);
+            const assignees = assignments.filter((a) => a.kpi_id === kpi.id).map((a) => byId(org.employees, a.employee_id)).filter(Boolean);
             const kpiContributions = contributions.filter((c) => c.kpi_id === kpi.id);
             const submittedCount = kpiContributions.filter((c) => c.status === 'submitted').length;
             const approvedCount = kpiContributions.filter((c) => c.status === 'approved').length;

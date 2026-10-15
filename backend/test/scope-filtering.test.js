@@ -20,7 +20,7 @@ test('a Unit Head cannot read a KPI outside their own unit via a direct API call
   const { token: unitHead } = await api.login('s.chikonzo@zou.ac.zw'); // Unit Head, scope_id = 1
 
   const allKpis = await api.request('/api/kpis', { token: ictadmin });
-  const foreignKpi = allKpis.body.kpis.find((k) => !(k.owner_type === 'unit' && k.owner_id === 1) && !(k.owner_type === 'individual'));
+  const foreignKpi = allKpis.body.kpis.find((k) => !(k.owner_type === 'unit' && k.owner_id === 1) && !(k.owner_type === 'employee'));
   assert.ok(foreignKpi, 'expected at least one seeded KPI outside unit 1\'s own branch');
 
   const direct = await api.request(`/api/kpis/${foreignKpi.id}/values`, { token: unitHead });

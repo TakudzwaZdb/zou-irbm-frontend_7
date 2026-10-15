@@ -41,7 +41,7 @@ function daysBetween(a, b) { return Math.ceil((b.getTime() - a.getTime()) / 8640
 async function ownerName(kpi) {
   if (kpi.owner_type === 'sub') return (await db.prepare('SELECT name FROM subs WHERE id = ?').get(kpi.owner_id))?.name || '—';
   if (kpi.owner_type === 'unit') return (await db.prepare('SELECT name FROM units WHERE id = ?').get(kpi.owner_id))?.name || '—';
-  return (await db.prepare('SELECT name FROM individuals WHERE id = ?').get(kpi.owner_id))?.name || '—';
+  return (await db.prepare('SELECT name FROM employees WHERE id = ?').get(kpi.owner_id))?.name || '—';
 }
 
 function chainFor(measure, programmeTrigger, vcTrigger) {
@@ -66,7 +66,7 @@ router.get('/', async (req, res) => {
   // readers already, so this changes nothing either of them could already
   // see. It closes the same direct-API gap as kpis.js/plans.js for anyone
   // else calling this endpoint straight: a Sub Rep/Unit Head/Programme
-  // Head/Individual gets their own branch's compliance picture, never
+  // Head/Employee gets their own branch's compliance picture, never
   // another's (see utils/scope.js).
   const seesWholeOrg = isGlobalReader(req.user);
   const allSubs = await db.prepare(
@@ -102,9 +102,9 @@ router.get('/', async (req, res) => {
     .filter((r) => r.chain.length > 0);
 
   // ---- 2. Red-KPI performance escalation — consecutive Red reporting periods.
-  // Individual-tier KPIs are personal targets, not institutionally escalated
+  // Employee-tier KPIs are personal targets, not institutionally escalated
   // (matches how they're excluded from every roll-up elsewhere in the app).
-  const allKpis = await db.prepare("SELECT * FROM kpis WHERE owner_type != 'individual' AND deleted_at IS NULL ORDER BY id").all();
+  const allKpis = await db.prepare("SELECT * FROM kpis WHERE owner_type != 'employee' AND deleted_at IS NULL ORDER BY id").all();
   const kpis = [];
   for (const kpi of allKpis) { if (seesWholeOrg || await canReadKpi(req.user, kpi)) kpis.push(kpi); }
   const redKpis = [];

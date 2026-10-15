@@ -1,1 +1,0 @@
-ALTER TABLE devices ADD COLUMN IF NOT EXISTS host_name TEXT;

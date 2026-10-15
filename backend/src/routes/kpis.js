@@ -30,35 +30,35 @@ async function unitSubId(unitId) {
   const row = await db.prepare('SELECT sub_id FROM units WHERE id = ?').get(unitId);
   return row ? row.sub_id : null;
 }
-async function individualUnitId(individualId) {
-  const row = await db.prepare('SELECT unit_id FROM individuals WHERE id = ?').get(individualId);
+async function employeeUnitId(employeeId) {
+  const row = await db.prepare('SELECT unit_id FROM employees WHERE id = ?').get(employeeId);
   return row ? row.unit_id : null;
 }
 async function kpiSubId(kpi) {
   if (kpi.owner_type === 'sub') return kpi.owner_id;
   if (kpi.owner_type === 'unit') return await unitSubId(kpi.owner_id);
-  return await unitSubId(await individualUnitId(kpi.owner_id));
+  return await unitSubId(await employeeUnitId(kpi.owner_id));
 }
 
-// Has this Individual been assigned this specific Unit-owned KPI by their
+// Has this Employee been assigned this specific Unit-owned KPI by their
 // Unit Head (see the kpi_assignments table / POST :id/assign below)? This is
 // what lets a staff member enter & submit data for one of their unit's KPIs
 // — "one of their duties" — without becoming its owner: approval still goes
 // to the Sub-programme Rep exactly as if the Unit Head had entered it.
-async function isAssignedIndividual(user, kpi) {
-  if (kpi.owner_type !== 'unit' || user.role !== 'individual' || user.scope_type !== 'individual') return false;
-  return !!(await db.prepare('SELECT 1 FROM kpi_assignments WHERE kpi_id = ? AND individual_id = ? AND deleted_at IS NULL').get(kpi.id, user.scope_id));
+async function isAssignedEmployee(user, kpi) {
+  if (kpi.owner_type !== 'unit' || user.role !== 'employee' || user.scope_type !== 'employee') return false;
+  return !!(await db.prepare('SELECT 1 FROM kpi_assignments WHERE kpi_id = ? AND employee_id = ? AND deleted_at IS NULL').get(kpi.id, user.scope_id));
 }
 
 // Does this user directly own (enter data for) this KPI's own official
-// value? An assigned Individual is NOT an owner of the shared Unit value
+// value? An assigned Employee is NOT an owner of the shared Unit value
 // any more (see kpi_contributions below) — they own their own contribution
 // row instead, entered/submitted through the /contribution endpoints, and
 // reviewed by their Unit Head before it ever reaches this KPI's real value.
 function isOwner(user, kpi) {
   if (kpi.owner_type === 'sub') return user.role === 'rep' && user.scope_id === kpi.owner_id;
   if (kpi.owner_type === 'unit') return user.role === 'unithead' && user.scope_id === kpi.owner_id;
-  return user.role === 'individual' && user.scope_type === 'individual' && user.scope_id === kpi.owner_id;
+  return user.role === 'employee' && user.scope_type === 'employee' && user.scope_id === kpi.owner_id;
 }
 
 // Is this user the Unit Head who owns this Unit-scoped KPI? (The only person
@@ -69,7 +69,7 @@ function isUnitHeadOwner(user, kpi) {
 
 // Is this user the tier ABOVE this KPI's owner (i.e. can approve/return it)?
 // Every tier is single-stage, one real approver, straight to 'approved':
-// Individual-owned by their Unit Head, Unit-owned by their Sub-programme
+// Employee-owned by their Unit Head, Unit-owned by their Sub-programme
 // Rep, and Sub-owned by that Sub-programme's own Programme Head — the same
 // shape all the way up. A sub-owned KPI used to pass through a second CPU
 // sign-off stage after the Programme Head ('programme_approved', an
@@ -81,8 +81,8 @@ function isUnitHeadOwner(user, kpi) {
 // actually computed (now at the Programme Head's approval, for a sub-owned
 // KPI, exactly like every other tier's one true approval).
 async function isApprover(user, kpi) {
-  if (kpi.owner_type === 'individual') {
-    return user.role === 'unithead' && user.scope_id === await individualUnitId(kpi.owner_id);
+  if (kpi.owner_type === 'employee') {
+    return user.role === 'unithead' && user.scope_id === await employeeUnitId(kpi.owner_id);
   }
   if (kpi.owner_type === 'unit') {
     return user.role === 'rep' && user.scope_id === await unitSubId(kpi.owner_id);
@@ -93,18 +93,18 @@ async function isApprover(user, kpi) {
 
 // Is this KPI within a role-scoped user's jurisdiction at all (for edit_targets,
 // which a Sub Rep or Unit Head might be granted for "their own patch")?
-// Global roles (cpu/ictadmin/exec) are never restricted by this check.
+// Global roles (cpu/ictadmin/exec/vc) are never restricted by this check.
 async function inJurisdiction(user, kpi) {
-  if (['cpu', 'ictadmin', 'exec'].includes(user.role)) return true;
+  if (['cpu', 'ictadmin', 'exec', 'vc'].includes(user.role)) return true;
   if (user.role === 'rep') return await kpiSubId(kpi) === user.scope_id;
   if (user.role === 'unithead') {
     if (kpi.owner_type === 'unit') return kpi.owner_id === user.scope_id;
-    if (kpi.owner_type === 'individual') return await individualUnitId(kpi.owner_id) === user.scope_id;
+    if (kpi.owner_type === 'employee') return await employeeUnitId(kpi.owner_id) === user.scope_id;
     return false;
   }
-  if (user.role === 'individual') {
-    if (user.scope_type === 'individual') return kpi.owner_type === 'individual' && kpi.owner_id === user.scope_id;
-    if (user.scope_type === 'unit') return kpi.owner_type === 'unit' && kpi.owner_id === user.scope_id || kpi.owner_type === 'individual' && await individualUnitId(kpi.owner_id) === user.scope_id;
+  if (user.role === 'employee') {
+    if (user.scope_type === 'employee') return kpi.owner_type === 'employee' && kpi.owner_id === user.scope_id;
+    if (user.scope_type === 'unit') return kpi.owner_type === 'unit' && kpi.owner_id === user.scope_id || kpi.owner_type === 'employee' && await employeeUnitId(kpi.owner_id) === user.scope_id;
     if (user.scope_type === 'sub') return await kpiSubId(kpi) === user.scope_id;
     if (user.scope_type === 'programme') {
       const subId = await kpiSubId(kpi);
@@ -497,10 +497,10 @@ router.get('/submission-window', async (req, res) => {
 });
 
 // Every current assignment, system-wide — small enough to serve whole and
-// let the frontend narrow it per-unit/per-individual, the same pattern
+// let the frontend narrow it per-unit/per-employee, the same pattern
 // GET /org already uses for the org tree.
 router.get('/assignments', async (req, res) => {
-  // Soft-removed assignments (deleted_at set — see DELETE /:id/assign/:individualId
+  // Soft-removed assignments (deleted_at set — see DELETE /:id/assign/:employeeId
   // below) drop out of the active list without who-assigned-whom-and-when
   // ever being destroyed.
   const allowed = await readableKpiIds(req.user);
@@ -509,35 +509,35 @@ router.get('/assignments', async (req, res) => {
   res.json({ assignments });
 });
 
-// Delegate this Unit-owned KPI to an Individual within that same unit.
+// Delegate this Unit-owned KPI to an Employee within that same unit.
 // Unit Head only, and only for their own unit's KPI and their own unit's
 // people — see isUnitHeadOwner above. If this exact pairing was assigned
 // before and later unassigned, that row still exists (deleted_at stamped,
 // not deleted — see the DELETE route below) and the UNIQUE(kpi_id,
-// individual_id) constraint means a plain INSERT would collide with it, so
+// employee_id) constraint means a plain INSERT would collide with it, so
 // this restores that row instead of inserting a duplicate — same
 // restore-over-insert care every other re-creation-after-removal in this
 // app takes.
 router.post('/:id/assign', requirePerm('data_entry'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
   if (!isUnitHeadOwner(req.user, kpi)) return res.status(403).json({ error: 'Only the Unit Head who owns this KPI can assign it.' });
-  const { individualId } = req.body || {};
-  if (!individualId) return res.status(400).json({ error: 'individualId is required.' });
-  const individual = await db.prepare('SELECT * FROM individuals WHERE id = ?').get(individualId);
-  if (!individual || individual.unit_id !== kpi.owner_id) {
+  const { employeeId } = req.body || {};
+  if (!employeeId) return res.status(400).json({ error: 'employeeId is required.' });
+  const employee = await db.prepare('SELECT * FROM employees WHERE id = ?').get(employeeId);
+  if (!employee || employee.unit_id !== kpi.owner_id) {
     return res.status(400).json({ error: 'That person is not in this unit.' });
   }
 
-  const existing = await db.prepare('SELECT * FROM kpi_assignments WHERE kpi_id = ? AND individual_id = ?').get(kpi.id, individualId);
+  const existing = await db.prepare('SELECT * FROM kpi_assignments WHERE kpi_id = ? AND employee_id = ?').get(kpi.id, employeeId);
   if (existing) {
     await db.prepare(
       "UPDATE kpi_assignments SET deleted_at = NULL, assigned_by = ?, assigned_at = datetime('now') WHERE id = ?"
     ).run(req.user.id, existing.id);
   } else {
-    await db.prepare('INSERT INTO kpi_assignments (kpi_id, individual_id, assigned_by) VALUES (?, ?, ?)').run(kpi.id, individualId, req.user.id);
+    await db.prepare('INSERT INTO kpi_assignments (kpi_id, employee_id, assigned_by) VALUES (?, ?, ?)').run(kpi.id, employeeId, req.user.id);
   }
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'assign_kpi', 'kpi', kpi.id, `Assigned "${kpi.name}" to ${individual.name} (${individual.role_title}).`
+    req.user.id, 'assign_kpi', 'kpi', kpi.id, `Assigned "${kpi.name}" to ${employee.name} (${employee.role_title}).`
   );
   res.status(201).json({ ok: true });
 });
@@ -545,24 +545,24 @@ router.post('/:id/assign', requirePerm('data_entry'), async (req, res) => {
 // Nothing is deleted — deleted_at stamped, same as every other removal in
 // this app, so who was assigned, by whom, and when is never lost, and
 // re-assigning the same person (POST above) restores this exact row.
-router.delete('/:id/assign/:individualId', requirePerm('data_entry'), async (req, res) => {
+router.delete('/:id/assign/:employeeId', requirePerm('data_entry'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
   if (!isUnitHeadOwner(req.user, kpi)) return res.status(403).json({ error: 'Only the Unit Head who owns this KPI can unassign it.' });
-  const individual = await db.prepare('SELECT * FROM individuals WHERE id = ?').get(req.params.individualId);
+  const employee = await db.prepare('SELECT * FROM employees WHERE id = ?').get(req.params.employeeId);
 
   await db.prepare(
-    "UPDATE kpi_assignments SET deleted_at = datetime('now') WHERE kpi_id = ? AND individual_id = ? AND deleted_at IS NULL"
-  ).run(kpi.id, req.params.individualId);
+    "UPDATE kpi_assignments SET deleted_at = datetime('now') WHERE kpi_id = ? AND employee_id = ? AND deleted_at IS NULL"
+  ).run(kpi.id, req.params.employeeId);
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'unassign_kpi', 'kpi', kpi.id, `Unassigned "${kpi.name}" from ${individual ? individual.name : `individual #${req.params.individualId}`}. Re-assigning them restores this.`
+    req.user.id, 'unassign_kpi', 'kpi', kpi.id, `Unassigned "${kpi.name}" from ${employee ? employee.name : `employee #${req.params.employeeId}`}. Re-assigning them restores this.`
   );
   res.json({ ok: true });
 });
 
-// NOTE: an Individual browsing-and-self-claiming a Unit-owned KPI (the
+// NOTE: an Employee browsing-and-self-claiming a Unit-owned KPI (the
 // previous POST/DELETE :id/claim here) has been removed in favor of
-// routes/kpiTemplates.js's Unit-scoped KPI template pool: an Individual
-// should only ever be offered KPIs genuinely created for individuals (see
+// routes/kpiTemplates.js's Unit-scoped KPI template pool: an Employee
+// should only ever be offered KPIs genuinely created for employees (see
 // that file), never their whole Unit's own aggregate KPI. A Unit Head can
 // still explicitly delegate one of their Unit's KPIs to a specific person
 // via POST/DELETE :id/assign above — that's a duty assigned TO someone by
@@ -570,7 +570,7 @@ router.delete('/:id/assign/:individualId', requirePerm('data_entry'), async (req
 // themselves to.
 
 // Batch read for a single period across every KPI's contributions — same
-// shape/purpose as GET /values above, so My Data Entry (an Individual's own
+// shape/purpose as GET /values above, so My Data Entry (an Employee's own
 // contributions), Approvals (a Unit Head's pending contributor reviews),
 // and KpiCard (the per-contributor breakdown on a shared KPI) can each load
 // what they need in one request instead of one per KPI.
@@ -585,18 +585,18 @@ router.get('/contributions', async (req, res) => {
   res.json({ contributions: late });
 });
 
-// An assigned Individual sets/updates their OWN figure toward a shared
+// An assigned Employee sets/updates their OWN figure toward a shared
 // Unit-owned KPI — never the KPI's own kpi_values row (see isOwner above).
 router.put('/:id/contribution', requirePerm('data_entry'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
-  if (!await isAssignedIndividual(req.user, kpi)) return res.status(403).json({ error: 'You are not assigned to contribute to this KPI.' });
+  if (!await isAssignedEmployee(req.user, kpi)) return res.status(403).json({ error: 'You are not assigned to contribute to this KPI.' });
   const { year, month, value } = req.body || {};
   if (!year || !month) return res.status(400).json({ error: 'year and month are required.' });
   if (value != null && !Number.isFinite(Number(value))) {
     return res.status(400).json({ error: 'value must be a number.' });
   }
 
-  const existing = await db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND individual_id = ? AND year = ? AND month = ?')
+  const existing = await db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND employee_id = ? AND year = ? AND month = ?')
     .get(kpi.id, req.user.scope_id, year, month);
   const wasApproved = existing && existing.status === 'approved';
   if (existing) {
@@ -605,7 +605,7 @@ router.put('/:id/contribution', requirePerm('data_entry'), async (req, res) => {
        WHERE id = ?`
     ).run(value, wasApproved ? 'submitted' : existing.status, wasApproved ? 1 : 0, existing.id);
   } else {
-    await db.prepare('INSERT INTO kpi_contributions (kpi_id, individual_id, year, month, value) VALUES (?, ?, ?, ?, ?)')
+    await db.prepare('INSERT INTO kpi_contributions (kpi_id, employee_id, year, month, value) VALUES (?, ?, ?, ?, ?)')
       .run(kpi.id, req.user.scope_id, year, month, value);
   }
   await recomputeUnitTotal(kpi.id, year, month, req.user.id);
@@ -613,14 +613,14 @@ router.put('/:id/contribution', requirePerm('data_entry'), async (req, res) => {
     req.user.id, wasApproved ? 'amend_contribution' : 'enter_contribution', 'kpi', kpi.id,
     `${year}-${String(month).padStart(2, '0')} contribution set to ${value}${wasApproved ? ' (amendment on a previously approved contribution — returned to submitted).' : '.'}`
   );
-  res.json({ contribution: await db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND individual_id = ? AND year = ? AND month = ?').get(kpi.id, req.user.scope_id, year, month) });
+  res.json({ contribution: await db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND employee_id = ? AND year = ? AND month = ?').get(kpi.id, req.user.scope_id, year, month) });
 });
 
 router.put('/:id/contribution/explanation', requirePerm('data_entry'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
-  if (!await isAssignedIndividual(req.user, kpi)) return res.status(403).json({ error: 'You are not assigned to contribute to this KPI.' });
+  if (!await isAssignedEmployee(req.user, kpi)) return res.status(403).json({ error: 'You are not assigned to contribute to this KPI.' });
   const { year, month, text } = req.body || {};
-  const row = await db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND individual_id = ? AND year = ? AND month = ?').get(kpi.id, req.user.scope_id, year, month);
+  const row = await db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND employee_id = ? AND year = ? AND month = ?').get(kpi.id, req.user.scope_id, year, month);
   if (!row) return res.status(404).json({ error: 'No contribution recorded for that period yet.' });
   await db.prepare('UPDATE kpi_contributions SET explanation = ? WHERE id = ?').run(text || null, row.id);
   res.json({ ok: true });
@@ -628,11 +628,11 @@ router.put('/:id/contribution/explanation', requirePerm('data_entry'), async (re
 
 router.post('/:id/contribution/submit', requirePerm('data_entry'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
-  if (!await isAssignedIndividual(req.user, kpi)) return res.status(403).json({ error: 'You are not assigned to contribute to this KPI.' });
+  if (!await isAssignedEmployee(req.user, kpi)) return res.status(403).json({ error: 'You are not assigned to contribute to this KPI.' });
   const { year, month } = req.body || {};
   if (!year || !month) return res.status(400).json({ error: 'year and month are required.' });
   const win = await enforceSubmissionWindow(req, res, year, month); if (!win) return;
-  const row = await db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND individual_id = ? AND year = ? AND month = ?').get(kpi.id, req.user.scope_id, year, month);
+  const row = await db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND employee_id = ? AND year = ? AND month = ?').get(kpi.id, req.user.scope_id, year, month);
   if (!row) return res.status(404).json({ error: 'No contribution recorded for that period yet.' });
   if (row.value == null) return res.status(400).json({ error: 'Enter a value before submitting.' });
 
@@ -644,37 +644,37 @@ router.post('/:id/contribution/submit', requirePerm('data_entry'), async (req, r
 });
 
 // The Unit Head who owns this shared KPI approves ONE contributor's
-// submitted figure — this is the "individuals submit to their Unit Head for
+// submitted figure — this is the "employees submit to their Unit Head for
 // approval" step. Approving recomputes the KPI's own automated total (see
 // recomputeUnitTotal) so it always reflects the real sum of what's actually
 // been approved so far, never a stale or partial number.
-router.post('/:id/contribution/:individualId/approve', requirePerm('approve_own_tier'), async (req, res) => {
+router.post('/:id/contribution/:employeeId/approve', requirePerm('approve_own_tier'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
   if (!isUnitHeadOwner(req.user, kpi)) return res.status(403).json({ error: 'You are not the approver for this contribution.' });
   const { year, month } = req.body || {};
-  const row = await db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND individual_id = ? AND year = ? AND month = ?').get(kpi.id, req.params.individualId, year, month);
+  const row = await db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND employee_id = ? AND year = ? AND month = ?').get(kpi.id, req.params.employeeId, year, month);
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that period.' });
 
   await db.prepare('UPDATE kpi_contributions SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
   await recomputeUnitTotal(kpi.id, year, month, req.user.id);
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'approve_contribution', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} contribution from individual #${req.params.individualId} approved.`
+    req.user.id, 'approve_contribution', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} contribution from employee #${req.params.employeeId} approved.`
   );
   res.json({ ok: true });
 });
 
-router.post('/:id/contribution/:individualId/return', requirePerm('approve_own_tier'), async (req, res) => {
+router.post('/:id/contribution/:employeeId/return', requirePerm('approve_own_tier'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
   if (!isUnitHeadOwner(req.user, kpi)) return res.status(403).json({ error: 'You are not the approver for this contribution.' });
   const { year, month, comment } = req.body || {};
   if (!comment) return res.status(400).json({ error: 'A reason is required when returning a submission.' });
-  const row = await db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND individual_id = ? AND year = ? AND month = ?').get(kpi.id, req.params.individualId, year, month);
+  const row = await db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND employee_id = ? AND year = ? AND month = ?').get(kpi.id, req.params.employeeId, year, month);
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that period.' });
 
   await db.prepare('UPDATE kpi_contributions SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment, row.id);
   await recomputeUnitTotal(kpi.id, year, month, req.user.id);
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'return_contribution', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} contribution from individual #${req.params.individualId} returned: "${comment}"`
+    req.user.id, 'return_contribution', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} contribution from employee #${req.params.employeeId} returned: "${comment}"`
   );
   res.json({ ok: true });
 });
@@ -691,7 +691,7 @@ router.post('/', requirePerm('create_kpi'), async (req, res) => {
   if (!ownerType || !ownerId || !name || !type || !measure || baseline == null || target == null) {
     return res.status(400).json({ error: 'ownerType, ownerId, name, type, measure, baseline, and target are all required.' });
   }
-  if (!['sub', 'unit', 'individual'].includes(ownerType)) return res.status(400).json({ error: 'Invalid ownerType.' });
+  if (!['sub', 'unit', 'employee'].includes(ownerType)) return res.status(400).json({ error: 'Invalid ownerType.' });
 
   const assignees = [...new Set((assigneeIds || []).map(Number))].filter(Boolean);
   if (assignees.length > 0) {
@@ -699,9 +699,9 @@ router.post('/', requirePerm('create_kpi'), async (req, res) => {
       return res.status(400).json({ error: 'Custodians can only be assigned to a Unit-owned KPI.' });
     }
     for (const iid of assignees) {
-      const individual = await db.prepare('SELECT * FROM individuals WHERE id = ?').get(iid);
-      if (!individual || individual.unit_id !== Number(ownerId)) {
-        return res.status(400).json({ error: `Individual #${iid} is not in this unit.` });
+      const employee = await db.prepare('SELECT * FROM employees WHERE id = ?').get(iid);
+      if (!employee || employee.unit_id !== Number(ownerId)) {
+        return res.status(400).json({ error: `Employee #${iid} is not in this unit.` });
       }
     }
   }
@@ -715,7 +715,7 @@ router.post('/', requirePerm('create_kpi'), async (req, res) => {
     await db.prepare('INSERT INTO kpi_values (kpi_id, year, month, status) VALUES (?, ?, ?, \'draft\')').run(id, now.getFullYear(), now.getMonth() + 1);
 
     for (const iid of assignees) {
-      await db.prepare('INSERT OR IGNORE INTO kpi_assignments (kpi_id, individual_id, assigned_by) VALUES (?, ?, ?)').run(id, iid, req.user.id);
+      await db.prepare('INSERT OR IGNORE INTO kpi_assignments (kpi_id, employee_id, assigned_by) VALUES (?, ?, ?)').run(id, iid, req.user.id);
     }
     return id;
   });
@@ -881,7 +881,7 @@ router.post('/:id/submit', requirePerm('data_entry'), async (req, res) => {
 
 // This is where "current performance" actually becomes official — the
 // automated cumulative-addition moment the whole feature turns on. For a
-// directly-entered KPI (any tier: Individual, Unit, or Sub-programme — same
+// directly-entered KPI (any tier: Employee, Unit, or Sub-programme — same
 // route, same rule every time), the newly-approved figure is never just
 // dropped in on its own: it's added to whatever this KPI's official total
 // already was as of the most recent earlier period (see
@@ -1009,7 +1009,7 @@ router.delete('/:id/override', requirePerm('apply_override'), async (req, res) =
 // onto the live fields and clears the shadow, undoing exactly what the
 // DELETE above just did. Requires a clean slate (no live override already
 // in place) so it never silently clobbers a genuinely new one someone
-// applied since — same invariant a Programme/Individual restore keeps by
+// applied since — same invariant a Programme/Employee restore keeps by
 // only ever restoring into a normal, non-conflicting active state.
 router.post('/:id/override/restore', requirePerm('apply_override'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
@@ -1044,7 +1044,7 @@ router.put('/:id/explanation', requirePerm('data_entry'), async (req, res) => {
 // ---- personal "hide from my view" preference -----------------------------
 // Deliberately open to any signed-in role — this never touches the KPI
 // itself or anyone else's view, so there's no ownership/jurisdiction check
-// to make: an individual, a Unit Head, a Sub-programme Rep, a Programme
+// to make: an employee, a Unit Head, a Sub-programme Rep, a Programme
 // Head, CPU, exec — every tier can curate what they personally browse.
 // requirePerm('data_entry') isn't right here (a role without it, e.g. exec,
 // still browses Overview and should still be able to hide) — just

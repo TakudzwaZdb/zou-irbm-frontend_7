@@ -3,7 +3,7 @@
 A real, working full-stack implementation of the ZOU IRBM strategic-plan
 monitoring system: a genuine Node.js/Express + PostgreSQL backend with
 bcrypt password hashing, JWT session authentication (plus Microsoft Entra
-ID sign-in for read-only Individual accounts — see AZURE_SETUP.md), and
+ID sign-in for read-only Employee accounts — see AZURE_SETUP.md), and
 server-enforced role-based access control, plus a browser frontend that
 consumes it over a real HTTP API. This replaces the earlier single-file
 HTML prototype's simulated login and in-memory JavaScript state with an
@@ -39,7 +39,7 @@ means for setup today.)
   written to an `audit_log` table with who did what and when.
 - **Soft-delete & traceability, across every removal in the app, and every
   removal is confirmed before it happens**: "removing" a Programme,
-  Sub-programme, Unit, Individual, KPI, KPI template, KPI assignment, or user
+  Sub-programme, Unit, Employee, KPI, KPI template, KPI assignment, or user
   account is a stamp (`deleted_at`, nullable — NULL means active), never a
   real SQL `DELETE`. A `deleted_at IS NULL` filter on every query that lists
   "the current/active" structure — the org tree, KPI lists and ownership
@@ -49,21 +49,21 @@ means for setup today.)
   full performance history (`kpi_values`), and its audit trail stay exactly
   as they were: nothing about who owned what or what was ever recorded
   against them is destroyed. Removal still cascades the same way it always
-  did (removing a Programme takes every Sub-programme/Unit/Individual
+  did (removing a Programme takes every Sub-programme/Unit/Employee
   beneath it, every KPI any of them own, and every login account that only
   exists because of them, with it — see `routes/org.js`'s
-  `cascadeSoftDeleteProgramme/Sub/Unit/Individual`), just as a stamp instead
+  `cascadeSoftDeleteProgramme/Sub/Unit/Employee`), just as a stamp instead
   of a destructive delete, so it's fully reversible: a `POST .../restore`
-  route for each of Programmes, Sub-programmes, Units, Individuals, KPIs and
+  route for each of Programmes, Sub-programmes, Units, Employees, KPIs and
   KPI templates (`routes/kpis.js` / `routes/kpiTemplates.js`), a KPI
   assignment (re-assigning the same person restores their original row
-  rather than inserting a duplicate — the `UNIQUE(kpi_id, individual_id)`
+  rather than inserting a duplicate — the `UNIQUE(kpi_id, employee_id)`
   constraint on `kpi_assignments` means it has to), and user accounts
   (`routes/users.js`) clears the stamp on the row (and, for the cascading
   ones, everything structurally beneath it) in one transaction. Every one of
   those `GET /removed` routes now backs a real, reachable **"Recently
   Removed"** panel with a one-click Restore per row — Organisation & People
-  for Programmes/Subs/Units/Individuals, a new panel on KPI Management for
+  for Programmes/Subs/Units/Employees, a new panel on KPI Management for
   KPIs and templates, and a new one on Permissions &amp; User Directory for
   accounts removed directly from there. The KPI Management and Permissions
   panels are new this round — `GET /api/kpis/removed` and
@@ -78,7 +78,7 @@ means for setup today.)
   rest of its natural expiry — restoring the account immediately lets both
   sign-in and any still-open session work again. And separately from all of
   the above: every single removal in the UI — Programmes/Subs/Units/
-  Individuals, a KPI, a KPI template, an account, a message, clearing a
+  Employees, a KPI, a KPI template, an account, a message, clearing a
   manual override, unassigning someone from a shared KPI, even removing
   your own profile photo — now asks for confirmation first with
   `window.confirm`, describing exactly what's about to happen and, for
@@ -88,7 +88,7 @@ means for setup today.)
   KPI, removing a user account) — leftover wording from before soft-delete
   landed, contradicting what the backend actually did; both are corrected
   now.
-- **Manual overrides are soft-deleted too, down to the individual field
+- **Manual overrides are soft-deleted too, down to the employee field
   pair**: clearing a manual override on an automated KPI used to really
   erase the override value and the reason someone typed for it — the one
   place left in this app where a genuine, user-entered figure was destroyed
@@ -118,11 +118,11 @@ means for setup today.)
   Overview tree), so it's on-demand now instead.
 - **Drill-down Overview navigation**: a "Programme structure" tree in the
   sidebar — the same click-through navigation as the original prototype
-  — lets you walk Programme → Sub-programme → Unit → Individual and see
+  — lets you walk Programme → Sub-programme → Unit → Employee and see
   each one's own breadcrumb, own headline stats, and own KPIs, with its
   children one click further in. A global role (Exec/CPU/ICT Admin) can
   browse the whole structure from "All Programmes" down; a scoped role
-  (Sub Rep/Unit Head/Individual) sees only their own branch, and the tree
+  (Sub Rep/Unit Head/Employee) sees only their own branch, and the tree
   is only shown while they're on Overview (elsewhere, the sidebar is just
   their nav). Every KPI a role could already see, they can still see —
   this only changes how you get to it.
@@ -182,11 +182,11 @@ means for setup today.)
   never manually scored: the same `performanceRollup()` math (average
   progress %, and a green/amber/red/no-data breakdown) runs identically at
   every tier, over the real, live **cascade** of KPIs a node is built from
-  (`nodeOwnKpis()`) — an Individual's own KPIs; a Unit's own KPIs plus every
-  one of its Individuals'; a Sub-programme's own plus every one of its
-  Units' (Individuals included, transitively); a Programme's own
+  (`nodeOwnKpis()`) — an Employee's own KPIs; a Unit's own KPIs plus every
+  one of its Employees'; a Sub-programme's own plus every one of its
+  Units' (Employees included, transitively); a Programme's own
   Sub-programmes' KPIs plus everything beneath them (Reports' three-tier
-  table). A real Individual's own monthly number is never siloed at the
+  table). A real Employee's own monthly number is never siloed at the
   tier it was entered — it moves their Unit's average, which moves their
   Sub-programme's, which moves their Programme's — so a person's self-view
   and CPU's oversight view are always built from the same real figures,
@@ -308,7 +308,7 @@ means for setup today.)
   rolls forward.
 - **Performance, automated all the way up to "overall"**: this was mostly
   already true of the existing rollup architecture (every tier's appraisal —
-  Individual → Unit → Sub-programme → Programme → All Programmes — is a live
+  Employee → Unit → Sub-programme → Programme → All Programmes — is a live
   computation over real KPI values, never a manually re-entered summary at
   a higher tier), so the real gap closed here was giving that top-of-cascade
   number an explicit owner and framing: it's now presented as "Overall
@@ -321,10 +321,10 @@ means for setup today.)
   value in the selected period gets its own pair of bars, however many that
   is. Each bar's tick carries three lines: the KPI's own name, who owns it
   (the same "owner" resolution already used elsewhere in the app), and —
-  underneath that — which tier the owner is: Individual, Unit, or
+  underneath that — which tier the owner is: Employee, Unit, or
   Sub-programme. That third line is what actually disambiguates two KPIs
   that happen to share the exact same name but belong to two different
-  people (e.g. two different Individuals each holding their own "Vacuum
+  people (e.g. two different Employees each holding their own "Vacuum
   Cleaning" duty KPI in two different Units) — the name alone can't tell
   them apart, but the owner name plus tier always can, both on the chart
   itself and in its tooltip. All three lines are shortened only as far as a
@@ -362,7 +362,7 @@ means for setup today.)
   actually long enough to need it.
 - **Internal messaging, across every tier**: a real "Messages" page open to
   every signed-in account regardless of role — write to anyone else in the
-  system directly (an Individual can message the Vice Chancellor, not just
+  system directly (an Employee can message the Vice Chancellor, not just
   their own chain of command), with a real Inbox/Sent split and read/unread
   state that persists (`messages`/`message_recipients` tables, not
   component state that resets on refresh). There's no outbound SMTP/email
@@ -413,10 +413,10 @@ means for setup today.)
   already worked — a genuine server-enforced gate (`GET`-level nav
   filtering plus a route-level check on the frontend router), not a
   cosmetic toggle.
-- **A narrower `add_individual` permission**: creating a Unit and creating
-  an Individual used to both live behind the one broad `manage_org_units`
+- **A narrower `add_employee` permission**: creating a Unit and creating
+  an Employee used to both live behind the one broad `manage_org_units`
   grant. ICT admin can now instead hand a Sub-programme Rep or Unit Head
-  just the ability to add an Individual — and it's genuinely
+  just the ability to add an Employee — and it's genuinely
   scope-restricted server-side: a Unit Head holding only this permission
   can add someone into their own unit and nowhere else, a Sub Rep into any
   unit within their own sub-programme and nowhere else — verified with a
@@ -458,10 +458,10 @@ means for setup today.)
   ICT Systems Administrator can reset anyone's password directly from the
   Permissions page (typing a specific new one, or generating a random one),
   the same immediate, real pattern already used elsewhere in this app for
-  provisioning a new Unit Head's or Individual's account password.
-- **Individuals see their whole unit, and can be assigned to contribute to
+  provisioning a new Unit Head's or Employee's account password.
+- **Employees see their whole unit, and can be assigned to contribute to
   one of its KPIs — with their own figures approved by their Unit Head and
-  automatically summed into the Unit's total**: an Individual used to only
+  automatically summed into the Unit's total**: an Employee used to only
   ever see their own personally-owned KPI(s) — nothing about the
   Department/Unit/Faculty/Regional Campus they actually belong to.
   Overview now also shows every KPI their own unit owns, read-only, so
@@ -478,7 +478,7 @@ means for setup today.)
   another: each assignee gets their own monthly figure — a **contribution**
   (`kpi_contributions`), with its own draft → submit → approve lifecycle,
   entered and submitted from a dedicated card in their own My Data Entry.
-  Their Unit Head reviews each teammate's contribution individually from
+  Their Unit Head reviews each teammate's contribution employeely from
   the Approvals Queue (a "Contributions from your team" section, alongside
   a per-assignee breakdown right on the KPI card) and approves or returns
   each one with a comment, exactly like any other submission. The moment a
@@ -502,7 +502,7 @@ means for setup today.)
   be edited or deleted afterward**: assigning several people to a shared
   Unit KPI (see above) used to always mean creating it first, then a second
   trip to "Assign to a team member" per person. Framework's "Create a KPI"
-  form now shows a multi-select of that unit's own Individuals the moment a
+  form now shows a multi-select of that unit's own Employees the moment a
   Unit owner is picked — check as many as apply and they're all assigned in
   the same `POST /api/kpis` call (`assigneeIds`, validated server-side
   exactly like the existing single-assign endpoint: every id must actually
@@ -514,7 +514,7 @@ means for setup today.)
   which really does remove the row along with everything that points at
   it — its values, assignments, and contributions all cascade (`ON DELETE
   CASCADE`) — while past audit_log entries about it are left exactly as
-  the individual-removal route already treats them: a real historical
+  the employee-removal route already treats them: a real historical
   record, each entry self-contained, not tidied away just because the KPI
   itself is gone now. Holding only `edit_targets` still gets the narrower
   baseline/target-only form, unchanged, with no Delete button.
@@ -559,13 +559,13 @@ means for setup today.)
   explaining it hasn't actually been saved yet — verified by typing a
   value, reloading with nothing saved, and confirming it comes back.
   Saving for real clears the draft, since the server now agrees.
-- ~~An Individual can browse and self-claim their unit's KPIs~~ — **superseded**
+- ~~An Employee can browse and self-claim their unit's KPIs~~ — **superseded**
   by the Unit-scoped KPI template pool further down ("What's real here" →
   the `kpi_templates` entry): this self-claim mechanism (and its
   `POST/DELETE /api/kpis/:id/claim` routes) has been removed outright, since
-  it let an Individual volunteer into their Unit Head's own aggregate KPI
-  just by browsing it. An Individual now only ever picks up KPIs genuinely
-  created for individuals; a Unit Head can still explicitly delegate one of
+  it let an Employee volunteer into their Unit Head's own aggregate KPI
+  just by browsing it. An Employee now only ever picks up KPIs genuinely
+  created for employees; a Unit Head can still explicitly delegate one of
   their Unit's own KPIs via the unchanged `POST/DELETE /api/kpis/:id/assign`.
 - **Refresh is reachable everywhere, and has a fast path**: the header's
   refresh control used to disappear below the desktop breakpoint —
@@ -615,7 +615,7 @@ means for setup today.)
   any of them looks into the future is a single number to change.
 - **A contributor sees the whole KPI they're submitting toward, not just
   their own figure**: `ContributionCard` — the surface an assigned or
-  self-claimed Individual submits their own number through — now shows the
+  self-claimed Employee submits their own number through — now shows the
   shared KPI's real Baseline, annual Target, its current live automated
   total (the sum of everyone's approved contributions), and its automated
   score (the same RAG % a Unit Head or owner sees), plus a red alert banner
@@ -642,7 +642,7 @@ means for setup today.)
   a read-only "N of M approved · N awaiting your review in Approvals
   Queue" summary, and the actual Approve/Return actions live only on the
   Approvals Queue page. The underlying KPI lists were already correctly
-  scoped per role before this (an Individual only ever sees their own
+  scoped per role before this (an Employee only ever sees their own
   KPIs, a Unit Head only their own unit's, a Sub-programme Rep only their
   own sub's — see `canEnterData`/`isOwner` in `lib/scope.js`) — this only
   removed the duplicated approval UI, it didn't change who sees what KPI.
@@ -652,7 +652,7 @@ means for setup today.)
   `GET/POST/DELETE /api/kpis/:id/hide` — no permission gate beyond being
   signed in, since it's a personal display preference, not a data change.
   It shows up wherever someone browses KPIs beyond their own duties —
-  Overview's drill-down into any node, and an Individual's "your unit's
+  Overview's drill-down into any node, and an Employee's "your unit's
   other KPIs" self-claim list — as a small "Not relevant — hide" link, with
   a transparent, reversible "N hidden from your view — show" toggle right
   next to the section heading (nothing is ever silently gone for good).
@@ -660,7 +660,7 @@ means for setup today.)
   toggle: it can never hide a KPI that's actually the viewer's own duty
   (computed via `canEnterData`/`canContribute`, regardless of which page
   passes the option in) — canceling any risk of using it to dodge an
-  accountability item — and it only ever filters the list of individual
+  accountability item — and it only ever filters the list of employee
   KPI cards rendered, never the objective rollup numbers (headline stats,
   RAG distribution, variance) on the same page, which stay accurate
   regardless of what one person chose to declutter. Verified directly
@@ -679,28 +679,28 @@ means for setup today.)
   shared KPI's own value row, an assigned contributor sees the identical
   automated pace picture their Unit Head sees, not just their own
   isolated figure.
-- **A KPI meant for individuals is now created once, against a Unit, not
+- **A KPI meant for employees is now created once, against a Unit, not
   once per named person**: a new `kpi_templates` table (see `db.js`) backs
   a real `GET/POST /api/kpi-templates`, `DELETE /api/kpi-templates/:id`,
   and `POST /api/kpi-templates/:id/pick`. In Framework's "Create a KPI"
-  form, choosing "Individuals (under a unit)" as the owner type swaps the
+  form, choosing "Employees (under a unit)" as the owner type swaps the
   usual owner picker for a Unit picker — submitting creates the definition
   once, owned by nobody yet, scoped to that unit. Anyone in that unit then
-  sees it in their own My Data Entry, under "KPIs for individuals in your
+  sees it in their own My Data Entry, under "KPIs for employees in your
   unit", and picking it up ("This is mine — add it") instantiates a real,
-  independent `kpis` row for that person alone (owner_type='individual',
+  independent `kpis` row for that person alone (owner_type='employee',
   their own baseline/target/value to enter and submit) — never a number
   shared or summed with anyone else who also picks it up. Framework also
-  gained a "KPIs for individuals — by unit" management list showing real
+  gained a "KPIs for employees — by unit" management list showing real
   adoption (`N of M in this unit picked up`) and a way to remove a template
   (removing it only takes it out of the pool for anyone who hasn't picked
   it up yet — see `kpis.template_id`'s `ON DELETE SET NULL` — it never
   touches anyone's already-instantiated personal KPI).
-- **Individuals no longer browse and self-claim their whole Unit's own
+- **Employees no longer browse and self-claim their whole Unit's own
   aggregate KPI** — the self-claim feature from an earlier round
   (`POST/DELETE /api/kpis/:id/claim`) has been removed outright in favor of
-  the template pool above, so an Individual's actionable lists only ever
-  show KPIs genuinely created for individuals, never "the unit's" KPI
+  the template pool above, so an Employee's actionable lists only ever
+  show KPIs genuinely created for employees, never "the unit's" KPI
   (which belongs to the Unit Head's own official reporting number). A Unit
   Head can still explicitly delegate one of their Unit's KPIs to a specific
   person via the unchanged `POST/DELETE /api/kpis/:id/assign` — that
@@ -709,9 +709,9 @@ means for setup today.)
   Verified server-side: `POST /api/kpis/:id/claim` now 404s, a template
   pick is rejected across unit boundaries, picking twice is rejected, and a
   picked KPI runs through the completely ordinary data-entry/submit/approve
-  pipeline with zero special-casing. (Adding an Individual into the system
+  pipeline with zero special-casing. (Adding an Employee into the system
   already required picking their Unit from a dropdown — Framework's "Add an
-  individual" form — before this round; that was already real and needed
+  employee" form — before this round; that was already real and needed
   no change.)
 - **Performance is now automatically cumulative — everywhere, across every
   tier**: what a submitter types into a KPI's period entry is treated as
@@ -728,7 +728,7 @@ means for setup today.)
   through real prior periods (skipping months nobody entered anything for,
   and correctly crossing year boundaries, e.g. Dec 2026 → Jan 2027), and
   falls back to the KPI's baseline when there's no earlier approved period
-  at all. This is uniform across every ownership tier (Individual, Unit,
+  at all. This is uniform across every ownership tier (Employee, Unit,
   Sub-programme) and also covers shared/contribution-based Unit KPIs —
   `recomputeUnitTotal` applies the identical previous-total-plus-this-period
   rule the moment a Unit Head approves the combined contributions for a
@@ -771,7 +771,7 @@ means for setup today.)
   its own upcoming re-approval will call `previousOfficialValue` itself and
   pick up the right base automatically. Verified live end-to-end: a
   two-hop chain (amending Jan cascaded correctly through both Feb and March)
-  and the shared/contribution-based Unit path (amending an individual's
+  and the shared/contribution-based Unit path (amending an employee's
   approved Jan contribution correctly cascaded the Unit's own Feb total),
   both cleaned up afterward with zero trace left in the database.
 - **A read notification only ever quiets the bell, never hides the duty
@@ -792,7 +792,7 @@ means for setup today.)
   all.** This tier briefly went through a two-stage design (Sub Rep submits
   → Programme Head reviews → CPU gives the real final sign-off); that's
   been reverted by deliberate request back to the same single-stage shape
-  every other tier already has — Individual-owned by its Unit Head,
+  every other tier already has — Employee-owned by its Unit Head,
   Unit-owned by its Sub-programme Rep, Sub-owned by its own Programme Head,
   one real approver, straight from `'submitted'` to `'approved'`. The
   automated cumulative-value computation (`previousOfficialValue +
@@ -833,7 +833,7 @@ means for setup today.)
   - **Verified**: a submit → Programme Head approve run via direct API
     calls confirming the cumulative value is computed immediately at that
     one approval and CPU gets a real 403 attempting to act on it at all; a
-    regression check confirming Individual- and Unit-owned KPIs are
+    regression check confirming Employee- and Unit-owned KPIs are
     unaffected; and a full browser walk-through (Sub Rep submits →
     Programme Head's Approvals Queue shows and approves it, status becomes
     `'approved'` with a real cumulative figure, no intermediate chip
@@ -901,7 +901,7 @@ means for setup today.)
   variance-chart bars stay real, flat totals across every KPI org-wide —
   only the two headline averages changed. `AppraisalCard` (shared by every
   Overview node) now accepts an optional pre-computed `rollup`, used only by
-  "All Programmes"; every Programme/Sub-programme/Unit/Individual's own card
+  "All Programmes"; every Programme/Sub-programme/Unit/Employee's own card
   is unaffected, since a flat average of that one node's own cascade was
   already the honest figure for it. Verified with demo data spread
   unevenly across Programmes (one Programme scored at 100%, another at 0%,
@@ -929,7 +929,7 @@ means for setup today.)
   (the sidebar's clickable, multi-Programme tree — a second way to browse
   the institution-wide picture) is gated identically rather than left as a
   back door around the same restriction. A scoped role (Sub-programme
-  Rep/Unit Head/Individual/Programme Head) is unaffected either way — they
+  Rep/Unit Head/Employee/Programme Head) is unaffected either way — they
   already never reached "All Programmes" before this, since their own place
   in the structure was always their forced default. As with Overview/
   Framework's existing visibility permissions, this gates the FRONTEND
@@ -998,10 +998,10 @@ means for setup today.)
   People below), reachable from the sidebar by whoever actually holds the
   relevant permission (`lib/nav.js`'s `currentNav` accepts an array of
   permissions per nav item — "any one of these" — since some of these, like
-  `edit_targets`/`add_individual`, are real, independently-grantable
+  `edit_targets`/`add_employee`, are real, independently-grantable
   permissions a specific person can hold without holding the broader one):
   - **KPI Management** (`pages/KpiManagement.jsx`) — create a KPI, manage the
-    "KPIs for individuals" template pool, and edit or delete an existing
+    "KPIs for employees" template pool, and edit or delete an existing
     KPI's definition/targets. Same forms, same endpoints, same permission
     split (`create_kpi` full edit vs. the narrower `edit_targets`) as
     before — just its own page now.
@@ -1010,7 +1010,7 @@ means for setup today.)
     separate from removal/maintenance below: create a Programme,
     Sub-programme, or Unit/Department/Faculty/Region; correct an existing
     one's own name/head (and a Unit's Kind) without deleting and recreating
-    the whole thing; and add a new Individual under a Unit. These used to
+    the whole thing; and add a new Employee under a Unit. These used to
     be four bare creation forms bolted onto the bottom of the org-management
     page, in whatever order they happened to be added, with no way to
     correct a typo afterward. The page went through an intermediate shape —
@@ -1018,7 +1018,7 @@ means for setup today.)
     side, all visible at once — before landing on its current, simpler
     design: a top-level **Create / Update** switch, then a second row of
     pills for which entity (Programme, Sub-programme, Unit/Department/
-    Faculty/Region, and — Create only — Individual), with exactly **one
+    Faculty/Region, and — Create only — Employee), with exactly **one
     form visible at a time**. Both rows reuse the sidebar nav's own
     active/inactive pill styling, so the in-page navigation reads as an
     extension of the app's own nav rather than a new pattern. Each mode and
@@ -1032,7 +1032,7 @@ means for setup today.)
     this app; the matching `PATCH /api/org/programmes/:id` / `subs/:id` /
     `units/:id` keep that same account's own `users.name`/`title` in sync
     with whatever the Update form just saved, the same sync
-    `PATCH /api/org/individuals/:id` already did, so "who's signed in" and
+    `PATCH /api/org/employees/:id` already did, so "who's signed in" and
     "who the org chart says leads this" never drift apart. The Unit "Kind"
     field (and a Sub-programme's "what its Units are called" field) is an
     explicit dropdown (Unit / Department / Faculty / Region / Regional
@@ -1042,14 +1042,14 @@ means for setup today.)
     `manage_org_units` (see "Finer-grained org-structure permissions"
     below): `create_org_units` alone reaches the Create tab's
     Programme/Sub/Unit forms, `edit_org_units` alone reaches the entire
-    Update tab, and `add_individual` alone reaches the Create tab's
-    Individual form (scoped to the holder's own unit/sub-programme, same as
+    Update tab, and `add_employee` alone reaches the Create tab's
+    Employee form (scoped to the holder's own unit/sub-programme, same as
     before, unless they also hold `manage_org_units`); `manage_org_units`
     alone still reaches everything. Verified live: an ICT admin
     (`manage_org_units`) sees both tabs and all entity pills with zero
     console errors switching between every combination; an account holding
     only the new `create_org_units` sees just the Create tab (Programme /
-    Sub-programme / Unit pills, no Individual, no Update tab at all — the
+    Sub-programme / Unit pills, no Employee, no Update tab at all — the
     mode switch itself doesn't render when there's only one reachable mode)
     and a direct `PATCH`/`DELETE` against the API from that same account's
     token comes back a real 403, confirming the tab gating isn't cosmetic;
@@ -1057,17 +1057,17 @@ means for setup today.)
     Update tab pre-populated with the entity's current values, a real
     Update-a-Programme round trip through it persists correctly end to end,
     and a direct `POST`/`DELETE` from that account's token also 403s; a
-    Unit Head/Sub Rep holding only the pre-existing `add_individual`
-    permission still sees just the Individuals option, scoped to their own
+    Unit Head/Sub Rep holding only the pre-existing `add_employee`
+    permission still sees just the Employees option, scoped to their own
     unit(s); and a full Create Programme → Create Sub → Create Unit → Add
-    Individual chain through the new navigation, followed by a real cascade
+    Employee chain through the new navigation, followed by a real cascade
     remove of that same Programme from Organisation & People, leaves
     nothing behind in any active view or dropdown — zero console errors
     throughout.
   - **Organisation & People** (`pages/OrgStructure.jsx`) — the MAINTAIN
     half: removing a Programme, Sub-programme, or Unit (and restoring one
     from "Recently Removed"), plus editing, removing, or role-changing an
-    existing Individual. This page is options only, not a tree — it went
+    existing Employee. This page is options only, not a tree — it went
     through several earlier shapes (a full "Organisation Structure" tree
     page and a separate "People & Roles" tree page, then one page sharing a
     merged tree, then one page mixing create/update/remove/restore for four
@@ -1076,12 +1076,12 @@ means for setup today.)
     Organisation Builder above, so a `manage_org_units` holder gets four
     independent "pick from a dropdown, then act" panels — Remove a
     Programme / Remove a Sub-programme / Remove a Unit (each its own
-    select-plus-delete-button card), Manage individuals (pick a Unit from a
+    select-plus-delete-button card), Manage employees (pick a Unit from a
     dropdown, then edit/remove/role-change whoever's in it), and Recently
     Removed — with no tree rendered on this page at all. Each dropdown
     auto-corrects to a still-existing entry the moment its own selection is
     removed, rather than pointing at something that no longer exists. A
-    Unit Head/Sub Rep who holds only the narrower `add_individual`
+    Unit Head/Sub Rep who holds only the narrower `add_employee`
     permission (not `manage_org_units`) still gets the same compact,
     scoped-to-their-own-unit(s) edit-only view this page has always given
     them — never a tree, never the whole org, and (since adding moved to
@@ -1089,7 +1089,7 @@ means for setup today.)
     **Removing anything here is a real, reversible change, never data loss**
     (see the "Soft-delete & traceability" bullet below for the full
     architecture) — every DELETE cascades exactly the way it used to (a
-    removed Programme takes every Sub-programme, Unit, and Individual
+    removed Programme takes every Sub-programme, Unit, and Employee
     beneath it, every KPI any of them own, and every login account that
     only exists because of them, out of active use, atomically, inside one
     transaction, with zero orphaned rows or foreign-key errors), except now
@@ -1097,7 +1097,7 @@ means for setup today.)
     `deleted_at`, not deleted, and a **"Recently Removed"** panel right on
     this page (backed by `GET /api/org/removed`) lists everything currently
     removed with a one-click **Restore** per row (`POST
-    /api/org/{programmes,subs,units,individuals}/:id/restore`) that clears
+    /api/org/{programmes,subs,units,employees}/:id/restore`) that clears
     the stamp on it and everything structurally beneath it in one
     transaction — values, assignments, KPI history, and the login account
     all come back exactly as they were. The confirmation dialogs and toasts
@@ -1115,7 +1115,7 @@ means for setup today.)
     an ICT admin's sidebar confirmed to have "Framework" alongside both
     "Organisation Builder" and "Organisation & People"; a real cascade
     create through Organisation Builder (Programme → Sub → Unit →
-    Individual) followed by a cascade remove of that same Programme from
+    Employee) followed by a cascade remove of that same Programme from
     Organisation & People, confirmed gone from every active view and every
     dropdown across both pages afterward; and a CPU account (who also has
     Framework) getting the identical pages — zero console errors
@@ -1152,7 +1152,7 @@ means for setup today.)
   Data Entry, and uniform KPI input styling.** A report of "not seeing the
   approval option" led to an exhaustive re-run of every approver-tier/
   owner-type combination (two-stage Sub-owned KPI through Rep → Programme
-  Head → CPU; an Individual-owned KPI through their Unit Head;
+  Head → CPU; an Employee-owned KPI through their Unit Head;
   team-contribution review via `TeamApprovalsTable`) — all passed with the
   Approve button present and working and zero console errors, so nothing
   was actually broken end to end. The real issue was readability: the
@@ -1289,7 +1289,7 @@ means for setup today.)
   was tried, confirmed live to NOT fix the actual bug, and has been
   removed — the real cause was in the tooltip's data lookup, not stale
   component state. Verified live end-to-end: two real KPIs both named
-  "Vacuuming", owned by two different individuals, were created for the
+  "Vacuuming", owned by two different employees, were created for the
   same period specifically to reproduce the reported scenario; hovering
   each bar in turn now shows that bar's own distinct owner and value with
   zero cross-contamination, both on first load and after switching the
@@ -1307,7 +1307,7 @@ means for setup today.)
   day of the next month, submission is still accepted but flagged **late**;
   after the close day, submission is blocked outright until next month's
   window opens. Saving a draft is never blocked — only the final "Submit
-  for review" step is affected, at every tier (Individual, Unit, Sub-
+  for review" step is affected, at every tier (Employee, Unit, Sub-
   programme direct-value submissions, `POST /:id/submit` and
   `/bulk-submit`, and Unit contribution submissions,
   `POST /:id/contribution/submit`), enforced server-side (403 with a
@@ -1373,7 +1373,7 @@ sprawling:
 
 Everything else — real auth, real RBAC, the full organisational hierarchy
 (Programmes → Sub-programmes → Units/Departments/Faculties/Regions →
-Individuals), the complete KPI submission → review → approval cascade,
+Employees), the complete KPI submission → review → approval cascade,
 override handling for automated KPIs, and the audit log — is implemented
 and working end-to-end, and was verified with automated browser tests
 covering every approval tier before this was packaged.
@@ -1559,20 +1559,22 @@ All seeded accounts use the same password:
 Zou@2026
 ```
 
-This same list is also shown right on the login page itself (under "Demo
-accounts for testing"), so you don't need to come back to this file to
-try a different role:
+(The login page used to also list these under "Demo accounts for
+testing" — that's been removed, since a live deployment shouldn't ever
+show working credentials on a public sign-in screen. This file is now the
+only place they're documented; keep it out of anything you'd actually
+show end users.)
 
 | Access level | Email | What they can do |
 |---|---|---|
 | Executive (Vice Chancellor) | `l.chareka@zou.ac.zw` | Read-only executive view (Reports only); designated **Executive Owner**, accountable for overall institutional performance against the Plan (badge in the header, accountability note on Overview) |
 | University Council (Chairperson) | `f.museta@zou.ac.zw` | Reviews the fully compiled University Annual Plan (every Programme/Sub-programme/Unit beneath it) and approves it into effect, or returns it to CPU with a comment — the top validation gate on the Annual Plan cascade |
 | Corporate Planning Unit (CPU) | `t.moyo@zou.ac.zw` | Approves sub-programme submissions, manages org structure, KPIs, and settings; compiles and submits the University Annual Plan to the Council |
-| ICT Systems Administrator | `l.chikomo@zou.ac.zw` | The only role that can grant/revoke permissions, change a user's role, or remove an account — and by default can also add/remove units and individuals, create new KPIs, edit KPI targets, apply overrides, set a user's Overview navigation limit, and designate the Executive Owner |
+| ICT Systems Administrator | `l.chikomo@zou.ac.zw` | The only role that can grant/revoke permissions, change a user's role, or remove an account — and by default can also add/remove units and employees, create new KPIs, edit KPI targets, apply overrides, set a user's Overview navigation limit, and designate the Executive Owner |
 | Programme Head | `s.chitiyo@zou.ac.zw` | Read-only oversight of every Sub-programme in their own Programme (Governance & Administration) only; approves/returns those Sub-programmes' Annual Plan proposals and compiles/submits their own Programme's plan |
 | Sub-programme Representative | `b.gwatidzo@zou.ac.zw` | Enters KPI data owned by their sub-programme; approves the Unit Heads below them |
-| Unit Head | `f.rusike@zou.ac.zw` | Enters KPI data owned by their unit; approves the Individuals below them |
-| Individual staff member | `n.moyana@zou.ac.zw` | Enters only their own personally-owned KPI data |
+| Unit Head | `f.rusike@zou.ac.zw` | Enters KPI data owned by their unit; approves the Employees below them |
+| Employee staff member | `n.moyana@zou.ac.zw` | Enters only their own personally-owned KPI data |
 
 Each row above is a genuinely separate account — its own database row, its
 own email, its own password hash, its own permission grants — not one
@@ -1591,12 +1593,12 @@ for CPU, and the Framework page's "Add a unit", "Create a KPI" and "Edit
 targets" forms only appear for accounts holding those specific
 permissions (CPU and ICT admin, by default).
 
-There are many more Sub Rep / Unit Head / Individual accounts beyond the
+There are many more Sub Rep / Unit Head / Employee accounts beyond the
 one of each shown above — `npm run seed`'s console output and the
 Framework page (visible to CPU/ICT admin) show the full organisational
 tree, from which you can find any of them by name to sign in and explore.
 To try the full submission → review → approval chain end to end: sign in
-as `n.moyana@zou.ac.zw` (Individual), enter and submit a KPI value, then
+as `n.moyana@zou.ac.zw` (Employee), enter and submit a KPI value, then
 sign in as `m.chirisa@zou.ac.zw` (their Unit Head, Postgraduate Research
 Unit) and approve it from the Approvals Queue. To try the University
 Annual Plan's own top-level cascade: sign in as `t.moyo@zou.ac.zw` (CPU),
@@ -1614,17 +1616,21 @@ reflects the current, post-fix state.
 Already addressed:
 
 - **No more shared, predictable account password.** Every new Unit Head or
-  Individual account (`POST /api/org/units`, `POST /api/org/individuals`)
+  Employee account (`POST /api/org/units`, `POST /api/org/employees`)
   and every ICT-admin password reset (`POST /api/users/:id/reset-password`)
   now gets a real, cryptographically random one-time password
   (`utils/password.js`) and is flagged `must_change_password` — the account
   can sign in and see its own identity, but every other route 403s
   (`code: 'PASSWORD_CHANGE_REQUIRED'`) until it sets a real password of its
   own (see `pages/ForcedPasswordChange.jsx`). The seeded demo accounts keep
-  their openly-documented shared password (`Zou@2026`, shown right on the
-  sign-in screen) — deliberately: it's how you explore this build, not a
-  production credential, and forcing every demo persona to rotate it on
-  first login would defeat that purpose.
+  their openly-documented shared password (`Zou@2026`, documented above in
+  this file, no longer shown on the sign-in screen itself) — deliberately:
+  it's how you explore this build, not a production credential, and
+  forcing every demo persona to rotate it on first login would defeat
+  that purpose. **This entire seeded dataset — every account, every
+  fictional staff name, every KPI — is demo/reference data and must not
+  be the org structure a real deployment runs on; see "Still genuinely
+  open" below.**
 - **`JWT_SECRET` has no fallback anymore.** `middleware/auth.js` throws on
   startup if it's unset rather than silently signing tokens with the old
   `dev-secret-do-not-use-in-production` placeholder — a value anyone who's
@@ -1671,7 +1677,7 @@ Already addressed:
   `/values-range`, `/assignments`, `/contributions`), `GET /api/plans`, and
   `GET /api/compliance` used to return every KPI/value/contribution, the
   full org tree, and the full budget/compliance picture, system-wide, to
-  any authenticated user — a scoped account (Individual, Unit Head, Sub
+  any authenticated user — a scoped account (Employee, Unit Head, Sub
   Rep) could get data far outside what its own UI ever shows it by calling
   the API directly. `utils/scope.js` adds read-visibility predicates
   (`isGlobalReader`, `canReadKpi`, `canReadSub`, `canReadUnit`,
@@ -1692,21 +1698,53 @@ Already addressed:
 Still genuinely open — outside what changes to this codebase alone can fix
 (see `SECURITY_REVIEW.md` for the full reasoning on each):
 
+- **Replace the seeded demo org with ZOU's real one.** `npm run seed`
+  wipes and rebuilds every table with a fabricated organisation — fictional
+  Vice Chancellor, Council, CPU, ICT Admin, Programme Heads, Sub Reps, Unit
+  Heads, Employees, and starter KPIs with made-up baseline/target figures
+  (see `backend/src/seed.js`). None of it is real, and it isn't something
+  this codebase can fix on its own — it needs ZOU's actual staff names,
+  emails, and organisational structure, which nobody here has. Before real
+  use: run `npm run seed` once to get the schema/roles/permissions catalog
+  in place (this app's demo org doubles as that bootstrap step), then
+  replace each demo person and structural node with the real one —
+  `npm run create-account` (`backend/src/create-account.js`) provisions one
+  real, unscoped account at a time (Executive, VC, CPU, ICT Admin, or
+  Council — e.g. `npm run create-account -- --email=real@zou.ac.zw
+  --role=ictadmin --name="Real Name" --azure` for a Microsoft-sign-in
+  account with no password stored at all, or `--password="<one-time pw>"`
+  for a password-based one that forces a real one on first login), and
+  refuses if the role already has an active occupant — soft-delete the
+  demo one from the Users page first (recoverable from Recently Removed,
+  never a hard delete) to free that seat. Everything scoped to a specific
+  Programme/Sub-programme/Unit (Programme Head, Sub Rep, Unit Head,
+  Employee) needs a real org node to attach to, which only Organisation
+  Builder's own flows can supply correctly — rebuild those through the
+  running app's UI, not this script. Either way, nobody should be signing
+  in with a `Zou@2026` password against a production database.
 - Put this behind HTTPS, on real hosting. `npm run backup` (see "Backing up
-  the database" above) gives a real, verified way to snapshot the SQLite
-  file — scheduling it and shipping the results off-box is a hosting-level
-  step for whoever deploys this, not something a script running on the same
-  disk can guarantee alone; migrating to a managed database at that point
-  is also worth considering.
+  the database" above) gives a real, verified way to snapshot the Postgres
+  database (`pg_dump`/`pg_restore` — see `backend/src/backup.js`) —
+  scheduling it and shipping the results off-box is a hosting-level step
+  for whoever deploys this, not something a script running on the same
+  disk/VM can guarantee alone (see `AZURE_SETUP.md` Part C §7 for durable
+  off-box options on Azure specifically).
 - Have ZOU's IT/security team review authentication, data-retention, and
   access-control requirements before go-live — including whether MFA
   (available now, opt-in) should be mandated for some or all roles.
-- Real SMTP/email-provider integration for password-reset delivery — a
-  reset currently has to be relayed by an ICT Admin (`POST
-  /api/users/:id/reset-password`) rather than emailed directly to the
-  account holder, since wiring up an actual outbound-mail provider needs
-  real, external credentials (an SMTP relay or a service like SendGrid/SES)
-  that can't be fabricated in this environment.
+- **SMTP/email delivery for password resets is now wired up, just not
+  configured.** `POST /api/users/:id/reset-password` (`backend/src/
+  utils/mailer.js`) emails the new one-time password directly to the
+  account holder when `SMTP_HOST`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`
+  are all set (see `.env.example`) — real, external SMTP relay credentials
+  (or a service like SendGrid/SES's SMTP endpoint) that can't be
+  fabricated in this environment, so it's still something only you can
+  supply. Until then it degrades exactly as before: the reset succeeds,
+  ICT Admin sees the new password once and relays it by hand, and
+  `emailed: false` in the response says why. Note this only applies to
+  password-based accounts — an `auth_provider = 'azure'` account has no
+  password to reset at all (the route now says so plainly instead of
+  silently no-op'ing), and is unaffected either way.
 - A further accessibility pass: this build now covers keyboard operability
   (every interactive control, including the sidebar's Programme-structure
   tree, is reachable and operable without a mouse), screen-reader labeling
@@ -1848,12 +1886,12 @@ All endpoints are under `/api`. Authenticated endpoints require an
   exactly like the org's existing accounts, same pattern throughout; PATCH
   updates the entity's own name/head (and a Unit's kind) and keeps the
   linked account's `users.name`/`title` in sync, the same sync
-  `PATCH /api/org/individuals/:id` already did. Every DELETE genuinely
+  `PATCH /api/org/employees/:id` already did. Every DELETE genuinely
   cascades — see `routes/org.js`'s `cascadeSoftDeleteProgramme/Sub/Unit` —
-  taking everything nested beneath it (every Sub-programme/Unit/Individual,
+  taking everything nested beneath it (every Sub-programme/Unit/Employee,
   every KPI any of them own, and every login account that only exists
   because of them) out of active use inside one transaction, and returns a
-  `removed: { kpis, individuals, units, subs, programmes, accounts }` count
+  `removed: { kpis, employees, units, subs, programmes, accounts }` count
   so the frontend can confirm exactly what just disappeared — but as a
   `deleted_at` stamp, never a real SQL DELETE, so it's never data loss: the
   matching `POST .../restore` route clears the stamp on the row and
@@ -1862,17 +1900,17 @@ All endpoints are under `/api`. Authenticated endpoints require an
   all before the Unit-level delete/restore pair landed — Unit creation had
   no matching delete route, so a Unit created by mistake had no way to be
   removed short of editing the database directly),
-  `POST /api/org/individuals` (`manage_org_units` OR the narrower,
-  scope-restricted `add_individual` — a Unit Head may only target their own
+  `POST /api/org/employees` (`manage_org_units` OR the narrower,
+  scope-restricted `add_employee` — a Unit Head may only target their own
   unit, a Sub Rep only a unit within their own sub-programme) /
-  `PATCH /api/org/individuals/:id` (same scoping — edits `individuals.name`/
+  `PATCH /api/org/employees/:id` (same scoping — edits `employees.name`/
   `role_title` and keeps the linked login account's own `users.name`/`title`
   in sync, which `PATCH /api/users/:id/profile` never touched; those are a
-  separate pair of columns, so an Individual's name could previously drift
+  separate pair of columns, so an Employee's name could previously drift
   out of sync between "who's signed in" and "who the org chart says this
   is") /
-  `DELETE /api/org/individuals/:id` / `POST /api/org/individuals/:id/restore`
-  (`manage_org_units` only — adding an individual provisions a login
+  `DELETE /api/org/employees/:id` / `POST /api/org/employees/:id/restore`
+  (`manage_org_units` only — adding an employee provisions a login
   account; removing one deactivates that account and soft-deletes any KPIs
   they directly own, all reversed together by restore)
 - `GET /api/org/proposals`, `POST /api/org/proposals` (`manage_framework`) —
@@ -1897,7 +1935,7 @@ All endpoints are under `/api`. Authenticated endpoints require an
   `PATCH /api/kpis/:id/targets` (`edit_targets` — baseline/target only, the
   narrower tier),
   `PUT /api/kpis/:id/value` / `POST /api/kpis/:id/submit` (`data_entry`, the
-  KPI's owner only — an assigned Individual no longer owns the KPI's own
+  KPI's owner only — an assigned Employee no longer owns the KPI's own
   value, only their own contribution row; see below — `PUT .../value` now
   writes the submitter's figure to `entered_value`, this period's own
   number, not the cumulative `value` column),
@@ -1929,16 +1967,16 @@ All endpoints are under `/api`. Authenticated endpoints require an
   cleared override straight back; 404s if there's nothing recently cleared
   for that period, 400s if a live override is already there),
   `PUT /api/kpis/:id/explanation`,
-  `GET /api/kpis/assignments` (every current, non-removed KPI→Individual
+  `GET /api/kpis/assignments` (every current, non-removed KPI→Employee
   assignment),
-  `POST /api/kpis/:id/assign` / `DELETE /api/kpis/:id/assign/:individualId`
+  `POST /api/kpis/:id/assign` / `DELETE /api/kpis/:id/assign/:employeeId`
   (`data_entry`, and only the Unit Head who owns that Unit-scoped KPI,
   targeting someone in that same unit — DELETE stamps `deleted_at` on the
   `kpi_assignments` row rather than deleting it, and POST restores that same
   row instead of inserting a duplicate if this exact pairing was ever
-  assigned before, since the table's `UNIQUE(kpi_id, individual_id)`
+  assigned before, since the table's `UNIQUE(kpi_id, employee_id)`
   constraint means a plain re-insert would collide with it) — (`POST/DELETE
-  /api/kpis/:id/claim`, the individual self-claim of a Unit-owned KPI, has
+  /api/kpis/:id/claim`, the employee self-claim of a Unit-owned KPI, has
   been removed; see `/api/kpi-templates` below for its replacement)
 - `GET /api/kpis/contributions?year&month` (every assignee's own
   contribution row for the period, scoped the same as `/kpis/values`),
@@ -1946,13 +1984,13 @@ All endpoints are under `/api`. Authenticated endpoints require an
   / `PUT /api/kpis/:id/contribution/explanation` (`data_entry`, only an
   assignee entering their own figure toward a KPI they're assigned to —
   never the KPI's own `kpi_values` row),
-  `POST /api/kpis/:id/contribution/:individualId/approve` /
-  `POST /api/kpis/:id/contribution/:individualId/return`
+  `POST /api/kpis/:id/contribution/:employeeId/approve` /
+  `POST /api/kpis/:id/contribution/:employeeId/return`
   (`approve_own_tier`, only the Unit Head who owns that Unit-scoped KPI —
   approving recomputes the KPI's own value as the live sum of every
   currently-approved contribution for that period, see above)
 - `GET /api/kpi-templates` (any signed-in user — the Unit-scoped "KPI for
-  individuals" pool, each with a real `picked_count`),
+  employees" pool, each with a real `picked_count`),
   `GET /api/kpi-templates/removed` (`create_kpi` — the soft-removed side of
   the same pool, most-recently-removed first; backs KPI Management's own
   "Recently Removed" panel),
@@ -1964,7 +2002,7 @@ All endpoints are under `/api`. Authenticated endpoints require an
   `kpis.template_id`'s `ON DELETE SET NULL`) /
   `POST /api/kpi-templates/:id/restore` (`create_kpi` — clears the stamp,
   reappears in the pool exactly as it was),
-  `POST /api/kpi-templates/:id/pick` (`data_entry`, Individual role only,
+  `POST /api/kpi-templates/:id/pick` (`data_entry`, Employee role only,
   and only for a non-removed template scoped to their own unit —
   instantiates a real, independent `kpis` row owned solely by them; rejects
   a second pick of the same template by the same person)
@@ -2018,7 +2056,7 @@ All endpoints are under `/api`. Authenticated endpoints require an
   `GET /api/users/removed` (the soft-removed side of the Directory —
   accounts removed directly by DELETE below, most-recently-removed first;
   backs Permissions &amp; User Directory's own "Recently Removed" panel —
-  an account deactivated as a side effect of removing the Individual/
+  an account deactivated as a side effect of removing the Employee/
   Unit-head/Sub-Rep/Programme-head it belongs to shows up on Organisation
   &amp; People's Recently Removed instead, not here),
   `DELETE /api/users/:id` / `POST /api/users/:id/restore` (remove/restore an

@@ -1,16 +1,16 @@
-import { useEffect, useState } from 'react';
+import { Children, cloneElement, useEffect, useId, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
+import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
 import { byId } from '../lib/scope.js';
-import { ROLES, ROLE_LABEL } from './Users.jsx';
 
 // Organisation Maintenance — the MAINTAIN/RETIRE half of admin org
 // management: removing a Programme/Sub-programme/Unit (and restoring one
 // from "Recently Removed"), plus editing, removing, or role-changing an
-// existing Individual. The other half — CREATING a Programme/Sub-programme/
+// existing Employee. The other half — CREATING a Programme/Sub-programme/
 // Unit, UPDATING an existing one's own name/head, and ADDING a new
-// Individual — lives on its own dedicated page, `OrganisationBuilder.jsx`
+// Employee — lives on its own dedicated page, `OrganisationBuilder.jsx`
 // ("Organisation Setup" in the nav): those used to be four bare forms bolted onto the
 // bottom of this same page, with no way to correct a typo afterward short
 // of deleting and recreating the whole thing. Splitting "build it" from
@@ -19,9 +19,9 @@ import { ROLES, ROLE_LABEL } from './Users.jsx';
 // is what makes each page readable at a glance instead of a wall of forms.
 // This page is options only: `ManageOptions` below is a set of
 // pick-from-a-dropdown-and-act panels (Remove a Programme / Sub-programme /
-// Unit, Manage individuals, Recently Removed) with no tree rendering at
+// Unit, Manage employees, Recently Removed) with no tree rendering at
 // all — go look at the org chart on Framework, come back here to act on
-// it. The add_individual-only case (`OwnScopeTeam`) already worked this
+// it. The add_employee-only case (`OwnScopeTeam`) already worked this
 // way — scoped to just the caller's own unit(s), never the whole org — so
 // it's unchanged.
 //
@@ -36,10 +36,9 @@ import { ROLES, ROLE_LABEL } from './Users.jsx';
 export default function OrgStructure() {
   const { user, org, hasPerm } = useApp();
   const canUnits = hasPerm('manage_org_units');
-  const canAddIndividual = canUnits || hasPerm('add_individual');
-  const isIctAdmin = user.role === 'ictadmin';
+  const canAddEmployee = canUnits || hasPerm('add_employee');
 
-  if (!canUnits && !canAddIndividual) {
+  if (!canUnits && !canAddEmployee) {
     return (
       <div>
         <div className="mb-5">
@@ -48,7 +47,7 @@ export default function OrgStructure() {
         </div>
         <div className="card text-center text-ink-muted py-10">
           You don't hold a permission that manages this. Ask an ICT System Administrator for "Create Units /
-          Departments / Faculties / Regions" or "Add an Individual" if you need access here.
+          Departments / Faculties / Regions" or "Add an Employee" if you need access here.
         </div>
       </div>
     );
@@ -60,38 +59,42 @@ export default function OrgStructure() {
         <h1 className="text-xl font-bold mb-0.5">Organisation Maintenance</h1>
         <p className="text-[13px] text-ink-secondary max-w-[70ch]">
           {canUnits
-            ? `Remove a Programme, Sub-programme, or Unit/Department/Faculty/Region, and edit, remove${isIctAdmin ? ', or role-change' : ''} ` +
-              `the individuals within them. Removing ` +
+            ? `Remove a Programme, Sub-programme, or Unit/Department/Faculty/Region, and edit or remove ` +
+              `the employees within them. Removing ` +
               `anything below takes everything nested beneath it — and every login account that only exists ` +
               `because of it — out of view, but nothing is ever actually deleted: it's fully recoverable from ` +
-              `"Recently Removed" below. To create a new Programme/Sub-programme/Unit or add an Individual, go to ` +
-              `Organisation Setup.`
-            : 'Edit individuals within your own unit/sub-programme. To add a new one, go to Organisation Setup. Role changes and account removal are an ICT System Administrator action.'}
+              `"Recently Removed" below. To create a new Programme/Sub-programme/Unit or add an Employee, go to ` +
+              `Organisation Setup. Role and organisation-scope changes for any account happen on Permissions & Roles.`
+            : 'Edit employees within your own unit/sub-programme. To add a new one, go to Organisation Setup. Role changes, organisation-scope changes, and account removal are an ICT System Administrator action on Permissions & Roles.'}
         </p>
       </div>
 
-      {canUnits ? <ManageOptions org={org} isIctAdmin={isIctAdmin} /> : <OwnScopeTeam org={org} user={user} />}
+      {canUnits ? <ManageOptions org={org} /> : <OwnScopeTeam org={org} user={user} />}
     </div>
   );
 }
 
 // Options only — no tree. Four independent panels, each a "pick from a
 // dropdown, then act" control: Remove a Programme / Sub-programme / Unit,
-// and Manage individuals (pick a Unit, then edit/remove/role-change
-// whoever's in it). The full Programme -> Sub -> Unit -> Individual
-// hierarchy, browsable and read-only, lives on Framework.jsx alone — this
-// page never renders it, so there's exactly one place in the app that
-// looks like an org chart.
-function ManageOptions({ org, isIctAdmin }) {
+// and Manage employees (pick a Unit, then edit/remove whoever's in it —
+// role and organisation-scope changes for ANY account, Employee or
+// otherwise, happen only on Permissions & Roles now; see that page's
+// "Assign Roles to Users" and per-row "Assign role & scope", and Users.jsx's
+// own header note on why this page used to have its own separate,
+// scope-blind role-change control and no longer does). The full
+// Programme -> Sub -> Unit -> Employee hierarchy, browsable and read-only,
+// lives on Framework.jsx alone — this page never renders it, so there's
+// exactly one place in the app that looks like an org chart.
+function ManageOptions({ org }) {
   const { reloadCore } = useApp();
   const toast = useToast();
+  const confirm = useConfirm();
   const [busyKey, setBusyKey] = useState(null);
 
   const [progId, setProgId] = useState(org.programmes[0]?.id || '');
   const [subId, setSubId] = useState(org.subs[0]?.id || '');
   const [unitId, setUnitId] = useState(org.units[0]?.id || '');
   const [peopleUnitId, setPeopleUnitId] = useState(org.units[0]?.id || '');
-  const [roleDraft, setRoleDraft] = useState({});
 
   // "Recently Removed" — the live, restorable list backing every "This
   // isn't deleted, it's recoverable" claim made throughout this page (see
@@ -128,15 +131,16 @@ function ManageOptions({ org, isIctAdmin }) {
     const p = byId(org.programmes, Number(progId));
     if (!p) return;
     const subCount = org.subs.filter((s) => s.programme_id === p.id).length;
-    if (!window.confirm(
-      `Remove Programme "${p.name}"? This takes ${subCount} Sub-programme(s), every Unit and ` +
-      `Individual beneath them, every KPI any of them own, and every login account created for them out of active ` +
-      `use — nothing is deleted, and it's all restorable together from "Recently Removed" below.`
-    )) return;
+    if (!(await confirm({
+      title: `Remove Programme "${p.name}"?`,
+      message: `This takes ${subCount} Sub-programme(s), every Unit and Employee beneath them, every KPI any of them own, and every login account created for them out of active use — nothing is deleted, and it's all restorable together from "Recently Removed" below.`,
+      confirmLabel: 'Remove programme',
+      tone: 'danger',
+    }))) return;
     setBusyKey('prog');
     try {
       const r = await api(`/org/programmes/${p.id}`, { method: 'DELETE' });
-      toast(`"${p.name}" removed (${r.removed.subs} sub-programme(s), ${r.removed.units} unit(s), ${r.removed.individuals} individual(s), ${r.removed.kpis} KPI(s), ${r.removed.accounts} account(s) — all recoverable).`);
+      toast(`"${p.name}" removed (${r.removed.subs} sub-programme(s), ${r.removed.units} unit(s), ${r.removed.employees} employee(s), ${r.removed.kpis} KPI(s), ${r.removed.accounts} account(s) — all recoverable).`);
       await reloadCore();
       await reloadRemoved();
     } catch (err) { toast(err.message, 'err'); }
@@ -147,15 +151,16 @@ function ManageOptions({ org, isIctAdmin }) {
     const s = byId(org.subs, Number(subId));
     if (!s) return;
     const unitCount = org.units.filter((u) => u.sub_id === s.id).length;
-    if (!window.confirm(
-      `Remove Sub-programme "${s.name}"? This takes ${unitCount} Unit(s), every Individual within ` +
-      `them, every KPI any of them own, and every login account created for them out of active use — nothing is ` +
-      `deleted, and it's all restorable together from "Recently Removed" below.`
-    )) return;
+    if (!(await confirm({
+      title: `Remove Sub-programme "${s.name}"?`,
+      message: `This takes ${unitCount} Unit(s), every Employee within them, every KPI any of them own, and every login account created for them out of active use — nothing is deleted, and it's all restorable together from "Recently Removed" below.`,
+      confirmLabel: 'Remove sub-programme',
+      tone: 'danger',
+    }))) return;
     setBusyKey('sub');
     try {
       const r = await api(`/org/subs/${s.id}`, { method: 'DELETE' });
-      toast(`"${s.name}" removed (${r.removed.units} unit(s), ${r.removed.individuals} individual(s), ${r.removed.kpis} KPI(s), ${r.removed.accounts} account(s) — all recoverable).`);
+      toast(`"${s.name}" removed (${r.removed.units} unit(s), ${r.removed.employees} employee(s), ${r.removed.kpis} KPI(s), ${r.removed.accounts} account(s) — all recoverable).`);
       await reloadCore();
       await reloadRemoved();
     } catch (err) { toast(err.message, 'err'); }
@@ -165,27 +170,33 @@ function ManageOptions({ org, isIctAdmin }) {
   async function removeUnit() {
     const u = byId(org.units, Number(unitId));
     if (!u) return;
-    const indCount = org.individuals.filter((i) => i.unit_id === u.id).length;
-    if (!window.confirm(
-      `Remove "${u.name}"? This takes ${indCount} individual(s) in it, every KPI any of them (or the ` +
-      `unit itself) own, and every login account created for them out of active use — nothing is deleted, and ` +
-      `it's all restorable together from "Recently Removed" below.`
-    )) return;
+    const indCount = org.employees.filter((i) => i.unit_id === u.id).length;
+    if (!(await confirm({
+      title: `Remove "${u.name}"?`,
+      message: `This takes ${indCount} employee(s) in it, every KPI any of them (or the unit itself) own, and every login account created for them out of active use — nothing is deleted, and it's all restorable together from "Recently Removed" below.`,
+      confirmLabel: 'Remove unit',
+      tone: 'danger',
+    }))) return;
     setBusyKey('unit');
     try {
       const r = await api(`/org/units/${u.id}`, { method: 'DELETE' });
-      toast(`"${u.name}" removed (${r.removed.individuals} individual(s), ${r.removed.kpis} KPI(s), ${r.removed.accounts} account(s) — all recoverable).`);
+      toast(`"${u.name}" removed (${r.removed.employees} employee(s), ${r.removed.kpis} KPI(s), ${r.removed.accounts} account(s) — all recoverable).`);
       await reloadCore();
       await reloadRemoved();
     } catch (err) { toast(err.message, 'err'); }
     finally { setBusyKey(null); }
   }
 
-  async function removeIndividual(ind) {
-    if (!window.confirm(`Remove ${ind.name} and deactivate their account? Nothing is deleted — they, their KPIs, and their history stay intact and restorable from "Recently Removed" below.`)) return;
+  async function removeEmployee(ind) {
+    if (!(await confirm({
+      title: `Remove ${ind.name} and deactivate their account?`,
+      message: 'Nothing is deleted — they, their KPIs, and their history stay intact and restorable from "Recently Removed" below.',
+      confirmLabel: 'Remove employee',
+      tone: 'danger',
+    }))) return;
     setBusyKey(`i${ind.id}`);
     try {
-      await api(`/org/individuals/${ind.id}`, { method: 'DELETE' });
+      await api(`/org/employees/${ind.id}`, { method: 'DELETE' });
       toast(`${ind.name} removed — recoverable from Recently Removed.`);
       await reloadCore();
       await reloadRemoved();
@@ -193,24 +204,9 @@ function ManageOptions({ org, isIctAdmin }) {
     finally { setBusyKey(null); }
   }
 
-  async function changeRole(ind) {
-    if (!ind.user_id) return;
-    const role = roleDraft[ind.id];
-    if (!role) return;
-    if (!window.confirm(`Change ${ind.name}'s account role to "${ROLE_LABEL[role]}"? Their existing permission grants are left as-is — review them from Permissions & User Directory afterwards.`)) return;
-    setBusyKey(`i${ind.id}`);
-    try {
-      await api(`/users/${ind.user_id}/role`, { method: 'PATCH', body: { role } });
-      toast(`${ind.name}'s role changed to ${ROLE_LABEL[role]}.`);
-      setRoleDraft((d) => { const n = { ...d }; delete n[ind.id]; return n; });
-      await reloadCore();
-    } catch (err) { toast(err.message, 'err'); }
-    finally { setBusyKey(null); }
-  }
-
   const peopleUnit = byId(org.units, Number(peopleUnitId));
-  const peopleInds = peopleUnit ? org.individuals.filter((i) => i.unit_id === peopleUnit.id) : [];
-  const noDeptIndividuals = org.individuals.filter((i) => i.unit_id == null);
+  const peopleInds = peopleUnit ? org.employees.filter((i) => i.unit_id === peopleUnit.id) : [];
+  const noDeptEmployees = org.employees.filter((i) => i.unit_id == null);
 
   return (
     <div className="grid gap-3.5 sm:grid-cols-2 mb-4">
@@ -269,7 +265,7 @@ function ManageOptions({ org, isIctAdmin }) {
       </div>
 
       <div className="card sm:col-span-2">
-        <h3 className="font-display font-bold text-[14px] mb-2.5">Manage individuals</h3>
+        <h3 className="font-display font-bold text-[14px] mb-2.5">Manage employees</h3>
         {org.units.length === 0 ? (
           <p className="text-[12px] text-ink-muted">No Units yet — create one below first.</p>
         ) : (
@@ -281,30 +277,30 @@ function ManageOptions({ org, isIctAdmin }) {
             </Field>
             <div className="mt-3 space-y-1.5">
               {peopleInds.map((i) => (
-                <IndividualRow key={i.id} i={i} isIctAdmin={isIctAdmin} busyKey={busyKey} roleDraft={roleDraft} setRoleDraft={setRoleDraft} onRemove={removeIndividual} onChangeRole={changeRole} />
+                <EmployeeRow key={i.id} i={i} busyKey={busyKey} onRemove={removeEmployee} />
               ))}
-              {peopleInds.length === 0 && <p className="text-ink-muted text-[11.5px]">No individuals in this unit yet.</p>}
+              {peopleInds.length === 0 && <p className="text-ink-muted text-[11.5px]">No employees in this unit yet.</p>}
             </div>
           </>
         )}
       </div>
 
-      {/* Individuals added with no department at all (see Organisation
-          Setup's Individual form) — deliberately outside the per-unit
+      {/* Employees added with no department at all (see Organisation
+          Setup's Employee form) — deliberately outside the per-unit
           picker above, since unit_id is NULL for every one of these and
           they'd otherwise be invisible to every "pick a unit" workflow on
           this page. Read-only, real login accounts — see routes/org.js's
-          POST /individuals — delete-only here, same as any other Individual. */}
+          POST /employees — delete-only here, same as any other Employee. */}
       <div className="card sm:col-span-2">
-        <h3 className="font-display font-bold text-[14px] mb-1">Individuals with no department</h3>
+        <h3 className="font-display font-bold text-[14px] mb-1">Employees with no department</h3>
         <p className="text-[12px] text-ink-muted mb-2.5">
           Added directly with just a name and a Microsoft sign-in email, no unit assigned — read-only accounts.
         </p>
         <div className="space-y-1.5">
-          {noDeptIndividuals.map((i) => (
-            <IndividualRow key={i.id} i={i} isIctAdmin={isIctAdmin} busyKey={busyKey} roleDraft={roleDraft} setRoleDraft={setRoleDraft} onRemove={removeIndividual} onChangeRole={changeRole} />
+          {noDeptEmployees.map((i) => (
+            <EmployeeRow key={i.id} i={i} busyKey={busyKey} onRemove={removeEmployee} />
           ))}
-          {noDeptIndividuals.length === 0 && <p className="text-ink-muted text-[11.5px]">None yet.</p>}
+          {noDeptEmployees.length === 0 && <p className="text-ink-muted text-[11.5px]">None yet.</p>}
         </div>
       </div>
 
@@ -320,36 +316,22 @@ function ManageOptions({ org, isIctAdmin }) {
   );
 }
 
-// One Individual's row wherever ManageOptions lists them (within a unit, or
+// One Employee's row wherever ManageOptions lists them (within a unit, or
 // in the no-department list) — remove-only (there is no edit; see routes/
-// org.js's big comment above POST /individuals) plus, for an ICT System
-// Administrator only, the same standalone role-change control Users.jsx's
-// own account-level role change already uses.
-function IndividualRow({ i, isIctAdmin, busyKey, roleDraft, setRoleDraft, onRemove, onChangeRole }) {
+// org.js's big comment above POST /employees). Role and organisation-scope
+// changes used to have their own standalone control right here, scope-blind
+// (it only ever sent `{ role }`, no scopeType/scopeId, so picking a scoped
+// role like Unit Head from it would just 400) and duplicating what's now
+// the one real place that does this correctly — Permissions & Roles' bulk
+// "Assign Roles to Users" and per-row "Assign role & scope" — so it's gone
+// from here; that page is where every account's role and scope, Employee
+// or otherwise, is now assigned or changed.
+function EmployeeRow({ i, busyKey, onRemove }) {
   return (
     <div className="text-[12.5px]">
       <div className="flex items-center gap-2 flex-wrap text-ink-muted">
         <span>• {i.name} — {i.role_title || ''}</span>
         <button onClick={() => onRemove(i)} disabled={busyKey === `i${i.id}`} className="text-critical hover:underline disabled:opacity-40">remove</button>
-        {isIctAdmin && i.user_id && (
-          <span className="flex items-center gap-1.5">
-            <select
-              className="field-input py-0.5 text-[11px] w-auto"
-              value={roleDraft[i.id] ?? 'individual'}
-              disabled={busyKey === `i${i.id}`}
-              onChange={(e) => setRoleDraft((d) => ({ ...d, [i.id]: e.target.value }))}
-            >
-              {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
-            </select>
-            <button
-              className="text-accent-600 hover:underline disabled:opacity-40"
-              disabled={busyKey === `i${i.id}` || !roleDraft[i.id] || roleDraft[i.id] === 'individual'}
-              onClick={() => onChangeRole(i)}
-            >
-              update role
-            </button>
-          </span>
-        )}
       </div>
     </div>
   );
@@ -366,8 +348,8 @@ function IndividualRow({ i, isIctAdmin, busyKey, roleDraft, setRoleDraft, onRemo
 // part of a whole Programme cascade only has its name in the removed list.
 function RecentlyRemoved({ org, removed, removedOpen, setRemovedOpen, busyKey, onRestore }) {
   if (!removed) return null;
-  const { programmes = [], subs = [], units = [], individuals = [] } = removed;
-  const total = programmes.length + subs.length + units.length + individuals.length;
+  const { programmes = [], subs = [], units = [], employees = [] } = removed;
+  const total = programmes.length + subs.length + units.length + employees.length;
 
   const programmeName = (id) => byId(org.programmes, id)?.name || byId(programmes, id)?.name || `Programme #${id}`;
   const subName = (id) => byId(org.subs, id)?.name || byId(subs, id)?.name || `Sub-programme #${id}`;
@@ -383,7 +365,7 @@ function RecentlyRemoved({ org, removed, removedOpen, setRemovedOpen, busyKey, o
           Recently Removed
           <span className={`chip ${total ? 'chip-rag-amber' : ''}`}>{total}</span>
         </span>
-        <span className="text-ink-muted text-[12px]">{removedOpen ? 'Hide ▲' : 'Show ▼'}</span>
+        <span className="text-accent-600 font-semibold text-[12px]">{removedOpen ? 'Hide ▲' : 'Show ▼'}</span>
       </button>
       <p className="text-[12px] text-ink-muted mt-1">
         Everything removed from Organisation Maintenance — nothing here is deleted; restoring puts it straight back
@@ -418,11 +400,11 @@ function RecentlyRemoved({ org, removed, removedOpen, setRemovedOpen, busyKey, o
                 ))}
               </RemovedGroup>
             )}
-            {individuals.length > 0 && (
-              <RemovedGroup title="Individuals">
-                {individuals.map((i) => (
-                  <RemovedRow key={`i${i.id}`} label={`${i.unit_id == null ? 'No department' : unitName(i.unit_id)} — ${i.name} (${i.role_title || ''})`} busy={busyKey === `restore-individuals-${i.id}`}
-                    onRestore={() => onRestore('individuals', i.id, i.name)} />
+            {employees.length > 0 && (
+              <RemovedGroup title="Employees">
+                {employees.map((i) => (
+                  <RemovedRow key={`i${i.id}`} label={`${i.unit_id == null ? 'No department' : unitName(i.unit_id)} — ${i.name} (${i.role_title || ''})`} busy={busyKey === `restore-employees-${i.id}`}
+                    onRestore={() => onRestore('employees', i.id, i.name)} />
                 ))}
               </RemovedGroup>
             )}
@@ -453,19 +435,19 @@ function RemovedRow({ label, busy, onRestore }) {
   );
 }
 
-// The scoped view for a Unit Head / Sub Rep who only holds add_individual
+// The scoped view for a Unit Head / Sub Rep who only holds add_employee
 // (not manage_org_units): they can't create/delete Programmes/Subs/Units
 // and can't change anyone's role, so showing them the ENTIRE org tree again
 // (they already see it, read-only, on Framework) would just repeat it.
 // Instead: their own unit(s) only — a pure read-only roster now. There is
-// no Edit any more for any Individual account, anywhere (see routes/org.js's
-// big comment above POST /individuals), and this permission level never had
+// no Edit any more for any Employee account, anywhere (see routes/org.js's
+// big comment above POST /employees), and this permission level never had
 // remove/role controls to begin with (the server would reject those from
-// add_individual alone — see requireAnyPerm on DELETE /individuals/:id and
-// PATCH /users/:id/role). An Individual added with no department at all
-// (Organisation Setup's Individual form no longer requires a unit) doesn't
+// add_employee alone — see requireAnyPerm on DELETE /employees/:id and
+// PATCH /users/:id/role). An Employee added with no department at all
+// (Organisation Setup's Employee form no longer requires a unit) doesn't
 // belong to any of this caller's own units either way, so it isn't listed
-// here — ManageOptions' "Individuals with no department" panel is the only
+// here — ManageOptions' "Employees with no department" panel is the only
 // place one of those is visible, which in practice means an ICT System
 // Administrator or CPU holder (manage_org_units).
 function OwnScopeTeam({ org, user }) {
@@ -482,15 +464,15 @@ function OwnScopeTeam({ org, user }) {
   return (
     <div className="space-y-3">
       {ownUnits.map((u) => {
-        const inds = org.individuals.filter((i) => i.unit_id === u.id);
+        const inds = org.employees.filter((i) => i.unit_id === u.id);
         return (
           <div key={u.id} className="card">
-            <div><b>{u.name}</b> <span className="text-ink-muted text-[12px]">({u.kind} · Head: {u.head})</span></div>
+            <div><b>{u.name}</b> <span className="text-ink-muted text-[12px]">({u.kind} · Head: {u.head || '—'})</span></div>
             <div className="mt-1.5 space-y-1">
               {inds.map((i) => (
                 <div key={i.id} className="text-[12.5px] text-ink-muted">• {i.name} — {i.role_title || ''}</div>
               ))}
-              {inds.length === 0 && <div className="text-ink-muted text-[11.5px]">No individuals yet.</div>}
+              {inds.length === 0 && <div className="text-ink-muted text-[11.5px]">No employees yet.</div>}
             </div>
           </div>
         );
@@ -499,11 +481,21 @@ function OwnScopeTeam({ org, user }) {
   );
 }
 
+// Every call site below wraps exactly one real select/input, so this can
+// generate one stable id per Field instance (useId) and wire it onto both
+// the <label>'s htmlFor and the child's id automatically, rather than
+// needing every call site edited by hand. Falls back to an unassociated
+// (but still visually identical) label if a caller ever passes something
+// Field can't safely clone a prop onto, instead of crashing.
 function Field({ label, children }) {
+  const generatedId = useId();
+  const only = Children.count(children) === 1 ? Children.only(children) : null;
+  const child = only && typeof only === 'object' && only.type ? only : null;
+  const inputId = child ? (child.props.id || generatedId) : undefined;
   return (
     <div className="space-y-1">
-      <label className="field-label">{label}</label>
-      {children}
+      <label htmlFor={inputId} className="field-label">{label}</label>
+      {child ? cloneElement(child, { id: inputId }) : children}
     </div>
   );
 }

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
-import { canEnterData, canContribute, individualUnitId, valueStatus } from '../lib/scope.js';
+import { canEnterData, canContribute, employeeUnitId, valueStatus } from '../lib/scope.js';
 import ContributionCard from '../components/ContributionCard.jsx';
 import DataEntryTable from '../components/DataEntryTable.jsx';
 import PeriodPicker from '../components/PeriodPicker.jsx';
@@ -24,17 +24,17 @@ export default function Entry() {
   const mine = kpis.filter((k) => canEnterData(user, k));
   const contributed = kpis.filter((k) => canContribute(user, k, assignments));
   const statusOf = (k) => valueStatus(values[`${k.id}-${period.year}-${period.month}`]);
-  const contribRowFor = (k) => contributions.find((c) => c.kpi_id === k.id && c.individual_id === user.scope_id) || null;
+  const contribRowFor = (k) => contributions.find((c) => c.kpi_id === k.id && c.employee_id === user.scope_id) || null;
   const contribStatusOf = (k) => valueStatus(contribRowFor(k));
 
-  // The Unit-scoped "KPI for individuals" pool that applies to this
+  // The Unit-scoped "KPI for employees" pool that applies to this
   // person's own unit and that they haven't picked up yet (see
   // AppContext's `templates` / routes/kpiTemplates.js) — genuinely created
-  // FOR individuals, unlike a Unit-owned KPI which belongs to the Unit
+  // FOR employees, unlike a Unit-owned KPI which belongs to the Unit
   // itself. Picking one up (POST /kpi-templates/:id/pick) creates a real,
   // independent KPI owned by this person alone — not a shared figure like
   // the contribution pipeline above.
-  const myUnitId = user.role === 'individual' ? individualUnitId(org, user.scope_id) : null;
+  const myUnitId = user.role === 'employee' ? employeeUnitId(org, user.scope_id) : null;
   const pickable = myUnitId != null
     ? templates.filter((t) => t.unit_id === myUnitId && !mine.some((k) => k.template_id === t.id))
     : [];
@@ -100,11 +100,11 @@ export default function Entry() {
   );
 }
 
-// The Individual-KPI pool: every KPI genuinely created for this person's
-// own unit's individuals (see Framework.jsx's "Individuals (under a unit)"
+// The Employee-KPI pool: every KPI genuinely created for this person's
+// own unit's employees (see Framework.jsx's "Employees (under a unit)"
 // owner type / routes/kpiTemplates.js) that they haven't picked up yet.
 // Deliberately NOT "every KPI the unit owns" any more — that was the old
-// self-claim behavior, and it let an Individual volunteer into their Unit
+// self-claim behavior, and it let an Employee volunteer into their Unit
 // Head's own aggregate KPI just by browsing it. Picking one here instead
 // calls POST /kpi-templates/:id/pick, which creates a brand-new KPI owned
 // solely by this person — their own independent figure, never summed with
@@ -126,7 +126,7 @@ function TemplatesSection({ templates }) {
 
   return (
     <div className="mb-5">
-      <h2 className="font-display font-bold text-[13.5px] text-ink-secondary mb-2">KPIs for individuals in your unit</h2>
+      <h2 className="font-display font-bold text-[13.5px] text-ink-secondary mb-2">KPIs for employees in your unit</h2>
       <p className="text-[12px] text-ink-muted mb-2.5 max-w-[60ch]">
         Created for people in your unit — add one if it's part of what you do. Each one becomes your own personal KPI
         with its own figure; nothing here is shared with anyone else in your unit.

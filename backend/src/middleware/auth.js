@@ -131,8 +131,8 @@ function requirePerm(...keys) {
 
 // Requires req.user (must run after requireAuth) to hold AT LEAST ONE of the
 // listed permission keys — used where a capability can be reached through
-// more than one grant (e.g. adding an Individual via the broad
-// manage_org_units OR the narrower, scope-restricted add_individual).
+// more than one grant (e.g. adding an Employee via the broad
+// manage_org_units OR the narrower, scope-restricted add_employee).
 function requireAnyPerm(...keys) {
   return (req, res, next) => {
     if (!keys.some((k) => req.user.permissions.includes(k))) {

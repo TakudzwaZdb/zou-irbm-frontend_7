@@ -49,10 +49,40 @@ test('a valid token reaches GET /me and reports the right identity', async () =>
   assert.equal(r.body.user.role, 'ictadmin');
 });
 
-test('RBAC: a non-ictadmin role is refused the ictadmin-only user directory', async () => {
-  const { token } = await api.login('t.chikwanha@zou.ac.zw'); // individual
+test('RBAC: a role with neither manage_users nor view_users is refused the user directory', async () => {
+  const { token } = await api.login('t.chikwanha@zou.ac.zw'); // employee
   const r = await api.request('/api/users', { token });
   assert.equal(r.status, 403);
+});
+
+// CPU holds view_users by default (see utils/permissions.js's
+// DEFAULT_PERMS_BY_ROLE) — real, read-only access to the Users directory,
+// granted the same request-time way every other permission works, not a
+// role check. Every actual mutation on that page (profile edits, password/
+// MFA reset, role/scope change, Executive Owner, remove/restore) stays
+// hard-gated to the ictadmin ROLE itself (requireRole('ictadmin') on each
+// route in routes/users.js, not just a permission), so holding view_users
+// can never become edit access no matter what else is granted alongside it.
+test('RBAC: CPU can view the Users directory (view_users) but cannot act on it', async () => {
+  const { token: cpuToken } = await api.login('t.moyo@zou.ac.zw'); // cpu
+  const dir = await api.request('/api/users', { token: cpuToken });
+  assert.equal(dir.status, 200, 'view_users should reach the read-only directory');
+  assert.ok(Array.isArray(dir.body.users) && dir.body.users.length > 0);
+  const target = dir.body.users.find((u) => u.role === 'employee');
+  assert.ok(target, 'expected an Employee account to try acting on');
+
+  const removed = await api.request('/api/users/removed', { token: cpuToken });
+  assert.equal(removed.status, 200, 'the read-only removed-accounts list should also be reachable');
+
+  // Every mutating route stays refused — view_users is not manage_users.
+  const grant = await api.request(`/api/users/${target.id}/permissions/view_audit/grant`, { method: 'POST', token: cpuToken });
+  assert.equal(grant.status, 403);
+  const roleChange = await api.request(`/api/users/${target.id}/role`, { method: 'PATCH', token: cpuToken, body: { role: 'employee' } });
+  assert.equal(roleChange.status, 403);
+  const resetPw = await api.request(`/api/users/${target.id}/reset-password`, { method: 'POST', token: cpuToken });
+  assert.equal(resetPw.status, 403);
+  const remove = await api.request(`/api/users/${target.id}`, { method: 'DELETE', token: cpuToken });
+  assert.equal(remove.status, 403);
 });
 
 test('RBAC: ictadmin itself can reach the same route', async () => {
@@ -65,8 +95,8 @@ test('RBAC: ictadmin itself can reach the same route', async () => {
 test('permission grants are catalog-valid, returned immediately, and live on the next request', async () => {
   const { token: adminToken } = await api.login('l.chikomo@zou.ac.zw');
   const directory = await api.request('/api/users', { token: adminToken });
-  const target = directory.body.users.find((user) => user.role === 'individual');
-  assert.ok(target, 'expected an Individual account');
+  const target = directory.body.users.find((user) => user.role === 'employee');
+  assert.ok(target, 'expected an Employee account');
 
   const grant = await api.request(`/api/users/${target.id}/permissions/view_audit/grant`, {
     method: 'POST', token: adminToken,
@@ -97,15 +127,15 @@ test('permission grants are catalog-valid, returned immediately, and live on the
   assert.ok(!revoke.body.user.permissions.includes('view_audit'));
 });
 
-test('role changes reject an occupied post by name but allow the Individual role', async () => {
+test('role changes reject an occupied post by name but allow the Employee role', async () => {
   const { token } = await api.login('l.chikomo@zou.ac.zw');
   const directory = await api.request('/api/users', { token });
   assert.equal(directory.status, 200);
   const occupier = directory.body.users
     .filter((user) => user.role === 'unithead' && user.scope_type === 'unit')
     .sort((a, b) => a.id - b.id)[0];
-  const target = directory.body.users.find((user) => user.role === 'individual' && user.id !== occupier?.id);
-  assert.ok(occupier && target, 'expected a Unit Head and a separate Individual account');
+  const target = directory.body.users.find((user) => user.role === 'employee' && user.id !== occupier?.id);
+  assert.ok(occupier && target, 'expected a Unit Head and a separate Employee account');
 
   const occupied = await api.request(`/api/users/${target.id}/role`, {
     method: 'PATCH',
@@ -115,21 +145,21 @@ test('role changes reject an occupied post by name but allow the Individual role
   assert.equal(occupied.status, 400);
   assert.match(occupied.body.error, new RegExp(`already occupied by ${occupier.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
 
-  const missingIndividualScope = await api.request(`/api/users/${target.id}/role`, {
+  const missingEmployeeScope = await api.request(`/api/users/${target.id}/role`, {
     method: 'PATCH',
     token,
-    body: { role: 'individual', scopeType: 'individual', scopeId: null },
+    body: { role: 'employee', scopeType: 'employee', scopeId: null },
   });
-  assert.equal(missingIndividualScope.status, 400);
-  assert.match(missingIndividualScope.body.error, /scope selection is required/i);
+  assert.equal(missingEmployeeScope.status, 400);
+  assert.match(missingEmployeeScope.body.error, /scope selection is required/i);
 
-  const individual = await api.request(`/api/users/${target.id}/role`, {
+  const employee = await api.request(`/api/users/${target.id}/role`, {
     method: 'PATCH',
     token,
-    body: { role: 'individual', scopeType: 'individual', scopeId: target.scope_id },
+    body: { role: 'employee', scopeType: 'employee', scopeId: target.scope_id },
   });
-  assert.equal(individual.status, 200);
-  assert.equal(individual.body.user.role, 'individual');
+  assert.equal(employee.status, 200);
+  assert.equal(employee.body.user.role, 'employee');
 });
 
 test('sign out everywhere immediately invalidates the token that called it', async () => {

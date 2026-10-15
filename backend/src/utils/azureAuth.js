@@ -1,6 +1,6 @@
 // Thin wrapper around @azure/msal-node's confidential-client authorization
 // code flow — this is what lets an account provisioned with
-// auth_provider='azure' (see routes/org.js's POST /individuals) sign in via
+// auth_provider='azure' (see routes/org.js's POST /employees) sign in via
 // their organization's Microsoft Entra ID (Azure AD) account instead of a
 // password this app never stores for them. See AZURE_SETUP.md for how to
 // create the App Registration in the Azure Portal that supplies the three
