@@ -12,7 +12,9 @@
     "create-account": "node src/create-account.js",
     "start": "node src/server.js",
     "dev": "node src/server.js",
+    "build": "node --check src/server.js",
     "test": "node --test test/*.test.js",
+
     "backup": "node src/backup.js"
   },
   "dependencies": {
