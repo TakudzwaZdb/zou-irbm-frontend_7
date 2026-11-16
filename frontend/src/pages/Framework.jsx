@@ -2,6 +2,7 @@ import { Children, cloneElement, useEffect, useId, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
+import { employeePosition, headPosition } from '../lib/orgDisplay.js';
 
 // Read-only org chart + the structural-change proposal log. Every
 // creation/edit/deletion action that used to live here — KPIs, Programmes/
@@ -95,7 +96,7 @@ function ProposalsSection({ canPropose }) {
                 {p.scope === 'programme' ? 'Programme-level — routed to Ministry/PM&E' : 'Sub-programme/Unit-level — ZOU checkpoint'}
               </span>
               <span className="flex-1 text-[12.6px]">{p.text}</span>
-              <span className="text-[11px] text-ink-muted whitespace-nowrap">{p.created_by_name || 'System'} · {p.created_at}</span>
+              <span className="text-[11px] text-ink-muted whitespace-nowrap">{p.created_at}</span>
             </div>
           ))}
         </div>
@@ -111,20 +112,20 @@ function OrgTree({ org }) {
         const subs = org.subs.filter((s) => s.programme_id === p.id);
         return (
           <div key={p.id} className="card">
-            <div><b>{p.name}</b> <span className="text-ink-muted text-[12px]">Head: {p.head || '—'}</span></div>
+            <div><b>{p.name}</b> {headPosition(p) && <span className="text-ink-muted text-[12px]">Head: {headPosition(p)}</span>}</div>
             {subs.map((s) => {
               const units = org.units.filter((u) => u.sub_id === s.id);
               return (
                 <div key={s.id} className="pl-2 mt-1.5 text-[12.8px]">
-                  ◆ <b>{s.name}</b> <span className="text-ink-muted">(Head: {s.head || '—'})</span>
+                  ◆ <b>{s.name}</b> {headPosition(s) && <span className="text-ink-muted">(Head: {headPosition(s)})</span>}
                   {units.map((u) => {
                     const inds = org.employees.filter((i) => i.unit_id === u.id);
                     return (
                       <div key={u.id} className="pl-5 mt-1 text-[12.8px]">
-                        ▸ <b>{u.name}</b> <span className="text-ink-muted">({u.kind} · Head: {u.head || '—'})</span>
+                        ▸ <b>{u.name}</b> <span className="text-ink-muted">({u.kind}{headPosition(u) ? ` · Head: ${headPosition(u)}` : ''})</span>
                         {inds.map((i) => (
                           <div key={i.id} className="pl-8 text-ink-muted text-[12px]">
-                            • {i.name} — {i.role_title || ''}
+                            • {employeePosition(i)}
                           </div>
                         ))}
                       </div>

@@ -1,0 +1,15 @@
+module.exports = [
+  { ownerName: 'Corporate Planning and Administration', name: 'Contracts Signed', type: 'Output', measure: 'contracts', baseline: 0, target: 7 },
+  { ownerName: 'Corporate Planning and Administration', name: 'Contracts Evaluated', type: 'Output', measure: 'evaluations', baseline: 0, target: 20 },
+  { ownerName: 'Corporate Communications and Marketing', name: 'Client Satisfaction Survey', type: 'Outcome', measure: '%', baseline: 0, target: 86 },
+  { ownerName: 'Human Resources Management', name: 'Employee Satisfaction Level', type: 'Outcome', measure: '%', baseline: 0, target: 63 },
+  { ownerName: 'Enterprise Development', name: 'Change of revenue generated in commercialization', type: 'Outcome', measure: '%', baseline: 0, target: 3 },
+  { ownerName: 'Business Development', name: '% of Rural Based Innovation Projects', type: 'Output', measure: '%', baseline: 0, target: 33 },
+  { ownerName: 'Enterprise Development', name: '% of Rural Based Start ups', type: 'Output', measure: '%', baseline: 0, target: 33 },
+  { ownerName: 'Teaching and Learning', name: 'New Academic programmes developed', type: 'Output', measure: 'programmes', baseline: 0, target: 28 },
+  { ownerName: 'Risk Management', name: 'Risk Mitigation Strategies Implemented', type: 'Output', measure: 'strategies', baseline: 0, target: 3 },
+  { ownerName: 'Works and Estates', name: 'Disposal of idle Assets', type: 'Output', measure: '%', baseline: 0, target: 100 },
+  { ownerName: 'Corporate Planning and Administration', name: 'Strategic Plan Reviewed', type: 'Output', measure: 'reviews', baseline: 0, target: 1 },
+  { ownerName: 'Academic Registry', name: 'Annual General Meeting Conducted', type: 'Output', measure: 'meetings', baseline: 0, target: 1 },
+  { ownerName: 'Finance and Administration', name: 'Audited Financial Statements', type: 'Output', measure: 'statements', baseline: 0, target: 3 },
+];

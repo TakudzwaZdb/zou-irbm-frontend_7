@@ -795,7 +795,7 @@ export default function Permissions() {
         <div>
 
           <h1 className="text-xl font-bold mb-0.5">
-            Permissions &amp; Roles
+            Roles and Permissions
           </h1>
 
           <p className="text-[13px] text-ink-secondary max-w-[62ch]">

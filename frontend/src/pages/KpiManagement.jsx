@@ -161,8 +161,8 @@ function RecentlyRemoved() {
 // people in that unit can adopt it) for the same intent.
 // Escape-to-close for the Create KPI popup below — same pattern Permissions.jsx
 // uses for its role-permissions dialog, kept local here since KpiManagement has
-// no shared Modal component to pull it from (see Messages.jsx's compose dialog
-// for the backdrop-click/stopPropagation half of the same convention).
+// no shared Modal component to pull it from; backdrop clicks are stopped
+// locally so interacting with the form doesn't dismiss it.
 function useEscapeToClose(onClose) {
   useEffect(() => {
     function onKey(e) { if (e.key === 'Escape') onClose(); }

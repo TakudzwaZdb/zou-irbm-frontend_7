@@ -4,8 +4,9 @@ import {
   subsOfProgramme, unitsOfSub, employeesOfUnit,
   reachableOrgSlice, availableReportKinds, GLOBAL_REPORT_ROLES, defaultNodeForRole,
 } from '../lib/scope.js';
+import { employeePosition } from '../lib/orgDisplay.js';
 
-const KIND_LABEL = { overall: 'Overall', programme: 'Programme', sub: 'Sub-programme', unit: 'Unit', employee: 'Staff member' };
+const KIND_LABEL = { overall: 'Overall', programme: 'Programme', sub: 'Sub-programme', unit: 'Unit', employee: 'Employee designation' };
 
 function optionsFor(kind, slice) {
   if (kind === 'programme') return slice.programmes;
@@ -18,9 +19,21 @@ function optionsFor(kind, slice) {
 // Campus — see OrganisationBuilder.jsx's CREATE_UNIT_TYPES) that's often
 // the more meaningful word for what the entity actually is, so the picker
 // shows it rather than a bare name — "Department: Finance", not "Finance".
-function optionLabel(kind, entity) {
+function optionLabel(kind, entity, org) {
   if (kind === 'unit') return `${entity.kind || 'Unit'}: ${entity.name}`;
+  if (kind === 'employee') {
+    const unit = org.units.find((item) => item.id === entity.unit_id);
+    return `${employeePosition(entity)} — ${unit?.name || 'Unassigned unit'}`;
+  }
   return entity.name;
+}
+
+function reportOwnerLabel(org, kpi) {
+  if (kpi.owner_type === 'employee') {
+    const employee = org.employees.find((item) => item.id === kpi.owner_id);
+    return employee ? employeePosition(employee) : 'Employee';
+  }
+  return ownerName(org, kpi);
 }
 
 // A single, focused, downloadable report for exactly one entity — a
@@ -39,16 +52,23 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
   const slice = reachableOrgSlice(org, root);
   const [kind, setKind] = useState(kinds[0] || 'overall');
   const options = kind === 'overall' ? [] : optionsFor(kind, slice);
-  const [entityId, setEntityId] = useState(options[0]?.id ?? null);
+  const [designationFilter, setDesignationFilter] = useState('');
+  const designationOptions = [...new Set(slice.employees.map(employeePosition))].sort((a, b) => a.localeCompare(b));
+  const entityOptions = kind === 'employee' && designationFilter
+    ? options.filter((item) => employeePosition(item) === designationFilter)
+    : options;
+  const [entityId, setEntityId] = useState(entityOptions[0]?.id ?? null);
   const [pdfBusy, setPdfBusy] = useState(false);
 
   // Re-pick a default entity every time the level changes — the previous
   // id almost never exists in the new level's option list.
   useEffect(() => {
-    const opts = kind === 'overall' ? [] : optionsFor(kind, slice);
+    const opts = kind === 'overall' ? [] : optionsFor(kind, slice).filter((item) => (
+      kind !== 'employee' || !designationFilter || employeePosition(item) === designationFilter
+    ));
     setEntityId(opts[0]?.id ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind]);
+  }, [kind, designationFilter]);
 
   if (kinds.length === 0) {
     return (
@@ -62,10 +82,10 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
     );
   }
 
-  const entity = kind === 'overall' ? null : options.find((o) => o.id === entityId) || null;
+  const entity = kind === 'overall' ? null : entityOptions.find((o) => o.id === entityId) || null;
   const entityName = kind === 'overall'
     ? (isGlobal ? 'Overall — university-wide' : 'Overall — my jurisdiction')
-    : (entity ? optionLabel(kind, entity) : null);
+    : (entity ? optionLabel(kind, entity, org) : null);
   const ready = kind === 'overall' || !!entity;
 
   const kpiList = kind === 'overall' ? kpis : (entity ? nodeOwnKpis(org, kpis, kind, entity.id) : []);
@@ -87,7 +107,7 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
     children = unitsOfSub(org, entity.id).map((u) => ({ id: u.id, name: `${u.kind || 'Unit'}: ${u.name}`, ...performanceRollup(nodeOwnKpis(org, kpis, 'unit', u.id), perfValues, settings) }));
   } else if (kind === 'unit' && entity && user.role !== 'employee') {
     childKind = 'employee';
-    children = employeesOfUnit(org, entity.id).map((e) => ({ id: e.id, name: e.name, ...performanceRollup(nodeOwnKpis(org, kpis, 'employee', e.id), perfValues, settings) }));
+    children = employeesOfUnit(org, entity.id).map((e) => ({ id: e.id, name: employeePosition(e), ...performanceRollup(nodeOwnKpis(org, kpis, 'employee', e.id), perfValues, settings) }));
   }
 
   function ragCls(pct) {
@@ -102,7 +122,7 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
   function downloadCsv() {
     const rows = [['KPI', 'Owner', 'Owner tier', 'Baseline', 'Target', 'Progress %', 'Pace flag']];
     variance.items.forEach(({ kpi, actualPct, flag }) => {
-      rows.push([kpi.name, ownerName(org, kpi), ownerKindLabel(kpi), kpi.baseline, kpi.target, actualPct ?? '', flag]);
+      rows.push([kpi.name, reportOwnerLabel(org, kpi), ownerKindLabel(kpi), kpi.baseline, kpi.target, actualPct ?? '', flag]);
     });
     const csv = rows.map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -126,12 +146,16 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
     }
     const doc = new jsPDF({ unit: 'pt', format: 'a4' });
     const marginX = 40;
-    let y = 46;
+    const contentWidth = doc.internal.pageSize.getWidth() - marginX * 2;
+    let y = 104;
+    doc.setFillColor(25, 34, 48);
+    doc.roundedRect(marginX, 26, contentWidth, 62, 8, 8, 'F');
+    doc.setTextColor(255, 255, 255);
     doc.setFont('helvetica', 'bold'); doc.setFontSize(15);
-    doc.text('ZOU Strategic Plan Monitor — Performance Report', marginX, y); y += 18;
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(10.5);
-    doc.text(`${KIND_LABEL[kind]} · ${entityName} · ${periodLabel} · Generated ${new Date().toLocaleString()}`, marginX, y);
-    y += 22;
+    doc.text('ZOU Strategic Plan Monitor', marginX + 14, 50);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5);
+    doc.text(`${KIND_LABEL[kind]} · ${entityName} · ${periodLabel} · ${new Date().toLocaleString()}`, marginX + 14, 70, { maxWidth: contentWidth - 28 });
+    doc.setTextColor(0, 0, 0);
 
     doc.setFont('helvetica', 'bold'); doc.setFontSize(12);
     doc.text('Summary', marginX, y); y += 8;
@@ -140,8 +164,8 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
       margin: { left: marginX, right: marginX },
       head: [['KPIs', 'Avg. progress', 'On track', 'At risk', 'Off track', 'No data']],
       body: [[String(rollup.count), rollup.avgPct != null ? `${rollup.avgPct}%` : '—', rollup.counts.green, rollup.counts.amber, rollup.counts.red, rollup.counts.none]],
-      styles: { fontSize: 9, cellPadding: 4 },
-      headStyles: { fillColor: [21, 20, 15], textColor: 255 },
+      styles: { fontSize: 9, cellPadding: 4, lineColor: [224, 226, 230], lineWidth: 0.3 },
+      headStyles: { fillColor: [25, 34, 48], textColor: 255 },
     });
     y = doc.lastAutoTable.finalY + 22;
 
@@ -154,8 +178,9 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
         margin: { left: marginX, right: marginX },
         head: [[KIND_LABEL[childKind], 'KPIs', 'Avg. progress', 'On track', 'At risk', 'Off track', 'No data']],
         body: children.map((c) => [c.name, c.count, c.avgPct != null ? `${c.avgPct}%` : '—', c.counts.green, c.counts.amber, c.counts.red, c.counts.none]),
-        styles: { fontSize: 8.5, cellPadding: 4 },
-        headStyles: { fillColor: [21, 20, 15], textColor: 255 },
+        styles: { fontSize: 8.5, cellPadding: 4, lineColor: [224, 226, 230], lineWidth: 0.3 },
+        headStyles: { fillColor: [25, 34, 48], textColor: 255 },
+        alternateRowStyles: { fillColor: [248, 249, 251] },
       });
       y = doc.lastAutoTable.finalY + 22;
     }
@@ -169,12 +194,13 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
         margin: { left: marginX, right: marginX },
         head: [['KPI', 'Owner', 'Baseline', 'Target', 'Progress %', 'Pace']],
         body: variance.items.map(({ kpi, actualPct, flag }) => [
-          kpi.name, `${ownerName(org, kpi)} (${ownerKindLabel(kpi)})`, kpi.baseline, kpi.target,
+          kpi.name, `${reportOwnerLabel(org, kpi)} (${ownerKindLabel(kpi)})`, kpi.baseline, kpi.target,
           actualPct != null ? `${actualPct}%` : '—',
           flag === 'attention' ? 'Behind pace' : flag === 'ahead' ? 'Ahead of pace' : flag === 'on-pace' ? 'On pace' : '—',
         ]),
-        styles: { fontSize: 8.5, cellPadding: 4 },
-        headStyles: { fillColor: [21, 20, 15], textColor: 255 },
+        styles: { fontSize: 8.5, cellPadding: 4, lineColor: [224, 226, 230], lineWidth: 0.3 },
+        headStyles: { fillColor: [25, 34, 48], textColor: 255 },
+        alternateRowStyles: { fillColor: [248, 249, 251] },
       });
     } else {
       doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5);
@@ -197,7 +223,7 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
         <div>
           <h2 className="font-display font-bold text-[14.5px] mb-0.5">Generate a focused report</h2>
           <p className="text-[12px] text-ink-muted max-w-[62ch]">
-            One entity at a time — a single staff member, Unit/Department/Faculty/Region, Sub-programme, Programme,
+            One entity at a time — a single designation, Unit/Department/Faculty/Region, Sub-programme, Programme,
             or your whole jurisdiction — at the period already selected above ({periodLabel}).
           </p>
         </div>
@@ -211,10 +237,16 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
         <select className="field-input py-1.5 w-auto" aria-label="Report level" value={kind} onChange={(e) => setKind(e.target.value)}>
           {kinds.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
         </select>
+        {kind === 'employee' && (
+          <select className="field-input py-1.5 w-auto max-w-[240px]" aria-label="Filter by designation" value={designationFilter} onChange={(e) => setDesignationFilter(e.target.value)}>
+            <option value="">All designations</option>
+            {designationOptions.map((designation) => <option key={designation} value={designation}>{designation}</option>)}
+          </select>
+        )}
         {kind !== 'overall' && (
-          <select className="field-input py-1.5 w-auto max-w-[280px]" aria-label={KIND_LABEL[kind]} value={entityId ?? ''} onChange={(e) => setEntityId(Number(e.target.value))}>
-            {options.length === 0 && <option value="">None available</option>}
-            {options.map((o) => <option key={o.id} value={o.id}>{optionLabel(kind, o)}</option>)}
+          <select className="field-input py-1.5 w-auto max-w-[340px]" aria-label={KIND_LABEL[kind]} value={entityId ?? ''} onChange={(e) => setEntityId(Number(e.target.value))}>
+            {entityOptions.length === 0 && <option value="">None available</option>}
+            {entityOptions.map((o) => <option key={o.id} value={o.id}>{optionLabel(kind, o, org)}</option>)}
           </select>
         )}
       </div>
@@ -234,21 +266,21 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
           </div>
 
           {children.length > 0 && (
-            <div className="rounded-lg border border-line overflow-x-auto mb-3">
-              <table className="w-full text-[12px]">
-                <thead>
-                  <tr className="bg-sunken text-[10.5px] uppercase tracking-wide text-ink-muted font-bold">
+            <div className="rounded-lg border border-line shadow-sm overflow-x-auto mb-3">
+              <table className="w-full min-w-[560px] text-[12.8px]">
+                <thead className="sticky top-0 z-10 shadow-sm">
+                  <tr className="bg-sunken text-[11px] uppercase tracking-wide text-ink-secondary font-bold">
                     <th className="px-3 py-2 text-left">{KIND_LABEL[childKind]}</th>
-                    <th className="px-3 py-2 text-left">KPIs</th>
-                    <th className="px-3 py-2 text-left">Avg. progress</th>
+                    <th className="px-3 py-2.5 text-left">KPIs</th>
+                    <th className="px-3 py-2.5 text-left">Avg. progress</th>
                   </tr>
                 </thead>
                 <tbody>
                   {children.map((c) => (
-                    <tr key={c.id} className="border-t border-line">
-                      <td className="px-3 py-2">{c.name}</td>
-                      <td className="px-3 py-2 tabular-nums">{c.count}</td>
-                      <td className="px-3 py-2 tabular-nums">{c.avgPct != null ? `${c.avgPct}%` : '—'}</td>
+                    <tr key={c.id} className="border-t border-line hover:bg-sunken/30">
+                      <td className="px-3 py-2.5 font-medium">{c.name}</td>
+                      <td className="px-3 py-2.5 tabular-nums">{c.count}</td>
+                      <td className="px-3 py-2.5 tabular-nums">{c.avgPct != null ? `${c.avgPct}%` : '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -256,10 +288,10 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
             </div>
           )}
 
-          <div className="rounded-lg border border-line overflow-x-auto max-h-[40vh] overflow-y-auto">
-            <table className="w-full text-[12px]">
-              <thead className="sticky top-0">
-                <tr className="bg-sunken text-[10.5px] uppercase tracking-wide text-ink-muted font-bold">
+          <div className="rounded-lg border border-line shadow-sm overflow-x-auto max-h-[40vh] overflow-y-auto">
+            <table className="w-full min-w-[760px] text-[12.8px]">
+              <thead className="sticky top-0 z-10 shadow-sm">
+                <tr className="bg-sunken text-[11px] uppercase tracking-wide text-ink-secondary font-bold">
                   <th className="px-3 py-2 text-left">KPI</th>
                   <th className="px-3 py-2 text-left">Owner</th>
                   <th className="px-3 py-2 text-left">Progress</th>
@@ -271,11 +303,11 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
                   <tr><td className="px-3 py-3 text-ink-muted" colSpan={4}>No KPIs at this level.</td></tr>
                 )}
                 {variance.items.map(({ kpi, actualPct, flag }) => (
-                  <tr key={kpi.id} className="border-t border-line">
-                    <td className="px-3 py-2">{kpi.name}</td>
-                    <td className="px-3 py-2 text-ink-secondary">{ownerName(org, kpi)} <span className="text-ink-muted">({ownerKindLabel(kpi)})</span></td>
-                    <td className="px-3 py-2"><span className={`chip ${ragCls(actualPct)}`}>{actualPct != null ? `${actualPct}%` : 'No data'}</span></td>
-                    <td className="px-3 py-2">
+                  <tr key={kpi.id} className="border-t border-line hover:bg-sunken/30">
+                    <td className="px-3 py-2.5 font-medium">{kpi.name}</td>
+                    <td className="px-3 py-2.5 text-ink-secondary">{reportOwnerLabel(org, kpi)} <span className="text-ink-muted">({ownerKindLabel(kpi)})</span></td>
+                    <td className="px-3 py-2.5"><span className={`chip ${ragCls(actualPct)}`}>{actualPct != null ? `${actualPct}%` : 'No data'}</span></td>
+                    <td className="px-3 py-2.5">
                       {flag === 'attention' && <span className="chip chip-rag-red">Behind pace</span>}
                       {flag === 'ahead' && <span className="chip chip-rag-green">Ahead of pace</span>}
                       {flag === 'on-pace' && <span className="chip chip-rag-amber">On pace</span>}

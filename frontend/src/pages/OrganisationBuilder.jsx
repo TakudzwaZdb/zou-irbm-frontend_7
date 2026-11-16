@@ -4,6 +4,7 @@ import { useToast } from '../context/ToastContext.jsx';
 import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
 import { byId } from '../lib/scope.js';
+import { employeePosition, headPosition } from '../lib/orgDisplay.js';
 
 // Organisation Setup — the one place creation AND updating of the org
 // structure happens: Programmes, Sub-programmes, Units/Departments/
@@ -166,7 +167,10 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
   const rows = org[entityKey === 'sub' ? 'subs' : `${entityKey}s`] || [];
   const filteredRows = rows.filter((row) => {
     const parent = parentLabel(row);
-    const values = [row.name, row.head, row.role_title, row.kind, row.unit_label, parent];
+    const values = [
+      entityKey === 'employee' ? employeePosition(row) : row.name,
+      headPosition(row), row.role_title, row.kind, row.unit_label, parent,
+    ];
     return values.some((value) => String(value || '').toLowerCase().includes(search.trim().toLowerCase()));
   });
   const eligibleUnits = canManage
@@ -195,9 +199,9 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
   // for one, but the guard makes that explicit rather than implicit.
   function startEdit(row) {
     if (!canEdit || entityKey === 'employee') return;
-    if (entityKey === 'programme') setDraft({ name: row.name, head: row.head });
-    if (entityKey === 'sub') setDraft({ programmeId: row.programme_id, name: row.name, head: row.head, unitLabel: row.unit_label || 'Unit' });
-    if (entityKey === 'unit') setDraft({ subId: row.sub_id, name: row.name, kind: row.kind || 'Unit', head: row.head });
+    if (entityKey === 'programme') setDraft({ name: row.name });
+    if (entityKey === 'sub') setDraft({ programmeId: row.programme_id, name: row.name, unitLabel: row.unit_label || 'Unit' });
+    if (entityKey === 'unit') setDraft({ subId: row.sub_id, name: row.name, kind: row.kind || 'Unit' });
     setEditingId(row.id);
   }
 
@@ -215,10 +219,10 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
       const endpoint = entityKey === 'programme' ? '/org/programmes'
         : entityKey === 'sub' ? '/org/subs' : '/org/units';
       const body = entityKey === 'unit'
-        ? { subId: Number(draft.subId), name: draft.name, kind: draft.kind, head: draft.head }
+        ? { subId: Number(draft.subId), name: draft.name, kind: draft.kind }
         : entityKey === 'sub'
-          ? { programmeId: Number(draft.programmeId), name: draft.name, head: draft.head, unitLabel: draft.unitLabel }
-          : { name: draft.name, head: draft.head };
+          ? { programmeId: Number(draft.programmeId), name: draft.name, unitLabel: draft.unitLabel }
+          : { name: draft.name };
       await api(`${endpoint}/${row.id}`, { method: 'PATCH', body });
       toast(`"${draft.name}" updated.`);
       cancelEdit();
@@ -229,11 +233,17 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
 
   async function remove(row) {
     if (!canDelete) return;
-    if (!(await confirm({ title: `Remove "${row.name}"?`, message: 'This is recoverable from Recently Removed.', confirmLabel: 'Remove', tone: 'danger' }))) return;
+    const label = entityKey === 'employee' ? employeePosition(row) : row.name;
+    if (!(await confirm({
+      title: entityKey === 'employee' ? `Remove employee (${label})?` : `Remove "${label}"?`,
+      message: 'This is recoverable from Recently Removed.',
+      confirmLabel: 'Remove',
+      tone: 'danger',
+    }))) return;
     setBusyId(row.id);
     try {
       await api(`/org/${entityKey === 'sub' ? 'subs' : `${entityKey}s`}/${row.id}`, { method: 'DELETE' });
-      toast(`"${row.name}" removed.`);
+      toast(entityKey === 'employee' ? 'Employee removed.' : `"${label}" removed.`);
       await reloadCore();
     } catch (err) { toast(err.message, 'err'); }
     finally { setBusyId(null); }
@@ -241,11 +251,6 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
 
   function updateDraft(key, value) { setDraft((current) => ({ ...current, [key]: value })); }
 
-  // `head` is optional/legacy now (see routes/org.js's comment above POST
-  // /programmes) — a fresh Programme/Sub-programme/Unit has none at all, so
-  // this can't be `required` unconditionally the way it used to be, or
-  // renaming one that has no head would be blocked until someone typed one
-  // in just to satisfy the form.
   function input(key, type = 'text', required = true) {
     return <input required={required} className="field-input min-w-32" type={type} value={draft[key] ?? ''} onChange={(e) => updateDraft(key, e.target.value)} />;
   }
@@ -261,11 +266,11 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
     const values = isEditing ? draft : row;
     return (
       <>
-        <td className="px-3 py-2.5 font-semibold">{isEditing ? input('name') : row.name}</td>
+        <td className="px-3 py-2.5 font-semibold">{entityKey === 'employee' ? 'Employee' : isEditing ? input('name') : row.name}</td>
         <td className="px-3 py-2.5">{isEditing && entityKey !== 'programme' ? (
           entityKey === 'sub' ? select('programmeId', org.programmes) : entityKey === 'unit' ? select('subId', org.subs) : select('unitId', eligibleUnits)
         ) : parentLabel(row)}</td>
-        <td className="px-3 py-2.5">{isEditing ? input('head', 'text', false) : (values.head || values.role_title || '—')}</td>
+        <td className="px-3 py-2.5">{entityKey === 'employee' ? employeePosition(row) : headPosition(values, '—')}</td>
         <td className="px-3 py-2.5">{isEditing && entityKey === 'unit' ? input('kind') : (row.kind || '—')}</td>
         <td className="px-3 py-2.5 whitespace-nowrap">
           {isEditing ? (
@@ -298,11 +303,11 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
         </div>
         <div className="mb-3">
           <label className="field-label block mb-1">Search organisation records</label>
-          <input type="search" className="field-input w-full" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name, parent, head, role or type…" aria-label="Search organisation records" />
+          <input type="search" className="field-input w-full" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by organisation, parent, position or type…" aria-label="Search organisation records" />
         </div>
         <div className="overflow-x-auto max-h-[65vh] overflow-y-auto rounded-lg border border-line">
           <table className="w-full text-left text-[12px]">
-            <thead className="bg-sunken border-b border-line sticky top-0 z-10"><tr><th className="px-3 py-2 font-bold">Name</th><th className="px-3 py-2 font-bold">Parent / Unit</th><th className="px-3 py-2 font-bold">Head / Role</th><th className="px-3 py-2 font-bold">Type</th><th className="px-3 py-2 font-bold">Actions</th></tr></thead>
+            <thead className="bg-sunken border-b border-line sticky top-0 z-10"><tr><th className="px-3 py-2 font-bold">Name / Staff</th><th className="px-3 py-2 font-bold">Parent / Unit</th><th className="px-3 py-2 font-bold">Head / Role</th><th className="px-3 py-2 font-bold">Type</th><th className="px-3 py-2 font-bold">Actions</th></tr></thead>
             <tbody>{filteredRows.length === 0 ? <tr><td colSpan="5" className="px-3 py-6 text-center text-ink-muted">{rows.length === 0 ? `No ${entities.find((entity) => entity.key === entityKey)?.label.toLowerCase()} yet.` : 'No records match your search.'}</td></tr> : filteredRows.map((row) => <tr key={row.id} className="border-b border-line last:border-b-0 hover:bg-sunken/60">{cells(row)}</tr>)}</tbody>
           </table>
         </div>
@@ -350,7 +355,7 @@ function AddAccountModal({ onClose }) {
     setBusy(true);
     try {
       const result = await api('/org/employees', { method: 'POST', body: { name, email } });
-      toast(`"${name}" added. Account: ${result.account.email} (${result.account.note})`);
+      toast(`Employee account added. ${result.account.email} (${result.account.note})`);
       await reloadCore();
       onClose();
     } catch (err) { toast(err.message, 'err'); }
@@ -370,7 +375,7 @@ function AddAccountModal({ onClose }) {
           <p className="text-[11.5px] text-ink-muted max-w-[48ch]">
             No role or department is chosen here — this account starts out bare and read-only, signing in with
             "Sign in with Microsoft" using this exact email address. Give it a real role from the
-            Permissions &amp; Roles page's "Assign Roles to Users" once it exists.
+            Roles and Permissions page's "Assign Roles to Users" once it exists.
           </p>
           <div className="flex gap-2">
             <button className="btn btn-primary btn-sm" disabled={busy || !name.trim() || !email.trim()}>{busy ? 'Adding…' : 'Add account'}</button>
@@ -464,7 +469,7 @@ function CreateEntityModal({ entityKey, org, onClose }) {
           )}
           <Field label="Name"><input required autoFocus className="field-input" value={name} onChange={(e) => setName(e.target.value)} /></Field>
           <p className="text-[11.5px] text-ink-muted max-w-[48ch]">
-            No Head is chosen here — appoint one afterward from the Permissions &amp; Roles page's "Assign role &amp;
+            No Head is chosen here — appoint one afterward from the Roles and Permissions page's "Assign role &amp;
             scope", scoped to this {label.toLowerCase()} once it exists.
           </p>
           <div className="flex gap-2">

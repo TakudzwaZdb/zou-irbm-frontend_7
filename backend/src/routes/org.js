@@ -154,9 +154,27 @@ function describeRemoved(totals) {
 // non-sensitive enough that serving the full tree keeps this reference
 // implementation simple — a larger deployment would filter server-side too.
 router.get('/', async (req, res) => {
-  const programmes = await db.prepare('SELECT * FROM programmes WHERE deleted_at IS NULL ORDER BY id').all();
-  const subs = await db.prepare('SELECT * FROM subs WHERE deleted_at IS NULL ORDER BY id').all();
-  const units = await db.prepare('SELECT * FROM units WHERE deleted_at IS NULL ORDER BY id').all();
+  const programmes = await db.prepare(`
+    SELECT p.*, u.title AS head_title
+    FROM programmes p
+    LEFT JOIN users u ON u.id = p.head_user_id AND u.deleted_at IS NULL
+    WHERE p.deleted_at IS NULL
+    ORDER BY p.id
+  `).all();
+  const subs = await db.prepare(`
+    SELECT s.*, u.title AS head_title
+    FROM subs s
+    LEFT JOIN users u ON u.id = s.rep_user_id AND u.deleted_at IS NULL
+    WHERE s.deleted_at IS NULL
+    ORDER BY s.id
+  `).all();
+  const units = await db.prepare(`
+    SELECT n.*, u.title AS head_title
+    FROM units n
+    LEFT JOIN users u ON u.id = n.head_user_id AND u.deleted_at IS NULL
+    WHERE n.deleted_at IS NULL
+    ORDER BY n.id
+  `).all();
   const employees = await db.prepare('SELECT * FROM employees WHERE deleted_at IS NULL ORDER BY id').all();
   // Whoever ICT admin has designated as Executive Owner (see users.
   // is_executive_owner / routes/users.js's PATCH /:id/executive-owner) —

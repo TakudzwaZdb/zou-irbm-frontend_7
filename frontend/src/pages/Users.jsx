@@ -246,7 +246,7 @@ export default function Users() {
               <>
                 Every account in the system, with its full profile. Only ICT System Administrators can update a
                 profile, reset a forgotten password, or remove an account. Role and organisation scope are both
-                shown here read-only — assign or change either one from the Permissions &amp; Roles page's bulk
+                shown here read-only — assign or change either one from the Roles and Permissions page's bulk
                 "Assign Roles to Users" (university-wide roles) or a row's own "Assign role &amp; scope" (Unit Head,
                 Sub-programme Rep, Programme Head, Employee).
               </>
@@ -497,7 +497,7 @@ function UserManagementDialog({
             </div>
           </div>
           <p className="text-[11px] text-ink-muted">
-            Role and organisation scope are both assigned from the Permissions &amp; Roles page — bulk "Assign
+            Role and organisation scope are both assigned from the Roles and Permissions page — bulk "Assign
             Roles to Users" for a university-wide role, or that row's own "Assign role &amp; scope" for Unit Head,
             Sub-programme Rep, Programme Head, or Employee — never from here.
           </p>

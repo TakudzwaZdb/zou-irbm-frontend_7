@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db');
-const { requireAuth, requirePerm, requireAnyPerm } = require('../middleware/auth');
+const { requireAuth, requirePerm, requireAnyPerm, requireRole } = require('../middleware/auth');
 const { canReadKpi } = require('../utils/scope');
 const { checkSubmissionWindow, wasLate, windowMessage, nowSqlString } = require('../utils/submissionWindow');
 
@@ -81,14 +81,9 @@ function isUnitHeadOwner(user, kpi) {
 // actually computed (now at the Programme Head's approval, for a sub-owned
 // KPI, exactly like every other tier's one true approval).
 async function isApprover(user, kpi) {
-  if (kpi.owner_type === 'employee') {
-    return user.role === 'unithead' && user.scope_id === await employeeUnitId(kpi.owner_id);
-  }
-  if (kpi.owner_type === 'unit') {
-    return user.role === 'rep' && user.scope_id === await unitSubId(kpi.owner_id);
-  }
-  const programmeId = (await db.prepare('SELECT programme_id FROM subs WHERE id = ?').get(kpi.owner_id))?.programme_id;
-  return user.role === 'programme' && programmeId != null && user.scope_id === programmeId;
+  // Heads contribute figures in their own scope. Corporate Planning Unit is
+  // the single institutional authority for review and approval.
+  return user.role === 'cpu';
 }
 
 // Is this KPI within a role-scoped user's jurisdiction at all (for edit_targets,
@@ -648,9 +643,8 @@ router.post('/:id/contribution/submit', requirePerm('data_entry'), async (req, r
 // approval" step. Approving recomputes the KPI's own automated total (see
 // recomputeUnitTotal) so it always reflects the real sum of what's actually
 // been approved so far, never a stale or partial number.
-router.post('/:id/contribution/:employeeId/approve', requirePerm('approve_own_tier'), async (req, res) => {
+router.post('/:id/contribution/:employeeId/approve', requireRole('cpu'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
-  if (!isUnitHeadOwner(req.user, kpi)) return res.status(403).json({ error: 'You are not the approver for this contribution.' });
   const { year, month } = req.body || {};
   const row = await db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND employee_id = ? AND year = ? AND month = ?').get(kpi.id, req.params.employeeId, year, month);
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that period.' });
@@ -663,9 +657,8 @@ router.post('/:id/contribution/:employeeId/approve', requirePerm('approve_own_ti
   res.json({ ok: true });
 });
 
-router.post('/:id/contribution/:employeeId/return', requirePerm('approve_own_tier'), async (req, res) => {
+router.post('/:id/contribution/:employeeId/return', requireRole('cpu'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
-  if (!isUnitHeadOwner(req.user, kpi)) return res.status(403).json({ error: 'You are not the approver for this contribution.' });
   const { year, month, comment } = req.body || {};
   if (!comment) return res.status(400).json({ error: 'A reason is required when returning a submission.' });
   const row = await db.prepare('SELECT * FROM kpi_contributions WHERE kpi_id = ? AND employee_id = ? AND year = ? AND month = ?').get(kpi.id, req.params.employeeId, year, month);
@@ -890,7 +883,7 @@ router.post('/:id/submit', requirePerm('data_entry'), async (req, res) => {
 // KPI's own row skips this — recomputeUnitTotal already applied the exact
 // same rule the moment its contributions were approved, so re-deriving it
 // here from a null entered_value would wipe out a correct number.
-router.post('/:id/approve', requirePerm('approve_own_tier'), async (req, res) => {
+router.post('/:id/approve', requireRole('cpu'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
   const { year, month } = req.body || {};
   const row = await db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month);
@@ -932,7 +925,7 @@ router.post('/:id/approve', requirePerm('approve_own_tier'), async (req, res) =>
   res.json({ ok: true });
 });
 
-router.post('/:id/return', requirePerm('approve_own_tier'), async (req, res) => {
+router.post('/:id/return', requireRole('cpu'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
   const { year, month, comment } = req.body || {};
   if (!comment) return res.status(400).json({ error: 'A reason is required when returning a submission.' });

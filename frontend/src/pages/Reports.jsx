@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext.jsx';
 import { api } from '../lib/api.js';
 import { nodeOwnKpis, performanceRollup, varianceRollup, ownerName, employeesOfUnit, VARIANCE_ATTENTION_THRESHOLD, VARIANCE_AHEAD_THRESHOLD, valueStatus, MONTHS } from '../lib/scope.js';
 import { labelFor } from '../lib/period.js';
+import { employeePosition } from '../lib/orgDisplay.js';
 import RagByProgrammeChart from '../components/RagByProgrammeChart.jsx';
 import RagPieChart from '../components/RagPieChart.jsx';
 import VarianceChart from '../components/VarianceChart.jsx';
@@ -21,6 +22,7 @@ export default function Reports() {
   // include their own row alongside others in their unit.
   const canSeeStaffRows = user.role !== 'employee';
   const [showStaff, setShowStaff] = useState(false);
+  const [designationFilter, setDesignationFilter] = useState('');
   // jsPDF + jspdf-autotable are a genuinely heavy pair (see the "before"
   // bundle stats in README) that only this button ever needs — every other
   // role/page was paying for them in the main bundle on every load whether
@@ -79,6 +81,8 @@ export default function Reports() {
   // flagged KPI at once, not one node at a time like Overview.
   const orgWideKpis = kpis;
   const orgVariance = varianceRollup(orgWideKpis, perfValues, settings);
+  const overallRollup = performanceRollup(orgWideKpis, perfValues, settings);
+  const designations = [...new Set(org.employees.map(employeePosition))].sort((a, b) => a.localeCompare(b));
   const programmeVarianceData = programmeRows.map((r) => ({
     name: r.p.name, actual: r.avgPct ?? 0, expected: r.variance.avgExpectedPct ?? 0,
     variance: r.variance.avgVariance,
@@ -100,7 +104,7 @@ export default function Reports() {
   // downloadable artifact for the selected cadence, not a separately typed-up
   // document that could drift from the numbers on screen.
   function downloadCsv() {
-    const rows = [['Tier', 'Name', 'KPIs', 'Avg. progress %', 'On track', 'At risk', 'Off track', 'No data']];
+    const rows = [['Tier', 'Organisation / designation', 'KPIs', 'Avg. progress %', 'On track', 'At risk', 'Off track', 'No data']];
     programmeRows.forEach((r) => {
       rows.push(['Programme', r.p.name, r.count, r.avgPct ?? '', r.counts.green, r.counts.amber, r.counts.red, r.counts.none]);
       r.subs.forEach((sr) => {
@@ -109,7 +113,9 @@ export default function Reports() {
           rows.push(['Unit', ur.unit.name, ur.count, ur.avgPct ?? '', ur.counts.green, ur.counts.amber, ur.counts.red, ur.counts.none]);
           if (showStaff && canSeeStaffRows) {
             ur.employees.forEach((er) => {
-              rows.push(['Staff', er.employee.name, er.count, er.avgPct ?? '', er.counts.green, er.counts.amber, er.counts.red, er.counts.none]);
+              if (!designationFilter || employeePosition(er.employee) === designationFilter) {
+                rows.push(['Designation', employeePosition(er.employee), er.count, er.avgPct ?? '', er.counts.green, er.counts.amber, er.counts.red, er.counts.none]);
+              }
             });
           }
         });
@@ -143,21 +149,24 @@ export default function Reports() {
     }
     const doc = new jsPDF({ unit: 'pt', format: 'a4' });
     const marginX = 40;
+    const contentWidth = doc.internal.pageSize.getWidth() - marginX * 2;
     const pageBottom = 780;
-    let y = 46;
+    let y = 104;
 
+    doc.setFillColor(25, 34, 48);
+    doc.roundedRect(marginX, 26, contentWidth, 62, 8, 8, 'F');
+    doc.setTextColor(255, 255, 255);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(15);
-    doc.text('ZOU Strategic Plan Monitor — Performance Appraisal Report', marginX, y);
-    y += 18;
+    doc.text('ZOU Strategic Plan Monitor', marginX + 14, 50);
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(10.5);
-    doc.text(`${periodLabel} · Generated ${new Date().toLocaleString()}`, marginX, y);
-    y += 22;
+    doc.setFontSize(9.5);
+    doc.text(`Performance appraisal · ${periodLabel} · Generated ${new Date().toLocaleString()}`, marginX + 14, 70);
+    doc.setTextColor(0, 0, 0);
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(12);
-    doc.text(`Programme, Sub-programme & Unit performance appraisal`, marginX, y);
+    doc.text('Performance summary by organisation', marginX, y);
     y += 10;
 
     const body = [];
@@ -177,7 +186,9 @@ export default function Reports() {
           body.push([`      ${ur.unit.name}`, ur.count, ur.avgPct != null ? `${ur.avgPct}%` : '—', ur.counts.green, ur.counts.amber, ur.counts.red, ur.counts.none]);
           if (showStaff && canSeeStaffRows) {
             ur.employees.forEach((er) => {
-              body.push([`         ${er.employee.name}`, er.count, er.avgPct != null ? `${er.avgPct}%` : '—', er.counts.green, er.counts.amber, er.counts.red, er.counts.none]);
+              if (!designationFilter || employeePosition(er.employee) === designationFilter) {
+                body.push([`         ${employeePosition(er.employee)}`, er.count, er.avgPct != null ? `${er.avgPct}%` : '—', er.counts.green, er.counts.amber, er.counts.red, er.counts.none]);
+              }
             });
           }
         });
@@ -187,10 +198,20 @@ export default function Reports() {
     autoTable(doc, {
       startY: y + 6,
       margin: { left: marginX, right: marginX },
-      head: [['Programme / Sub-programme / Unit', 'KPIs', 'Avg. progress', 'On track', 'At risk', 'Off track', 'No data']],
+      head: [['Programme / Sub-programme / Unit / Designation', 'KPIs', 'Avg. progress', 'On track', 'At risk', 'Off track', 'No data']],
       body,
-      styles: { fontSize: 8.5, cellPadding: 4 },
-      headStyles: { fillColor: [21, 20, 15], textColor: 255 },
+      styles: { fontSize: 9, cellPadding: 4.5, lineColor: [218, 223, 230], lineWidth: 0.35, valign: 'middle', overflow: 'linebreak' },
+      headStyles: { fillColor: [25, 34, 48], textColor: 255, fontStyle: 'bold', fontSize: 8.8 },
+      alternateRowStyles: { fillColor: [248, 249, 251] },
+      columnStyles: {
+        0: { cellWidth: 185 },
+        1: { cellWidth: 38, halign: 'right' },
+        2: { cellWidth: 62, halign: 'right' },
+        3: { cellWidth: 55, halign: 'right' },
+        4: { cellWidth: 55, halign: 'right' },
+        5: { cellWidth: 55, halign: 'right' },
+        6: { cellWidth: 55, halign: 'right' },
+      },
     });
 
     y = doc.lastAutoTable.finalY + 26;
@@ -212,11 +233,12 @@ export default function Reports() {
         margin: { left: marginX, right: marginX },
         head: [['KPI', 'Owner', 'Actual %', 'Expected %', 'Variance (pts)', 'Flag']],
         body: flagged.map((it) => [
-          it.kpi.name, ownerName(org, it.kpi), `${it.actualPct}%`, `${it.expectedPct}%`, it.variance,
+          it.kpi.name, reportOwnerLabel(org, it.kpi), `${it.actualPct}%`, `${it.expectedPct}%`, it.variance,
           it.flag === 'attention' ? 'Behind pace' : 'Ahead of pace',
         ]),
-        styles: { fontSize: 8.5, cellPadding: 4 },
-        headStyles: { fillColor: [21, 20, 15], textColor: 255 },
+        styles: { fontSize: 8.5, cellPadding: 4, lineColor: [224, 226, 230], lineWidth: 0.3 },
+        headStyles: { fillColor: [25, 34, 48], textColor: 255 },
+        alternateRowStyles: { fillColor: [248, 249, 251] },
       });
       y = doc.lastAutoTable.finalY + 22;
     } else {
@@ -252,46 +274,77 @@ export default function Reports() {
 
   return (
     <div>
-      <div className="flex justify-between gap-4 flex-wrap items-start mb-5">
-        <div>
-          <h1 className="text-xl font-bold mb-0.5">Reports</h1>
-          <p className="text-[13px] text-ink-secondary">Automated performance appraisals — {periodLabel}.</p>
+      <div className="card mb-4 border-l-4 border-l-accent-500">
+        <div className="flex justify-between gap-4 flex-wrap items-start">
+          <div>
+            <div className="flex flex-wrap items-center gap-2 mb-1">
+              <h1 className="text-xl font-bold">Performance reports</h1>
+              <span className="chip bg-accent-50 text-accent-600">{periodLabel}</span>
+            </div>
+            <p className="text-[13px] text-ink-secondary">
+              Live performance, risk, and submission reporting across your reporting scope.
+            </p>
+          </div>
+          <div className="no-print flex gap-2 flex-wrap items-center">
+            <PeriodTypePicker />
+            <button className="btn btn-sm" onClick={downloadCsv}>Download CSV</button>
+            <button className="btn btn-sm btn-primary" disabled={pdfBusy} onClick={downloadPdf}>{pdfBusy ? 'Preparing…' : 'Download PDF'}</button>
+            <button className="btn btn-sm" onClick={() => window.print()}>Print report</button>
+          </div>
         </div>
-        <div className="no-print flex gap-2 flex-wrap items-center">
-          <PeriodTypePicker />
-          <button className="btn btn-sm" onClick={downloadCsv}>Download CSV</button>
-          <button className="btn btn-sm btn-primary" disabled={pdfBusy} onClick={downloadPdf}>{pdfBusy ? 'Preparing…' : 'Download PDF'}</button>
-          <button className="btn btn-sm" onClick={() => window.print()}>Print report</button>
-        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 mb-5">
+        <ReportMetric label="KPIs in scope" value={overallRollup.count} accent="border-l-line" />
+        <ReportMetric label="Average progress" value={overallRollup.avgPct != null ? `${overallRollup.avgPct}%` : '—'} accent="border-l-accent-500" />
+        <ReportMetric label="On track" value={overallRollup.counts.green} accent="border-l-good" />
+        <ReportMetric label="At risk" value={overallRollup.counts.amber} accent="border-l-warning" />
+        <ReportMetric label="Off track" value={overallRollup.counts.red} accent="border-l-critical" />
       </div>
 
       <FocusedReportSection org={org} kpis={kpis} perfValues={perfValues} settings={settings} user={user} periodLabel={periodLabel} />
 
-      <div className="no-print flex justify-between items-end flex-wrap gap-2 mb-2.5">
-        <h2 className="font-display font-bold text-[14.5px]">
-          Programme, Sub-programme &amp; Unit performance appraisal — {periodLabel}
-        </h2>
-        {canSeeStaffRows && (
-          <label className="flex items-center gap-1.5 text-[12px] font-semibold select-none">
-            <input type="checkbox" checked={showStaff} onChange={(e) => setShowStaff(e.target.checked)} />
-            Show individual staff rows
-          </label>
-        )}
+      <div className="card mb-3">
+        <div className="flex justify-between items-center flex-wrap gap-3">
+          <div>
+            <h2 className="font-display font-bold text-[14.5px]">
+              Organisational performance
+            </h2>
+            <p className="text-[11.8px] text-ink-muted">Programme, sub-programme, unit, and designation rollups for {periodLabel}.</p>
+          </div>
+          {canSeeStaffRows && (
+            <div className="no-print flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-1.5 text-[12px] font-semibold select-none">
+                <input type="checkbox" checked={showStaff} onChange={(e) => setShowStaff(e.target.checked)} />
+                Show designation rows
+              </label>
+              <label className="flex items-center gap-2 text-[12px] text-ink-secondary">
+                <span>Designation</span>
+                <select className="field-input py-1.5 w-auto max-w-[220px]" aria-label="Filter employee rows by designation" value={designationFilter} onChange={(e) => setDesignationFilter(e.target.value)}>
+                  <option value="">All designations</option>
+                  {designations.map((designation) => <option key={designation} value={designation}>{designation}</option>)}
+                </select>
+              </label>
+            </div>
+          )}
+        </div>
       </div>
+
       <h2 className="hidden print:block font-display font-bold text-[14.5px] mb-2.5">
-        Programme, Sub-programme &amp; Unit performance appraisal — {periodLabel}
+        Organisational performance — {periodLabel}
       </h2>
-      <div className="rounded-xl border border-line bg-surface overflow-x-auto max-h-[65vh] overflow-y-auto mb-5">
-        <table className="w-full text-[12.6px]">
-          <thead className="sticky top-0 z-10">
-            <tr className="bg-sunken text-[10.8px] uppercase tracking-wide text-ink-muted font-bold">
-              <Th>Programme / Sub-programme / Unit</Th><Th>KPIs</Th><Th>Avg. progress</Th><Th>On track</Th><Th>At risk</Th><Th>Off track</Th><Th>No data</Th>
+      <div className="rounded-xl border border-line bg-surface shadow-sm overflow-x-auto max-h-[65vh] overflow-y-auto mb-5">
+        <table className="report-table w-full min-w-[900px] text-[13px]">
+          <caption className="sr-only">Organisational performance results for {periodLabel}</caption>
+          <thead className="sticky top-0 z-10 shadow-sm">
+            <tr className="bg-sunken text-[11px] uppercase tracking-wide text-ink-secondary font-bold border-b border-line-strong">
+              <Th>Programme / Sub-programme / Unit / Designation</Th><Th>KPIs</Th><Th>Avg. progress</Th><Th>On track</Th><Th>At risk</Th><Th>Off track</Th><Th>No data</Th>
             </tr>
           </thead>
           <tbody>
             {programmeRows.map((r) => (
               <Fragment key={`p${r.p.id}`}>
-                <tr className="border-t border-line bg-sunken/60">
+                <tr className="border-t border-line bg-sunken/75">
                   <Td className="font-bold">{r.p.name}</Td>
                   <Td className="tabular-nums font-semibold">{r.count}</Td>
                   <Td className="tabular-nums font-semibold">{r.avgPct != null ? `${r.avgPct}%` : '—'}</Td>
@@ -302,7 +355,7 @@ export default function Reports() {
                 </tr>
                 {r.subs.map((sr) => (
                   <Fragment key={`s${sr.sub.id}`}>
-                    <tr className="border-t border-line bg-sunken/25">
+                    <tr className="border-t border-line bg-sunken/45">
                       <Td className="pl-7 text-ink-secondary font-semibold">↳ {sr.sub.name}</Td>
                       <Td className="tabular-nums">{sr.count}</Td>
                       <Td className="tabular-nums">{sr.avgPct != null ? `${sr.avgPct}%` : '—'}</Td>
@@ -313,7 +366,7 @@ export default function Reports() {
                     </tr>
                     {sr.units.map((ur) => (
                       <Fragment key={`u${ur.unit.id}`}>
-                        <tr className="border-t border-line">
+                        <tr className="border-t border-line hover:bg-sunken/30">
                           <Td className="pl-12 text-ink-secondary">↳ {ur.unit.name}</Td>
                           <Td className="tabular-nums">{ur.count}</Td>
                           <Td className="tabular-nums">{ur.avgPct != null ? `${ur.avgPct}%` : '—'}</Td>
@@ -322,9 +375,11 @@ export default function Reports() {
                           <Td><span className="chip chip-rag-red">{ur.counts.red}</span></Td>
                           <Td><span className="chip chip-rag-none">{ur.counts.none}</span></Td>
                         </tr>
-                        {showStaff && canSeeStaffRows && ur.employees.map((er) => (
-                          <tr key={`e${er.employee.id}`} className="border-t border-line/60">
-                            <Td className="pl-16 text-ink-muted text-[12px]">↳ {er.employee.name}</Td>
+                        {showStaff && canSeeStaffRows && ur.employees
+                          .filter((er) => !designationFilter || employeePosition(er.employee) === designationFilter)
+                          .map((er) => (
+                          <tr key={`e${er.employee.id}`} className="border-t border-line/60 hover:bg-sunken/30">
+                            <Td className="pl-16 text-ink-muted text-[12px]">↳ {employeePosition(er.employee)}</Td>
                             <Td className="tabular-nums text-[12px]">{er.count}</Td>
                             <Td className="tabular-nums text-[12px]">{er.avgPct != null ? `${er.avgPct}%` : '—'}</Td>
                             <Td><span className="chip chip-rag-green">{er.counts.green}</span></Td>
@@ -367,7 +422,7 @@ export default function Reports() {
           <VarianceChart data={programmeVarianceData} height={240} />
         </div>
       </div>
-      <VarianceAlerts items={orgVariance.items} periodLabel={periodLabel} />
+      <VarianceAlerts items={orgVariance.items} periodLabel={periodLabel} hidePersonNames />
 
       <div className="card mb-5">
         <h2 className="font-display font-bold text-[14.5px] mb-2.5">Submission flow — {MONTHS[period.month]} {period.year} <span className="text-[11.8px] font-normal text-ink-muted">(current month, regardless of the period above)</span></h2>
@@ -402,8 +457,8 @@ function RecentActivity() {
       {entries?.map((e) => (
         <div key={e.id} className="flex items-start gap-2.5 py-1.5 border-t border-line first:border-0 text-[12.6px]">
           <span className={`chip ${FLOW_STYLE[e.action]}`}>{FLOW_ACTIONS[e.action]}</span>
-          <span className="flex-1 text-ink-secondary">{e.detail}</span>
-          <span className="text-ink-muted text-[11.3px] whitespace-nowrap">{e.user_name || 'System'} · {e.ts}</span>
+          <span className="flex-1 text-ink-secondary">KPI submission workflow</span>
+          <span className="text-ink-muted text-[11.3px] whitespace-nowrap">{e.ts}</span>
         </div>
       ))}
     </div>
@@ -419,5 +474,22 @@ function FlowStat({ label, value, className }) {
   );
 }
 
-function Th({ children }) { return <th className="px-3 py-2.5 text-left">{children}</th>; }
-function Td({ children, className = '' }) { return <td className={`px-3 py-2.5 ${className}`}>{children}</td>; }
+function ReportMetric({ label, value, accent }) {
+  return (
+    <div className={`card border-l-4 ${accent} px-3.5 py-3`}>
+      <div className="text-[10.5px] uppercase tracking-wide text-ink-muted font-bold">{label}</div>
+      <div className="font-display font-extrabold text-[22px] tabular-nums text-ink">{value}</div>
+    </div>
+  );
+}
+
+function reportOwnerLabel(org, kpi) {
+  if (kpi.owner_type === 'employee') {
+    const employee = org.employees.find((item) => item.id === kpi.owner_id);
+    return employee ? employeePosition(employee) : 'Employee';
+  }
+  return ownerName(org, kpi);
+}
+
+function Th({ children }) { return <th className="px-3 py-3 text-left">{children}</th>; }
+function Td({ children, className = '' }) { return <td className={`px-3 py-3 ${className}`}>{children}</td>; }

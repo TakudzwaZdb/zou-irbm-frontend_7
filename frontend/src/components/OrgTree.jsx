@@ -4,6 +4,7 @@ import {
   subsOfProgramme, unitsOfSub, employeesOfUnit, nodeOwnKpis, nodeRagCls,
   performanceRollup, institutionalRollup, defaultNodeForRole, nodeAncestryChain, canDrillToKind,
 } from '../lib/scope.js';
+import { employeePosition } from '../lib/orgDisplay.js';
 
 const RAG_DOT = {
   'chip-rag-green': 'bg-good', 'chip-rag-amber': 'bg-warning', 'chip-rag-red': 'bg-critical', 'chip-rag-none': 'bg-ink-muted',
@@ -191,7 +192,7 @@ export default function OrgTree({ setRoute, onNavigate }) {
                     return (
                       <div key={u.id}>
                         {row('unit', u.id, u.name, 2, inds.length > 0, uKey)}
-                        {uOpen && inds.map((i) => row('employee', i.id, i.name, 3, false, `i:${i.id}`))}
+                        {uOpen && inds.map((i) => row('employee', i.id, employeePosition(i), 3, false, `i:${i.id}`))}
                       </div>
                     );
                   })}

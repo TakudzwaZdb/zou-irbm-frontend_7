@@ -17,6 +17,7 @@
 require('dotenv').config();
 const { Pool } = require('pg');
 const { AsyncLocalStorage } = require('node:async_hooks');
+const DASHBOARD_OUTPUT_KPIS = require('./data/dashboardOutputs');
 
 const useSsl = process.env.DB_SSL === 'true'
   || /sslmode=require/.test(process.env.DATABASE_URL || '');
@@ -347,8 +348,10 @@ CREATE TABLE IF NOT EXISTS plan_proposals (
   cycle_year INTEGER NOT NULL,
   owner_type TEXT NOT NULL CHECK(owner_type IN ('unit','sub','programme','university')),
   owner_id INTEGER,
+  plan_title TEXT,
   narrative TEXT,
   budget REAL,
+  targets TEXT,
   status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','submitted','approved')),
   submitted_at TEXT,
   approved_at TEXT,
@@ -427,15 +430,15 @@ CREATE INDEX IF NOT EXISTS idx_kpi_contributions_period ON kpi_contributions(yea
 CREATE INDEX IF NOT EXISTS idx_message_recipients_recipient ON message_recipients(recipient_id);
 CREATE INDEX IF NOT EXISTS idx_mfa_recovery_codes_user ON mfa_recovery_codes(user_id);
 
--- Appointment integrity: Employee accounts may repeat, but every other
--- role may occur only once per organisation scope (partial unique indexes —
--- supported identically in Postgres).
+-- Appointment integrity: Employee accounts may repeat, CPU is a multi-seat
+-- global role, and every other role may occur only once per organisation
+-- scope (partial unique indexes — supported identically in Postgres).
 CREATE UNIQUE INDEX IF NOT EXISTS users_unique_active_scoped_appointment
   ON users (role, scope_type, scope_id)
   WHERE deleted_at IS NULL AND role <> 'employee' AND scope_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS users_unique_active_global_appointment
   ON users (role)
-  WHERE deleted_at IS NULL AND role <> 'employee' AND scope_id IS NULL;
+  WHERE deleted_at IS NULL AND role <> 'employee' AND role <> 'cpu' AND scope_id IS NULL;
 `;
 
 const BUILT_IN_ROLES = [
@@ -603,9 +606,134 @@ async function migrateIndividualRoleToEmployee() {
 }
 
 let readyPromise = null;
+// Allow multiple active CPU members to hold the global CPU role.
+// Other global roles remain restricted to one active appointment.
+async function migrateCpuGlobalAppointments() {
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // Prevent concurrent application instances from running this migration
+    // against the same index simultaneously.
+    await client.query('SELECT pg_advisory_xact_lock(20261113)');
+
+    const result = await client.query(`
+      SELECT pg_get_expr(i.indpred, i.indrelid) AS predicate
+      FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+      WHERE c.relname = 'users_unique_active_global_appointment'
+    `);
+
+    const predicate = result.rows[0]?.predicate || '';
+
+    if (!/role\s*<>\s*'cpu'/i.test(predicate)) {
+      await client.query(`
+        DROP INDEX IF EXISTS users_unique_active_global_appointment
+      `);
+
+      await client.query(`
+        CREATE UNIQUE INDEX users_unique_active_global_appointment
+        ON users (role)
+        WHERE deleted_at IS NULL
+          AND role <> 'employee'
+          AND role <> 'cpu'
+          AND scope_id IS NULL
+      `);
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function migrateDashboardOutputKpis() {
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(20261116)');
+
+    const unitNames = [...new Set(DASHBOARD_OUTPUT_KPIS.map((kpi) => kpi.ownerName))];
+    const units = await client.query(
+      'SELECT id, name FROM units WHERE deleted_at IS NULL AND name = ANY($1::text[])',
+      [unitNames],
+    );
+    if (units.rowCount === 0) {
+      await client.query('COMMIT');
+      return;
+    }
+
+    const unitIdsByName = new Map();
+    for (const unit of units.rows) {
+      if (unitIdsByName.has(unit.name)) {
+        throw new Error(`Cannot add dashboard KPIs: multiple active units are named "${unit.name}".`);
+      }
+      unitIdsByName.set(unit.name, unit.id);
+    }
+
+    const missingUnits = unitNames.filter((name) => !unitIdsByName.has(name));
+    if (missingUnits.length) {
+      throw new Error(`Cannot add dashboard KPIs: missing active units: ${missingUnits.join(', ')}.`);
+    }
+
+    const now = new Date();
+    for (const kpi of DASHBOARD_OUTPUT_KPIS) {
+      const ownerId = unitIdsByName.get(kpi.ownerName);
+      const existing = await client.query(
+        `SELECT id FROM kpis
+         WHERE owner_type = 'unit' AND owner_id = $1 AND name = $2 AND deleted_at IS NULL`,
+        [ownerId, kpi.name],
+      );
+      if (existing.rowCount) continue;
+
+      const inserted = await client.query(
+        `INSERT INTO kpis (owner_type, owner_id, name, type, measure, baseline, target)
+         VALUES ('unit', $1, $2, $3, $4, $5, $6)
+         RETURNING id`,
+        [ownerId, kpi.name, kpi.type, kpi.measure, kpi.baseline, kpi.target],
+      );
+      await client.query(
+        `INSERT INTO kpi_values (kpi_id, year, month, value, status)
+         VALUES ($1, $2, $3, NULL, 'draft')
+         ON CONFLICT (kpi_id, year, month) DO NOTHING`,
+        [inserted.rows[0].id, now.getUTCFullYear(), now.getUTCMonth() + 1],
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* connection already broken */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
 async function ensureSchema() {
   await migrateIndividualRoleToEmployee();
   await pool.query(SCHEMA_SQL);
+  await migrateCpuGlobalAppointments();
+  await pool.query('ALTER TABLE plan_proposals ADD COLUMN IF NOT EXISTS targets TEXT');
+  await pool.query('ALTER TABLE plan_proposals ADD COLUMN IF NOT EXISTS plan_title TEXT');
+  await pool.query(`
+    UPDATE plan_proposals
+    SET plan_title = CASE owner_type
+      WHEN 'unit' THEN 'Unit plan '
+      WHEN 'sub' THEN 'Sub-programme plan '
+      WHEN 'programme' THEN 'Programme plan '
+      ELSE 'University plan '
+    END || id
+    WHERE plan_title IS NULL OR BTRIM(plan_title) = ''
+  `);
+  // Remove the retired Council approval grant. CPU is now the sole
+  // approver/returner for Annual Plan and Budget proposals at every tier.
+  await pool.query("DELETE FROM user_permissions WHERE permission_key = 'validate_annual_plan'");
+  await pool.query("DELETE FROM role_permissions WHERE permission_key = 'validate_annual_plan'");
+  await pool.query("DELETE FROM permissions WHERE key = 'validate_annual_plan'");
 
   // Idempotent widen: employees.unit_id used to be NOT NULL — a 'default'
   // role account (see routes/org.js) is created with no unit at all, so a
@@ -661,6 +789,8 @@ async function ensureSchema() {
       await insertRolePerm.run(roleKey, permKey);
     }
   }
+
+  await migrateDashboardOutputKpis();
 }
 
 // Call (and await) once before serving traffic — see server.js. Memoized so

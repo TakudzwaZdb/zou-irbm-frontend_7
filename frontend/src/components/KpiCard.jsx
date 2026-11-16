@@ -8,6 +8,7 @@ import {
   canEnterData, canContribute,
 } from '../lib/scope.js';
 import { readDraft, writeDraft, clearDraft, draftDiffersFrom, debounce } from '../lib/autosave.js';
+import { employeePosition } from '../lib/orgDisplay.js';
 import Fig from './Fig.jsx';
 import MonthlyPaceBar from './MonthlyPaceBar.jsx';
 
@@ -34,7 +35,7 @@ const STATUS_LABEL = {
 // actually this person's own duty (canEnterData/canContribute), computed
 // below regardless of the caller, so hiding can never be used to dodge a
 // real accountability item even if a future caller passed it by mistake.
-export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', allowHide = false }) {
+export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', allowHide = false, hidePersonNames = false }) {
   const { user, org, settings, values, period, reloadValues, hasPerm, assignments, contributions, perfPeriod, perfValues, hiddenKpiIds, hideKpi, unhideKpi } = useApp();
   const toast = useToast();
   const confirm = useConfirm();
@@ -52,6 +53,9 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
   // their Unit Head reviews right here, and this KPI's own value becomes an
   // automated sum the Unit Head can no longer type into directly.
   const isShared = kpi.owner_type === 'unit' && assignees.length > 0;
+  const ownerLabel = hidePersonNames && kpi.owner_type === 'employee'
+    ? employeePosition(byId(org.employees, kpi.owner_id))
+    : ownerName(org, kpi);
   const kpiContributions = isShared ? contributions.filter((c) => c.kpi_id === kpi.id) : [];
   const valueRow = values[`${kpi.id}-${period.year}-${period.month}`];
   const status = valueStatus(valueRow);
@@ -153,13 +157,13 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
         <div>
           <p className="font-bold text-[15px] leading-snug mb-1.5">{kpi.name}</p>
           <div className="flex gap-1.5 flex-wrap items-center mb-1">
-            <span className="chip chip-tag">{ownerName(org, kpi)}</span>
+            <span className="chip chip-tag">{ownerLabel}</span>
             <span className="chip chip-tag">{kpi.type}</span>
             <span className={`chip chip-st-${status}`}>{STATUS_LABEL[status]}</span>
             {kpi.is_automated ? <span className="chip chip-tag">Automated</span> : null}
             {assignees.length > 0 && (
               <span className="chip bg-accent-50 text-accent-600">
-                Assigned: {assignees.map((i) => i.name).join(', ')}
+                Assigned: {assignees.map((i) => hidePersonNames ? employeePosition(i) : i.name).join(', ')}
               </span>
             )}
             {variance.flag === 'attention' && (

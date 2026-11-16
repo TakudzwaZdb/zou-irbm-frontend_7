@@ -4,6 +4,7 @@ import {
   relevantKpis, computeRag, canEnterData, canContribute, performanceRollup, varianceRollup, institutionalRollup, VARIANCE_ATTENTION_THRESHOLD, valueStatus, scopeBreadcrumb, MONTHS,
   byId, subsOfProgramme, unitsOfSub, employeesOfUnit, nodeOwnKpis, nodeAncestryChain, defaultNodeForRole, canDrillToKind, ownerName, ownerKindLabel,
 } from '../lib/scope.js';
+import { employeePosition, headPosition, orgNodeLabel } from '../lib/orgDisplay.js';
 import { labelFor } from '../lib/period.js';
 import KpiCard from '../components/KpiCard.jsx';
 import RagBarChart from '../components/RagBarChart.jsx';
@@ -52,7 +53,7 @@ export default function Overview() {
       <div className="flex justify-between gap-4 flex-wrap items-start mb-5">
         <div>
           <h1 className="text-xl font-bold mb-0.5">Overview</h1>
-          <p className="text-[13px] text-ink-secondary">{user.name} · {user.title || user.role}</p>
+          <p className="text-[13px] text-ink-secondary">{user.title || user.role}</p>
         </div>
         {!isGlobal && !effectiveNode && (
           <div className="text-[11.8px] text-ink-secondary text-right">
@@ -124,9 +125,9 @@ function AppraisalCard({ kpiList, heading, rollup, avgOfProgrammes = false }) {
   const label = labelFor(perfPeriod.type, perfPeriod.year, perfPeriod.idx, MONTHS);
   const variance = rollup ? rollup.variance : varianceRollup(kpiList, perfValues, settings);
   // Every KPI with a value gets its own bar here — never cut short by
-  // chart width — labeled with both its own name AND who owns it (see
-  // ownerName), since "Digital Theses Uploaded" means something different
-  // depending on whether it's the Library's KPI or a named employee's.
+  // chart width — labeled with both its own name AND the owning unit or
+  // employee position, since a KPI can mean something different depending
+  // on whether it's the Library's KPI or an employee's.
   // VarianceChart scrolls horizontally once there are more KPIs than fit,
   // rather than squeezing bars until they're unreadable.
   // Full, untruncated name/owner — VarianceChart does its own short
@@ -136,7 +137,9 @@ function AppraisalCard({ kpiList, heading, rollup, avgOfProgrammes = false }) {
   const varianceData = variance.items
     .filter((i) => i.actualPct != null)
     .map((i) => ({
-      name: i.kpi.name, owner: ownerName(org, i.kpi), ownerKind: ownerKindLabel(i.kpi),
+      name: i.kpi.name,
+      owner: i.kpi.owner_type === 'employee' ? employeePosition(byId(org.employees, i.kpi.owner_id)) : ownerName(org, i.kpi),
+      ownerKind: ownerKindLabel(i.kpi),
       actual: i.actualPct, expected: i.expectedPct, variance: i.variance, flag: i.flag,
     }));
 
@@ -190,7 +193,7 @@ function AppraisalCard({ kpiList, heading, rollup, avgOfProgrammes = false }) {
         </div>
       )}
 
-      <VarianceAlerts items={variance.items} periodLabel={label} />
+      <VarianceAlerts items={variance.items} periodLabel={label} hidePersonNames />
     </div>
   );
 }
@@ -216,7 +219,7 @@ function AllProgrammesView({ onSelect }) {
     <>
       {owner && (
         <div className="mb-4 rounded-lg bg-accent-50 text-accent-600 text-[12px] px-3.5 py-2.5">
-          <b>Executive Owner: {owner.name}</b>{owner.title ? ` — ${owner.title}` : ''} is accountable for overall
+          <b>Executive Owner: {owner.title || 'Designated role'}</b> is accountable for overall
           institutional performance against the Plan — the appraisal below, aggregated across every Programme.
         </div>
       )}
@@ -237,7 +240,7 @@ function AllProgrammesView({ onSelect }) {
       <h2 className="font-display font-bold text-[14.5px] mb-2.5">Programmes</h2>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
         {org.programmes.map((p) => (
-          <NodeCard key={p.id} kind="programme" node={p} subtitle={p.head || '—'} org={org} kpis={kpis} perfValues={perfValues} settings={settings} onSelect={onSelect} />
+          <NodeCard key={p.id} kind="programme" node={p} subtitle={headPosition(p, 'Programme Head')} org={org} kpis={kpis} perfValues={perfValues} settings={settings} onSelect={onSelect} />
         ))}
       </div>
     </>
@@ -281,10 +284,10 @@ function NodeView({ node, onHome, onSelect }) {
   // "—" rather than a raw `null` landing in a template string as the word
   // "null".
   const subtitle =
-    kind === 'programme' ? (entity.head || '—') :
-    kind === 'sub' ? `${entity.unit_label || 'Unit'}-level sub-programme · ${entity.head || '—'}` :
-    kind === 'unit' ? (entity.head || '—') :
-    entity.role_title;
+    kind === 'programme' ? headPosition(entity, 'Programme Head') :
+    kind === 'sub' ? `${entity.unit_label || 'Unit'}-level sub-programme · ${headPosition(entity, 'Sub-programme Head')}` :
+    kind === 'unit' ? headPosition(entity, `${entity.kind || 'Unit'} Head`) :
+    employeePosition(entity);
   const kindLabel = kind === 'unit' ? (entity.kind || 'Unit') : KIND_LABEL[kind];
 
   return (
@@ -307,15 +310,15 @@ function NodeView({ node, onHome, onSelect }) {
         {chain.slice(0, -1).map((c) => (
           <span key={`${c.kind}-${c.id}`} className="flex items-center gap-1.5">
             <span>/</span>
-            <button className="hover:text-accent-500 hover:underline" onClick={() => onSelect(c.kind, c.id)}>{c.name}</button>
+            <button className="hover:text-accent-500 hover:underline" onClick={() => onSelect(c.kind, c.id)}>{orgNodeLabel(c, c.kind)}</button>
           </span>
         ))}
-        {chain.length > 0 && <span className="flex items-center gap-1.5"><span>/</span><b className="text-ink-secondary">{chain[chain.length - 1].name}</b></span>}
+        {chain.length > 0 && <span className="flex items-center gap-1.5"><span>/</span><b className="text-ink-secondary">{orgNodeLabel(chain[chain.length - 1], chain[chain.length - 1].kind)}</b></span>}
       </div>
 
       <div className="flex justify-between gap-4 flex-wrap items-start mb-4">
         <div>
-          <h2 className="text-lg font-bold mb-0.5">{entity.name}</h2>
+          <h2 className="text-lg font-bold mb-0.5">{orgNodeLabel(entity, kind)}</h2>
           <p className="text-[12.5px] text-ink-secondary">{kindLabel} · {subtitle}</p>
         </div>
       </div>
@@ -383,13 +386,13 @@ function NodeView({ node, onHome, onSelect }) {
       )}
 
       {kind === 'sub' && (canDrillToKind(user, 'unit')
-        ? <ChildCards kind="unit" items={unitsOfSub(org, id)} subtitleFn={(u) => `${u.kind || 'Unit'} · ${u.head || '—'}`} onSelect={onSelect} />
+        ? <ChildCards kind="unit" items={unitsOfSub(org, id)} subtitleFn={(u) => `${u.kind || 'Unit'} · ${headPosition(u, `${u.kind || 'Unit'} Head`)}`} onSelect={onSelect} />
         : <OverviewRestrictedNote label="Unit" />)}
       {kind === 'unit' && (canDrillToKind(user, 'employee')
         ? <ChildCards kind="employee" items={employeesOfUnit(org, id)} subtitleFn={(i) => i.role_title} onSelect={onSelect} />
         : <OverviewRestrictedNote label="Employee" />)}
       {kind === 'programme' && (canDrillToKind(user, 'sub')
-        ? <ChildCards kind="sub" items={subsOfProgramme(org, id)} subtitleFn={(s) => s.head} onSelect={onSelect} />
+        ? <ChildCards kind="sub" items={subsOfProgramme(org, id)} subtitleFn={(s) => headPosition(s, 'Sub-programme Head')} onSelect={onSelect} />
         : <OverviewRestrictedNote label="Sub-programme" />)}
 
       {kind === 'employee' && ownKpis.length === 0 && unitKpisForContext.length === 0 && (
@@ -426,7 +429,7 @@ function KpiSection({ title, kpis, className = '' }) {
       {showKpis && (
         <div>
           {kpis.map((k) => (
-            <KpiCard key={k.id} kpi={k} mode="readOnly" />
+            <KpiCard key={k.id} kpi={k} mode="readOnly" hidePersonNames />
           ))}
         </div>
       )}
@@ -474,7 +477,7 @@ function NodeCard({ kind, node, subtitle, org, kpis, perfValues, settings, onSel
     >
       <div className="flex justify-between gap-2 items-start">
         <div className="min-w-0">
-          <div className="font-display font-bold text-[13.5px] truncate">{node.name}</div>
+          <div className="font-display font-bold text-[13.5px] truncate">{orgNodeLabel(node, kind)}</div>
           <div className="text-[11px] text-ink-muted truncate mt-0.5">{subtitle}</div>
         </div>
         <RagChip rollup={roll} settings={settings} />

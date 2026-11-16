@@ -215,61 +215,26 @@ means for setup today.)
   styles that hide the app's navigation/controls and leave just the report
   content.
 - **Annual Plan & Budget** (a real submission/approval cascade, structurally
-  parallel to the KPI one): each Unit/Department/Faculty/Region enters its
-  own next-cycle planning narrative and a requested budget figure and
-  submits it to their Sub-programme Rep, who approves or returns it with a
-  comment. The Sub-programme's own budget is never typed in separately —
-  it's always the live sum of its units' requests — and once approved, the
-  Rep submits their own sub-level narrative up for approval. At the
-  Programme tier, a real **Programme Head** account (see below) — and
-  only that Programme's own Programme Head, not CPU — approves or returns
-  each of their own Sub-programmes' plans, then compiles/submits their own
-  Programme's narrative (its budget is, again, always the derived sum of
-  its sub-programmes). CPU alone compiles and submits the single
-  University Annual Plan for the cycle, gated by `submit_annual_plan`.
-- **Programme Head — a real account tier, and the sole approver of its own
-  Sub-programmes' plans, not a CPU stand-in**: one Programme Head account
+  parallel to the KPI one): Unit Heads, Sub-programme Reps, and Programme
+  Heads can create multiple named plans within their own scope. Each plan
+  captures its own narrative, budget, and measurable targets, and selected
+  draft rows can be saved and submitted together. CPU reviews each submitted
+  plan and can approve several selected rows at once; the University Annual
+  Plan remains a separate CPU-compiled proposal. Each submission requires a
+  title, narrative, and either a budget or measurable targets.
+- **Programme Head — a real plan-preparation tier, not an approver**: one Programme Head account
   per Programme (`role: "programme"`, scoped to that Programme's id), with
-  genuine, server-checked authority — never a role label alone. On
-  Overview, they land straight on their own Programme and can drill into
+  genuine, server-checked scope — never a role label alone. On Overview,
+  they land straight on their own Programme and can drill into
   every Sub-programme beneath it (and everything under those), read-only,
-  the same drill-down every other role uses — but never another
-  Programme's. On Annual Plan & Budget, they approve/return their own
-  Sub-programmes' plan proposals and compile/submit their own Programme's
-  plan — `POST /api/plans/subs/:id/approve` and the Programme-tier routes
-  check `role === 'programme' && scope_id === <that Programme's id>`
-  server-side, not just role, so a Programme Head can't act on another
-  Programme's plan even by calling the API directly (verified with a real
-  403). CPU deliberately has **no** alternate path into this one approval:
-  `approve_own_tier` sits in CPU's permission set for other tiers, but
-  `POST /api/plans/subs/:id/approve|return` checks `isProgrammeHeadOwner`
-  and nothing else — CPU calling either route directly gets the same 403
-  a Programme Head from a different Programme would (also verified live).
-  The CPU-facing Annual Plan & Budget screen shows each Sub-programme's
-  status for oversight but renders no Approve/Return controls on it — only
-  the Programme Head who owns that Sub-programme's Programme sees those.
-  ICT admin can promote any existing account to Programme Head from the
-  Permissions page, choosing which Programme it's scoped to.
-- **University Council — a real approval gate on the Annual Plan, not just
-  CPU's word for it**: a new `council` role (permission `validate_annual_plan`,
-  its own permission group "Governance") sits above CPU on the University
-  Annual Plan cascade. CPU still compiles and submits the single University
-  Annual Plan for the cycle, but it no longer takes effect on submission —
-  it moves to `submitted` and waits for the University Council to review the
-  full compiled structure (every Programme, Sub-programme, and Unit beneath
-  it, the same live data the rest of the app already shows) and either
-  **approve** it (`status: 'approved'`, and only then is it "the official
-  Annual Plan in effect for" that cycle, called out as such everywhere it's
-  shown) or **return** it with a required comment, which reopens it as a
-  draft for CPU with the feedback attached, the same return/resubmit pattern
-  already used at every other tier. Both actions are gated server-side by
-  `validate_annual_plan`, not just hidden in the UI — a non-Council account
-  gets a real 403 calling the approve/return endpoints directly. While a
-  plan is submitted or approved, CPU's own edit and (re)submit endpoints are
-  now genuinely locked (previously an oversight: unlike every other tier in
-  the same file, the University-level routes had no server-side lock at
-  all, so CPU could silently overwrite an in-effect plan — closed as part of
-  this feature).
+  but never another Programme's. On Annual Plan & Budget, they compile and
+  submit their own Programme's plan for CPU review. ICT admin can assign
+  the role and Programme scope from the Permissions page.
+- **University Council — read-only oversight of Annual Plans**: Council can
+  review the full compiled structure, but cannot approve or return plans.
+  The CPU role is enforced server-side as the only approver/returner for
+  Unit, Sub-programme, Programme, and University proposals. Submitted and
+  approved proposals remain locked to editors until CPU returns them.
 - **Vice Chancellor — designated Executive Owner, accountable for overall
   institutional performance**: a single-holder `is_executive_owner` flag on
   `users` (enforced in one DB transaction — setting it on one account always
@@ -1359,9 +1324,9 @@ sprawling:
 - Executive Owner is a display and accountability designation only — it
   marks who the app holds out as accountable for overall institutional
   performance and puts their name on it, but it is not an extra approval
-  gate anywhere in the University Annual Plan cascade (that gate is the
-  University Council's `validate_annual_plan`, described above). The VC
-  isn't required to click anything for the Plan to take effect.
+  gate anywhere in the University Annual Plan cascade; CPU approval is the
+  only plan-approval gate. The VC isn't required to click anything for the
+  Plan to take effect.
 - The admin-grantable Overview navigation limit (`overview_limit`) caps
   only the Overview drill-down tree — it's a visibility ceiling on
   navigation depth, deliberately independent of the permission catalog. It
@@ -1438,15 +1403,18 @@ cp .env.example .env
 # edit .env: set JWT_SECRET, and PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE
 # to point at a Postgres server + database you've already created (a plain
 # `createdb zou_irbm` against a local Postgres install is enough)
-npm run seed      # creates the schema in that database and seeds it
+# set SEED_PASSWORD to a strong temporary password for the starter accounts
+npm run db:setup  # creates the schema and starter data; requires SEED_PASSWORD
 npm start
 ```
 
 Then open **http://localhost:4000/** in a browser. That one URL serves
 both the pre-built React app and the API.
 
-To reset to a clean demo state at any time, stop the server and re-run
-`npm run seed` — it wipes and rebuilds all tables in that same database.
+`npm run seed` is the same safe, empty-database setup command. It refuses to
+overwrite existing application data. To deliberately wipe and rebuild a
+local demo database, stop the server and run `npm run seed:reset`; this is
+blocked when `NODE_ENV=production`.
 
 ## Developing the frontend
 
@@ -1492,9 +1460,12 @@ service instead of a single file on local disk — the natural choice for
 anything beyond a local demo. Local development is still simple: install
 Postgres locally (or use a container), create an empty database, and
 point `.env`'s `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` at
-it — `npm run seed` creates the schema and demo data inside it. For a
-managed production database (e.g. Azure Database for PostgreSQL Flexible
-Server), see **AZURE_SETUP.md**.
+it — `npm run db:setup` creates the schema and demo data inside it, and
+refuses to modify a populated database. The server also applies schema
+changes automatically on startup. For a managed production database (e.g.
+Azure Database for PostgreSQL Flexible Server), keep `PGDATABASE=zou_irbm`
+if desired; set `PGHOST` and credentials to the hosted server. See
+**AZURE_SETUP.md**.
 
 ## Backing up the database
 
@@ -1568,10 +1539,10 @@ show end users.)
 | Access level | Email | What they can do |
 |---|---|---|
 | Executive (Vice Chancellor) | `l.chareka@zou.ac.zw` | Read-only executive view (Reports only); designated **Executive Owner**, accountable for overall institutional performance against the Plan (badge in the header, accountability note on Overview) |
-| University Council (Chairperson) | `f.museta@zou.ac.zw` | Reviews the fully compiled University Annual Plan (every Programme/Sub-programme/Unit beneath it) and approves it into effect, or returns it to CPU with a comment — the top validation gate on the Annual Plan cascade |
-| Corporate Planning Unit (CPU) | `t.moyo@zou.ac.zw` | Approves sub-programme submissions, manages org structure, KPIs, and settings; compiles and submits the University Annual Plan to the Council |
+| University Council (Chairperson) | `f.museta@zou.ac.zw` | Read-only review of the fully compiled University Annual Plan and its Programme/Sub-programme/Unit proposals |
+| Corporate Planning Unit (CPU) | `t.moyo@zou.ac.zw` | Sole approver/returner for plan and budget proposals at every tier; manages org structure, KPIs, and settings; compiles the University Annual Plan |
 | ICT Systems Administrator | `l.chikomo@zou.ac.zw` | The only role that can grant/revoke permissions, change a user's role, or remove an account — and by default can also add/remove units and employees, create new KPIs, edit KPI targets, apply overrides, set a user's Overview navigation limit, and designate the Executive Owner |
-| Programme Head | `s.chitiyo@zou.ac.zw` | Read-only oversight of every Sub-programme in their own Programme (Governance & Administration) only; approves/returns those Sub-programmes' Annual Plan proposals and compiles/submits their own Programme's plan |
+| Programme Head | `s.chitiyo@zou.ac.zw` | Read-only oversight of their own Programme's Sub-programmes; compiles and submits their Programme plan to CPU for approval |
 | Sub-programme Representative | `b.gwatidzo@zou.ac.zw` | Enters KPI data owned by their sub-programme; approves the Unit Heads below them |
 | Unit Head | `f.rusike@zou.ac.zw` | Enters KPI data owned by their unit; approves the Employees below them |
 | Employee staff member | `n.moyana@zou.ac.zw` | Enters only their own personally-owned KPI data |
@@ -1580,14 +1551,12 @@ Each row above is a genuinely separate account — its own database row, its
 own email, its own password hash, its own permission grants — not one
 account wearing different hats. Corporate Planning Unit and Sub-programme
 Representative in particular are easy to conflate by name, but they don't
-overlap: CPU (`t.moyo@zou.ac.zw`) is unscoped (`scope_type: null`) with 11
-broad permissions including `manage_settings`, `manage_org_units`,
-`create_kpi`, and `submit_annual_plan`; a Sub Rep like
-`b.gwatidzo@zou.ac.zw` is scoped to exactly
-one sub-programme (`scope_type: "sub"`) with only 4 permissions
-(`data_entry`, `approve_own_tier`, and the `view_overview`/`view_framework`
-pair every account gets by default) that only ever apply within that one
-sub-programme. Signing in as each and comparing the sidebar is the
+overlap: CPU (`t.moyo@zou.ac.zw`) is unscoped (`scope_type: null`) and has
+the dedicated `approve_annual_plan` permission for plan and budget approvals; a
+Sub Rep like `b.gwatidzo@zou.ac.zw` is scoped to exactly one sub-programme
+(`scope_type: "sub"`) and contributes plan content but cannot approve plans.
+The server enforces CPU's role as the sole plan approver even if another
+account is granted the same permission. Signing in as each and comparing the sidebar is the
 fastest way to see the difference for yourself — Settings only appears
 for CPU, and the Framework page's "Add a unit", "Create a KPI" and "Edit
 targets" forms only appear for accounts holding those specific
@@ -1603,8 +1572,8 @@ sign in as `m.chirisa@zou.ac.zw` (their Unit Head, Postgraduate Research
 Unit) and approve it from the Approvals Queue. To try the University
 Annual Plan's own top-level cascade: sign in as `t.moyo@zou.ac.zw` (CPU),
 compile and submit the University Annual Plan from Annual Plan & Budget,
-then sign in as `f.museta@zou.ac.zw` (University Council) and approve it
-(or return it with a comment) from the same page.
+then approve or return it as CPU from the same page. Council can review the
+result but has no approval controls.
 
 ## Before using this for anything real
 
@@ -1698,16 +1667,18 @@ Already addressed:
 Still genuinely open — outside what changes to this codebase alone can fix
 (see `SECURITY_REVIEW.md` for the full reasoning on each):
 
-- **Replace the seeded demo org with ZOU's real one.** `npm run seed`
-  wipes and rebuilds every table with a fabricated organisation — fictional
+- **Replace the seeded demo org with ZOU's real one.** `npm run db:setup`
+  initializes an empty database with a fabricated organisation — fictional
   Vice Chancellor, Council, CPU, ICT Admin, Programme Heads, Sub Reps, Unit
   Heads, Employees, and starter KPIs with made-up baseline/target figures
   (see `backend/src/seed.js`). None of it is real, and it isn't something
   this codebase can fix on its own — it needs ZOU's actual staff names,
   emails, and organisational structure, which nobody here has. Before real
-  use: run `npm run seed` once to get the schema/roles/permissions catalog
-  in place (this app's demo org doubles as that bootstrap step), then
-  replace each demo person and structural node with the real one —
+  use: for a real database, let `npm start` apply the schema and create the
+  roles/permissions catalog without demo records, then bootstrap a real
+  administrator with `npm run create-account` and build the real org in the
+  app. Use `npm run db:setup` only if you intentionally want the sample
+  accounts and KPI targets.
   `npm run create-account` (`backend/src/create-account.js`) provisions one
   real, unscoped account at a time (Executive, VC, CPU, ICT Admin, or
   Council — e.g. `npm run create-account -- --email=real@zou.ac.zw
@@ -2006,30 +1977,36 @@ All endpoints are under `/api`. Authenticated endpoints require an
   and only for a non-removed template scoped to their own unit —
   instantiates a real, independent `kpis` row owned solely by them; rejects
   a second pick of the same template by the same person)
-- `GET /api/plans?year=<cycleYear>` — the whole compiled Annual Plan &
-  Budget picture for one cycle year (units, sub-programmes, programmes,
-  and the university row, each with its own proposal and, above Unit
-  tier, a live-derived `approvedBudget`/`provisionalBudget`).
-  `PUT /api/plans/units/:unitId` / `POST /api/plans/units/:unitId/submit`
-  (`data_entry`, the unit's own head only),
-  `POST /api/plans/units/:unitId/approve|return` (`approve_own_tier`, the
-  unit's Sub-programme Rep only — `return` requires a `comment`).
-  `PUT /api/plans/subs/:subId` / `POST /api/plans/subs/:subId/submit`
-  (`data_entry`, the sub's own Rep only — budget is read-only, derived),
-  `POST /api/plans/subs/:subId/approve|return` (CPU, or the Programme
-  Head who owns that sub's Programme — checked server-side by role AND
-  `scope_id`, not role alone).
-  `PUT /api/plans/programmes/:programmeId` /
-  `POST /api/plans/programmes/:programmeId/submit` (CPU, or that
-  Programme's own Programme Head only).
+- `GET /api/plans?year=<cycleYear>` — the Annual Plan & Budget structure;
+  each Unit, Sub-programme, Programme, and University entry includes its
+  `proposals` array (with the singular `proposal` retained for compatibility).
+  `approvedBudget` and `provisionalBudget` are cumulative roll-ups including
+  each tier's own approved/submitted budgets and its descendants' budgets.
+  Unit Heads, Sub-programme Reps, and Programme Heads can create multiple
+  named plan rows within their own scope. Each row has its own narrative,
+  budget, and measurable targets. `POST /api/plans/items` creates a draft
+  from `{ ownerType, ownerId, cycleYear, planTitle, narrative, budget,
+  targets }`;
+  `PUT /api/plans/items/drafts` saves multiple drafts; and
+  `POST /api/plans/items/submit` saves and submits selected rows atomically.
+  Draft deletion is available at `DELETE /api/plans/items/:id`.
+  Submissions require a title, narrative, and either a budget or measurable
+  targets.
+  CPU reviews items with `POST /api/plans/items/approve` for batch approval,
+  or `POST /api/plans/items/:id/approve|return` for an individual decision
+  (`return` requires a `comment`). These approval routes require the CPU
+  role and `approve_annual_plan`. `GET /api/plans/pending` exposes pending
+  submissions to CPU only. The older single-plan `/units/:unitId`,
+  `/subs/:subId`, and `/programmes/:programmeId` routes remain available for
+  compatibility; the multi-plan UI uses the `/items` endpoints.
   `PUT /api/plans/university` / `POST /api/plans/university/submit`
-  (`submit_annual_plan`, CPU only — both now reject the request once the
-  plan is `submitted` or `approved`, the same lock every other tier already
-  enforced), `POST /api/plans/university/approve` (`validate_annual_plan`,
-  University Council only — only while `status: 'submitted'`; sets
-  `status: 'approved'`) / `POST /api/plans/university/return`
-  (`validate_annual_plan` — requires a `comment`; reopens the plan as a
-  `draft` for CPU with that comment attached).
+  (`submit_annual_plan`; submission requires a narrative and either a
+  budget in a lower-tier plan or targets),
+  `POST /api/plans/university/approve|return` (`approve_annual_plan`, CPU role
+  only — approval is accepted only while `status: 'submitted'`; `return`
+  requires a `comment` and reopens the plan as a draft).
+  Submitted and approved proposals are locked to editors until CPU returns
+  them. The University Annual Plan remains a separate CPU-compiled proposal.
 - `GET /api/messages/directory` (every other account's name/title/email/role
   — who you can write to; open to any signed-in user, deliberately not
   scope-restricted), `GET /api/messages/unread-count`,

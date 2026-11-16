@@ -4,6 +4,7 @@ import { useToast } from '../context/ToastContext.jsx';
 import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
 import { byId } from '../lib/scope.js';
+import { employeePosition, headPosition } from '../lib/orgDisplay.js';
 
 // Organisation Maintenance — the MAINTAIN/RETIRE half of admin org
 // management: removing a Programme/Sub-programme/Unit (and restoring one
@@ -64,8 +65,8 @@ export default function OrgStructure() {
               `anything below takes everything nested beneath it — and every login account that only exists ` +
               `because of it — out of view, but nothing is ever actually deleted: it's fully recoverable from ` +
               `"Recently Removed" below. To create a new Programme/Sub-programme/Unit or add an Employee, go to ` +
-              `Organisation Setup. Role and organisation-scope changes for any account happen on Permissions & Roles.`
-            : 'Edit employees within your own unit/sub-programme. To add a new one, go to Organisation Setup. Role changes, organisation-scope changes, and account removal are an ICT System Administrator action on Permissions & Roles.'}
+              `Organisation Setup. Role and organisation-scope changes for any account happen on Roles and Permissions.`
+            : 'Edit employees within your own unit/sub-programme. To add a new one, go to Organisation Setup. Role changes, organisation-scope changes, and account removal are an ICT System Administrator action on Roles and Permissions.'}
         </p>
       </div>
 
@@ -189,7 +190,7 @@ function ManageOptions({ org }) {
 
   async function removeEmployee(ind) {
     if (!(await confirm({
-      title: `Remove ${ind.name} and deactivate their account?`,
+      title: 'Remove this employee and deactivate their account?',
       message: 'Nothing is deleted — they, their KPIs, and their history stay intact and restorable from "Recently Removed" below.',
       confirmLabel: 'Remove employee',
       tone: 'danger',
@@ -197,7 +198,7 @@ function ManageOptions({ org }) {
     setBusyKey(`i${ind.id}`);
     try {
       await api(`/org/employees/${ind.id}`, { method: 'DELETE' });
-      toast(`${ind.name} removed — recoverable from Recently Removed.`);
+      toast('Employee removed — recoverable from Recently Removed.');
       await reloadCore();
       await reloadRemoved();
     } catch (err) { toast(err.message, 'err'); }
@@ -330,7 +331,7 @@ function EmployeeRow({ i, busyKey, onRemove }) {
   return (
     <div className="text-[12.5px]">
       <div className="flex items-center gap-2 flex-wrap text-ink-muted">
-        <span>• {i.name} — {i.role_title || ''}</span>
+        <span>• {employeePosition(i)}</span>
         <button onClick={() => onRemove(i)} disabled={busyKey === `i${i.id}`} className="text-critical hover:underline disabled:opacity-40">remove</button>
       </div>
     </div>
@@ -403,8 +404,8 @@ function RecentlyRemoved({ org, removed, removedOpen, setRemovedOpen, busyKey, o
             {employees.length > 0 && (
               <RemovedGroup title="Employees">
                 {employees.map((i) => (
-                  <RemovedRow key={`i${i.id}`} label={`${i.unit_id == null ? 'No department' : unitName(i.unit_id)} — ${i.name} (${i.role_title || ''})`} busy={busyKey === `restore-employees-${i.id}`}
-                    onRestore={() => onRestore('employees', i.id, i.name)} />
+                  <RemovedRow key={`i${i.id}`} label={`${i.unit_id == null ? 'No department' : unitName(i.unit_id)} — ${employeePosition(i)}`} busy={busyKey === `restore-employees-${i.id}`}
+                    onRestore={() => onRestore('employees', i.id, employeePosition(i))} />
                 ))}
               </RemovedGroup>
             )}
@@ -467,10 +468,10 @@ function OwnScopeTeam({ org, user }) {
         const inds = org.employees.filter((i) => i.unit_id === u.id);
         return (
           <div key={u.id} className="card">
-            <div><b>{u.name}</b> <span className="text-ink-muted text-[12px]">({u.kind} · Head: {u.head || '—'})</span></div>
+            <div><b>{u.name}</b> <span className="text-ink-muted text-[12px]">({u.kind}{headPosition(u) ? ` · Head: ${headPosition(u)}` : ''})</span></div>
             <div className="mt-1.5 space-y-1">
               {inds.map((i) => (
-                <div key={i.id} className="text-[12.5px] text-ink-muted">• {i.name} — {i.role_title || ''}</div>
+                <div key={i.id} className="text-[12.5px] text-ink-muted">• {employeePosition(i)}</div>
               ))}
               {inds.length === 0 && <div className="text-ink-muted text-[11.5px]">No employees yet.</div>}
             </div>

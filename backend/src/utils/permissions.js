@@ -5,8 +5,8 @@
 // takes effect on the user's very next request, not just their next login.
 
 const PERMISSIONS = [
-  { key: 'data_entry', label: 'Enter & submit own data', group: 'Data' },
-  { key: 'approve_own_tier', label: 'Approve submissions from the tier below', group: 'Data' },
+  { key: 'data_entry', label: 'Enter data for own scope', group: 'Data' },
+  { key: 'approve_own_tier', label: 'Review KPI submissions (Corporate Planning Unit only)', group: 'Data' },
   { key: 'apply_override', label: 'Apply manual overrides on automated KPIs', group: 'Data' },
   { key: 'edit_targets', label: 'Edit KPI baselines & targets', group: 'Framework' },
   { key: 'create_kpi', label: 'Create new KPIs', group: 'Framework' },
@@ -48,14 +48,7 @@ const PERMISSIONS = [
   { key: 'delete_employees', label: 'Delete Employees', group: 'Framework' },
   { key: 'manage_framework', label: 'Propose structural changes', group: 'Framework' },
   { key: 'submit_annual_plan', label: 'Compile & submit the university annual plan', group: 'Framework' },
-  // The University Council's own authority: the one gate the compiled
-  // Annual Plan (and the structure it's built from — every Programme's
-  // compiled position beneath it) must pass before it's official for the
-  // cycle — see routes/plans.js's POST /university/approve|return. Kept as
-  // a real, revocable permission (not a hardcoded role check) so ICT admin
-  // can extend or narrow exactly who sits on Council the same way every
-  // other authority in this app works.
-  { key: 'validate_annual_plan', label: 'Validate & approve the University Annual Plan (University Council)', group: 'Governance' },
+  { key: 'approve_annual_plan', label: 'Approve or return annual plans and budgets (Corporate Planning Unit only)', group: 'Governance' },
   { key: 'manage_settings', label: 'Manage RAG thresholds & cutoffs', group: 'Admin' },
   { key: 'manage_users', label: 'Grant & revoke permissions', group: 'Admin' },
   // Deliberately separate from manage_users: the Users directory is
@@ -90,6 +83,25 @@ const PERMISSIONS = [
   { key: 'view_institutional_performance', label: 'View Overall Institutional Performance (All Programmes)', group: 'Visibility' },
 ];
 
+const CPU_PERMISSIONS = [
+  'approve_own_tier',
+  'approve_annual_plan',
+  'manage_settings',
+  'create_kpi',
+  'edit_kpi',
+  'delete_kpi',
+  'edit_targets',
+  'manage_org_units',
+  'manage_framework',
+  'submit_annual_plan',
+  'view_reports',
+  'view_audit',
+  'view_overview',
+  'view_framework',
+  'view_institutional_performance',
+  'view_users',
+];
+
 // Role -> default permission set, used only at seed time. Permissions live
 // per-user in the database from then on, not hardcoded to role at request time.
 const DEFAULT_PERMS_BY_ROLE = {
@@ -109,16 +121,19 @@ const DEFAULT_PERMS_BY_ROLE = {
   // authority — every edit/remove/role-change/permission-grant action on
   // that page stays reserved for ICT Systems Administrator alone (see the
   // comment on 'view_users' above and routes/users.js's per-route gating).
-  cpu: ['approve_own_tier', 'manage_settings', 'create_kpi', 'edit_kpi', 'delete_kpi', 'edit_targets', 'manage_org_units', 'manage_framework', 'submit_annual_plan', 'view_reports', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance', 'view_users'],
+  cpu: CPU_PERMISSIONS,
   // ICT System Administrators manage the organisational structure (units,
   // departments, faculties, regions, and employees), the KPI catalogue
   // itself (creating new KPIs, not just editing targets on existing ones),
-  // and overrides, by default, in addition to their exclusive
-  // permission-management role — they don't have to grant these to
-  // themselves first.
-  ictadmin: ['manage_users', 'manage_org_units', 'create_kpi', 'edit_kpi', 'delete_kpi', 'edit_targets', 'apply_override', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
-  rep: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
-  unithead: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework'],
+  // and overrides. They receive the CPU permissions except approval
+  // permissions, plus ICT-specific permission-management authority.
+  ictadmin: [
+    ...CPU_PERMISSIONS.filter((key) => key !== 'approve_own_tier' && key !== 'approve_annual_plan'),
+    'manage_users',
+    'apply_override',
+  ],
+  rep: ['data_entry', 'view_overview', 'view_framework'],
+  unithead: ['data_entry', 'view_overview', 'view_framework'],
   employee: ['data_entry', 'view_overview', 'view_framework'],
   // A bare, scope-less, read-only account (see routes/org.js's POST
   // /employees) — identical to 'employee' minus 'data_entry', so
@@ -142,15 +157,13 @@ const DEFAULT_PERMS_BY_ROLE = {
   // user_permissions and role_permissions (see middleware/auth.js), this
   // takes effect immediately for every existing Programme Head account —
   // no backfill migration needed.
-  programme: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework', 'view_reports'],
+  programme: ['data_entry', 'view_overview', 'view_framework', 'view_reports'],
   // Dead/unused key (not in db.js's BUILT_IN_ROLES) — kept in sync for
   // consistency only.
-  programmehead: ['data_entry', 'approve_own_tier', 'view_overview', 'view_framework', 'view_reports'],
-  // University Council: holds explicit governance authority over the structural
-  // compilation. They can approve or return the completed Annual Plan layout via 
-  // the `validate_annual_plan` checkpoint, and have broad visibility over historical 
-  // reports, metrics, and institutional rollup pages.
-  council: ['validate_annual_plan', 'view_reports', 'view_overview', 'view_framework', 'view_institutional_performance']
+  programmehead: ['data_entry', 'view_overview', 'view_framework', 'view_reports'],
+  // University Council: read-only oversight of the annual plan and institutional
+  // reports. CPU alone approves and returns plan proposals at every tier.
+  council: ['view_reports', 'view_overview', 'view_framework', 'view_institutional_performance']
 };
 
 function defaultPermsForRole(role) {

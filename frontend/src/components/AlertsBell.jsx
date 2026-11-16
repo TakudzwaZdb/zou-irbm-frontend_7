@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useRef } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { computeAlerts } from '../lib/alerts.js';
 import { readSeen, writeSeen } from '../lib/seenAlerts.js';
+import { api } from '../lib/api.js';
 
 const KIND_STYLE = {
   returned: 'bg-warning-soft text-warning',
@@ -22,6 +23,8 @@ export default function AlertsBell({ setRoute }) {
   const [open, setOpen] = useState(false);
   const [seen, setSeen] = useState(() => readSeen(user.id));
   const [fadingAlertId, setFadingAlertId] = useState(null);
+  const [pendingPlans, setPendingPlans] = useState([]);
+  const [planAlertError, setPlanAlertError] = useState(null);
   
   // Shake Animation and Toast references
   const [isShaking, setIsShaking] = useState(false);
@@ -30,9 +33,45 @@ export default function AlertsBell({ setRoute }) {
   const toastTimeoutRef = useRef(null);
   const previousCountRef = useRef(0);
 
+  useEffect(() => {
+    if (user.role !== 'cpu') {
+      setPendingPlans([]);
+      setPlanAlertError(null);
+      return undefined;
+    }
+
+    let active = true;
+    async function refreshPendingPlans() {
+      try {
+        const result = await api('/plans/pending');
+        if (active) {
+          setPendingPlans(result.proposals);
+          setPlanAlertError(null);
+        }
+      } catch (err) {
+        if (active) setPlanAlertError(err.message);
+      }
+    }
+
+    refreshPendingPlans();
+    const timer = setInterval(refreshPendingPlans, 30_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [user.id, user.role]);
+
   const allAlerts = useMemo(
-    () => computeAlerts(org, kpis, values, settings, user, period, assignments, contributions),
-    [org, kpis, values, settings, user, period, assignments, contributions],
+    () => [
+      ...computeAlerts(org, kpis, values, settings, user, period, assignments, contributions),
+      ...pendingPlans.map((proposal) => ({
+        id: `pending-plan-${proposal.id}-${proposal.submitted_at}`,
+        kind: 'pending',
+        route: 'planning',
+        message: `${proposal.plan_title} — ${proposal.owner_name}, ${proposal.cycle_year} cycle — is waiting for CPU approval.`,
+      })),
+    ],
+    [org, kpis, values, settings, user, period, assignments, contributions, pendingPlans],
   );
 
   const activeAlerts = useMemo(() => {
@@ -170,9 +209,14 @@ export default function AlertsBell({ setRoute }) {
               )}
             </div>
 
-            {activeAlerts.length === 0 ? (
+            {planAlertError && (
+              <div role="alert" className="px-3.5 py-3 text-[12px] text-critical">
+                Could not check pending plans: {planAlertError}
+              </div>
+            )}
+            {activeAlerts.length === 0 && !planAlertError ? (
               <div className="px-3.5 py-6 text-center text-[12.5px] text-ink-muted">Nothing needs your attention.</div>
-            ) : (
+            ) : activeAlerts.length > 0 && (
               activeAlerts.map((a) => {
                 const isFading = fadingAlertId === a.id;
                 return (

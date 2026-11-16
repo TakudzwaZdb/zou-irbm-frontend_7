@@ -2,7 +2,6 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { api, setToken, setUnauthorizedHandler, setPasswordChangeRequiredHandler } from '../lib/api.js';
 import { currentPeriod, canDrillToKind } from '../lib/scope.js';
 import { defaultIdx, rangeFor, latestInRange } from '../lib/period.js';
-import { playTone } from '../lib/sound.js';
 
 const AppContext = createContext(null);
 
@@ -48,18 +47,6 @@ export function AppProvider({ children }) {
   const [period, setPeriod] = useState(currentPeriod());
   const [lastSync, setLastSync] = useState(null);
   const [syncing, setSyncing] = useState(false);
-  // Unread internal-messaging count (see pages/Messages.jsx / routes/messages.js)
-  // — shown as a badge on the "Messages" nav item. Loaded on login/refresh/
-  // after reading or sending, same as everything else here (no timer).
-  const [unreadMessages, setUnreadMessages] = useState(0);
-  // Last unread count we actually knew, kept outside React state so
-  // reloadUnread can compare "did this go up" without waiting on a render.
-  // null means "haven't checked yet" (fresh login) — the very first check
-  // just establishes that baseline silently; only a check AFTER that one
-  // finding a higher count means something genuinely new arrived, which is
-  // when the "received" ring tone below is earned.
-  const unreadKnownRef = useRef(null);
-
   // Which org node (Programme / Sub-programme / Unit / Employee) the
   // sidebar tree / Overview drill-down is currently focused on — shared
   // between the two so clicking a tree row and clicking a card on Overview
@@ -137,17 +124,6 @@ export function AppProvider({ children }) {
     loadPerfValues(next);
   }, [loadPerfValues]);
 
-  const reloadUnread = useCallback(async () => {
-    try {
-      const r = await api('/messages/unread-count');
-      if (unreadKnownRef.current !== null && r.count > unreadKnownRef.current) {
-        playTone('received');
-      }
-      unreadKnownRef.current = r.count;
-      setUnreadMessages(r.count);
-    } catch (_) { /* non-critical — leave the last known count showing */ }
-  }, []);
-
   const reloadUser = useCallback(async () => {
     const r = await api('/auth/me');
     setUser(r.user);
@@ -188,8 +164,7 @@ export function AppProvider({ children }) {
     const pp = { type: 'monthly', year: p.year, idx: defaultIdx('monthly', p.month) };
     setPerfPeriod(pp);
     await loadPerfValues(pp);
-    await reloadUnread();
-  }, [loadValuesForPeriod, loadContributionsForPeriod, loadSubmissionWindow, loadPerfValues, reloadUnread, reloadHidden, reloadTemplates]);
+  }, [loadValuesForPeriod, loadContributionsForPeriod, loadSubmissionWindow, loadPerfValues, reloadHidden, reloadTemplates]);
 
   // Refresh everything on demand (the header's Refresh control — see
   // LiveIndicator.jsx) — values, the performance lens, and the org/KPI
@@ -205,15 +180,15 @@ export function AppProvider({ children }) {
       const [userRes, orgRes, kpiRes, settingsRes, assignRes] = await Promise.all([api('/auth/me'), api('/org'), api('/kpis'), api('/settings'), api('/kpis/assignments')]);
       setUser(userRes.user);
       setOrg(orgRes); setKpis(kpiRes.kpis); setSettings(settingsRes.settings); setAssignments(assignRes.assignments);
-      await Promise.all([loadValuesForPeriod(period), loadContributionsForPeriod(period), loadSubmissionWindow(period), loadPerfValues(perfPeriod), reloadUnread(), reloadHidden(), reloadTemplates()]);
+      await Promise.all([loadValuesForPeriod(period), loadContributionsForPeriod(period), loadSubmissionWindow(period), loadPerfValues(perfPeriod), reloadHidden(), reloadTemplates()]);
     } finally {
       setSyncing(false);
     }
-  }, [period, perfPeriod, loadValuesForPeriod, loadContributionsForPeriod, loadSubmissionWindow, loadPerfValues, reloadUnread, reloadHidden, reloadTemplates]);
+  }, [period, perfPeriod, loadValuesForPeriod, loadContributionsForPeriod, loadSubmissionWindow, loadPerfValues, reloadHidden, reloadTemplates]);
 
   // The fast path: everyone's day-to-day reason to hit refresh is "did
-  // anyone's figures move" — a value someone just saved, a contribution
-  // submitted/approved, a new message — not "did the org chart or KPI
+  // anyone's figures move" — a value someone just saved or a contribution
+  // submitted/approved — not "did the org chart or KPI
   // catalogue change", which happens rarely (a KPI created/edited/deleted, a
   // custodian assignment) and is what refreshAll's org/kpis/settings/
   // assignments calls are for. quickRefresh skips exactly those four slow,
@@ -227,12 +202,12 @@ export function AppProvider({ children }) {
     quickRefreshing.current = true;
     setQuickSyncing(true);
     try {
-      await Promise.all([reloadUser(), loadValuesForPeriod(period), loadContributionsForPeriod(period), loadSubmissionWindow(period), loadPerfValues(perfPeriod), reloadUnread()]);
+      await Promise.all([reloadUser(), loadValuesForPeriod(period), loadContributionsForPeriod(period), loadSubmissionWindow(period), loadPerfValues(perfPeriod)]);
     } finally {
       setQuickSyncing(false);
       quickRefreshing.current = false;
     }
-  }, [period, perfPeriod, loadValuesForPeriod, loadContributionsForPeriod, loadSubmissionWindow, loadPerfValues, reloadUnread, reloadUser]);
+  }, [period, perfPeriod, loadValuesForPeriod, loadContributionsForPeriod, loadSubmissionWindow, loadPerfValues, reloadUser]);
 
   const changePeriod = useCallback((p) => {
     setPeriod(p);
@@ -383,7 +358,6 @@ export function AppProvider({ children }) {
     reloadValues: () => Promise.all([loadValuesForPeriod(period), loadContributionsForPeriod(period), loadSubmissionWindow(period)]),
     setSettings,
     lastSync, syncing,
-    unreadMessages, reloadUnread,
   };
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

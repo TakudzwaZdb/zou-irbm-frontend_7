@@ -29,10 +29,7 @@ export function isOwner(user, kpi) {
 // the Programme Head, gated on a now-retired `status === 'programme_approved'`
 // check here; that's been removed by deliberate request.)
 export function isApprover(org, user, kpi) {
-  if (kpi.owner_type === 'employee') return user.role === 'unithead' && user.scope_id === employeeUnitId(org, kpi.owner_id);
-  if (kpi.owner_type === 'unit') return user.role === 'rep' && user.scope_id === unitSubId(org, kpi.owner_id);
-  const programmeId = byId(org.subs, kpi.owner_id)?.programme_id;
-  return user.role === 'programme' && programmeId != null && user.scope_id === programmeId;
+  return user.role === 'cpu';
 }
 export function inJurisdiction(org, user, kpi) {
   if (['cpu', 'ictadmin', 'exec', 'vc'].includes(user.role)) return true;

@@ -21,8 +21,8 @@ export default function Approvals() {
   // Rep, for a Unit KPI), but "did I assign this KPI to people who've now
   // submitted THEIR figure to me". Every shared Unit KPI this Unit Head
   // owns that has at least one contribution awaiting them this period.
-  const myUnitKpis = user.role === 'unithead'
-    ? kpis.filter((k) => k.owner_type === 'unit' && k.owner_id === user.scope_id)
+  const myUnitKpis = user.role === 'cpu'
+    ? kpis.filter((k) => k.owner_type === 'unit')
     : [];
   const pendingContributionKpis = myUnitKpis.filter((k) =>
     assignments.some((a) => a.kpi_id === k.id) &&
@@ -54,7 +54,7 @@ export default function Approvals() {
       {pendingContributionKpis.length > 0 && (
         <div className="mt-5">
           <h2 className="font-display font-bold text-[13.5px] text-ink-secondary mb-2">
-            Contributions from your team, awaiting your review
+            Employee contributions awaiting your review
           </h2>
           <TeamApprovalsTable kpis={pendingContributionKpis} />
         </div>

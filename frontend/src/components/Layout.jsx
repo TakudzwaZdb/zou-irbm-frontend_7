@@ -5,7 +5,6 @@ import { avatarClass, initialsOf, ROLE_LABEL } from '../lib/scope.js';
 import AlertsBell from './AlertsBell.jsx';
 import LiveIndicator from './LiveIndicator.jsx';
 import OrgTree from './OrgTree.jsx';
-import SoundToggle from './SoundToggle.jsx';
 import ThemeToggle from './ThemeToggle.jsx';
 
 const SCOPED_ROLES = ['rep', 'unithead', 'employee', 'programme'];
@@ -29,15 +28,15 @@ function GreetingBanner({ name }) {
   return (
     <div
       role="status"
-      className="fixed top-[78px] left-1/2 -translate-x-1/2 z-50 rounded-full bg-ink text-page text-[13px] font-semibold px-4 py-2 shadow-lg animate-[fadeIn_.25s_ease]"
+      className="fixed top-[78px] left-1/2 -translate-x-1/2 z-50 max-w-[calc(100vw-2rem)] rounded-full bg-ink text-page text-[13px] font-semibold text-center px-4 py-2 shadow-lg animate-[fadeIn_.25s_ease]"
     >
-      Welcome back, {name}
+      Welcome, {name}! You're signed in to the ZOU Strategic Plan Monitor.
     </div>
   );
 }
 
 export default function Layout({ route, setRoute, children }) {
-  const { user, logout, unreadMessages } = useApp();
+  const { user, logout } = useApp();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { hasPerm } = useApp();
   const nav = currentNav(user, hasPerm);
@@ -106,7 +105,6 @@ export default function Layout({ route, setRoute, children }) {
         </div>
         <div className="flex-1" />
         <LiveIndicator />
-        <SoundToggle />
         <ThemeToggle />
         <AlertsBell setRoute={setRoute} />
         <button
@@ -130,7 +128,7 @@ export default function Layout({ route, setRoute, children }) {
                 </span>
               )}
             </div>
-            <div className="text-[10.8px] text-ink-secondary truncate max-w-[180px]">{user.title || user.role}</div>
+            <div className="text-[10.8px] text-ink-secondary truncate max-w-[180px]">{user.title || ROLE_LABEL[user.role] || user.role}</div>
           </div>
         </button>
         <button className="btn btn-sm" onClick={logout}>Sign out</button>
@@ -177,11 +175,6 @@ export default function Layout({ route, setRoute, children }) {
                 >
                   <span className="w-4 text-center flex-none" aria-hidden="true">{item.icon}</span>
                   {item.label}
-                  {k === 'messages' && unreadMessages > 0 && (
-                    <span className="ml-auto min-w-[18px] h-[18px] px-1 rounded-full bg-critical text-white text-[10px] font-bold flex items-center justify-center flex-none" aria-label={`, ${unreadMessages} unread`}>
-                      {unreadMessages > 9 ? '9+' : unreadMessages}
-                    </span>
-                  )}
                 </button>
               );
             })}

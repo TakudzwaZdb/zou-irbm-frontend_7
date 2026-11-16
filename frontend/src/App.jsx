@@ -34,7 +34,6 @@ const Settings = lazy(() => import('./pages/Settings.jsx'));
 const Users = lazy(() => import('./pages/Users.jsx'));
 const Permissions = lazy(() => import('./pages/Permissions.jsx'));
 const Profile = lazy(() => import('./pages/Profile.jsx'));
-const Messages = lazy(() => import('./pages/Messages.jsx'));
 
 const PAGES = {
   overview: Overview,
@@ -51,7 +50,6 @@ const PAGES = {
   users: Users,
   permissions: Permissions,
   profile: Profile,
-  messages: Messages,
 };
 
 export default function App() {

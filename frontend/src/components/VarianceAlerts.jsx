@@ -1,5 +1,6 @@
-import { ownerName } from '../lib/scope.js';
+import { byId, ownerName } from '../lib/scope.js';
 import { useApp } from '../context/AppContext.jsx';
+import { employeePosition } from '../lib/orgDisplay.js';
 
 // The real alert list a variance rollup drives: every KPI whose variance
 // (actual progress % minus expected pace %) is -10 or worse — running 10+
@@ -14,7 +15,7 @@ import { useApp } from '../context/AppContext.jsx';
 const VERTICAL_SCROLL_THRESHOLD = 6;
 const VISIBLE_ROW_HEIGHT = 44; // ~one alert row, used to size the scroll cap
 
-export default function VarianceAlerts({ items, periodLabel }) {
+export default function VarianceAlerts({ items, periodLabel, hidePersonNames = false }) {
   const { org } = useApp();
   const flagged = items.filter((i) => i.flag === 'attention');
   if (flagged.length === 0) return null;
@@ -43,7 +44,7 @@ export default function VarianceAlerts({ items, periodLabel }) {
           <div key={kpi.id} className="flex items-center gap-2.5 flex-wrap bg-surface rounded-lg px-3 py-2 text-[12.3px]">
             <span className="chip bg-critical text-white flex-none">{variance}pts</span>
             <span className="font-semibold">{kpi.name}</span>
-            <span className="text-ink-muted">· {ownerName(org, kpi)}</span>
+            <span className="text-ink-muted">· {hidePersonNames && kpi.owner_type === 'employee' ? employeePosition(byId(org.employees, kpi.owner_id)) : ownerName(org, kpi)}</span>
             <span className="ml-auto text-ink-secondary whitespace-nowrap">
               {actualPct}% actual vs {expectedPct}% expected
             </span>

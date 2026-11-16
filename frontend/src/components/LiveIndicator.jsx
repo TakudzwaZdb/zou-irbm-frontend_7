@@ -43,7 +43,7 @@ export default function LiveIndicator() {
         onClick={quickRefresh}
         disabled={busy}
         className="flex items-center gap-1.5 text-[11.5px] text-ink-muted hover:text-ink-secondary disabled:cursor-wait px-1 py-1 rounded-l-lg"
-        title="Quick refresh — values, contributions, and messages (fast)"
+        title="Quick refresh — values and contributions (fast)"
         aria-label={`Quick refresh. ${syncing || quickSyncing ? 'Refreshing…' : `Synced ${timeAgo(lastSync)}`}`}
       >
         <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full ${busy ? 'bg-accent-500 animate-pulse' : 'bg-good'}`} />
@@ -72,7 +72,7 @@ export default function LiveIndicator() {
             onClick={() => { quickRefresh(); setMenuOpen(false); }}
           >
             <span className="font-semibold">Quick refresh</span>
-            <span className="text-[11px] text-ink-muted">Values, contributions &amp; messages — fast.</span>
+            <span className="text-[11px] text-ink-muted">Values and contributions — fast.</span>
           </button>
           <button
             role="menuitem"

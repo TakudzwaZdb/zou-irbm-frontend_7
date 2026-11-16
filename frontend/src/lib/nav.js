@@ -43,11 +43,7 @@ export const NAV_ITEMS = {
   // Permissions & Roles stays manage_users-only, full stop — there is no
   // view-only version of granting/revoking permissions or changing roles.
   users: { label: 'Users', icon: '🔑', perm: ['manage_users', 'view_users'] },
-  permissions: { label: 'Permissions & Roles', icon: '☷', perm: 'manage_users' },
-  // No `perm` gate — internal messaging is deliberately open to every
-  // signed-in account regardless of role or permissions, since the whole
-  // point is real communication reaching straight across tiers.
-  messages: { label: 'Messages', icon: '✉' },
+  permissions: { label: 'Roles and Permissions', icon: '☷', perm: 'manage_users' },
 };
 
 // Framework is on every role's nav — everyone can see the programmes /
@@ -66,10 +62,9 @@ export const NAV_ITEMS = {
 // real, revocable permission ICT admin can take away from one specific
 // person, not a hardcoded "everyone always sees this" rule.
 // Annual Plan & Budget is the yearly planning cascade (see pages/Planning.jsx):
-// Units submit a narrative + budget proposal for the next cycle, Sub-programme
-// Reps approve those and submit their own sub-level narrative (its budget is
-// always the derived sum of its units, never typed in), and CPU compiles each
-// Programme and finally the whole University Annual Plan. Employees and ICT
+// Units submit a narrative with a budget and/or measurable targets; Reps and
+// Programme Heads add their tier's plan content; CPU approves every tier and
+// compiles the University Annual Plan. Employees and ICT
 // Admin don't own a unit/sub in this workflow, so it's not in their nav.
 // Order mirrors the original prototype's flow: a person whose job is data
 // entry sees "My Data Entry" (and, once they have someone reporting to
@@ -78,10 +73,8 @@ export const NAV_ITEMS = {
 // task. Global/oversight roles (exec/cpu/ictadmin) keep Overview first,
 // since for them IT is the landing task.
 // Programme Head: read-only oversight of every Sub-programme in their own
-// Programme (Overview/Framework, same as everyone else) plus the one real
-// action that's theirs at their tier — compiling & submitting (or approving
-// a Sub-programme's proposal up into) their Programme's Annual Plan &
-// Budget, see routes/plans.js's isProgrammeHeadOwner. No "My Data Entry" —
+// Programme plus compiling and submitting their Programme's plan to CPU for
+// approval, see routes/plans.js's isProgrammeHeadOwner. No "My Data Entry" —
 // a Programme never owns a KPI directly, so there's nothing at their own
 // tier to fill in.
 // kpiManagement/orgBuilder/orgStructure are added to exactly the role lists
@@ -98,44 +91,40 @@ export const NAV_ITEMS = {
 // list) — perm-gating inside currentNav is the second filter, not the only
 // one.
 export const ROLE_NAV_KEYS = {
-  exec: ['overview', 'framework', 'planning', 'compliance', 'reports', 'messages'],
+  exec: ['overview', 'framework', 'planning', 'compliance', 'reports'],
   // Vice Chancellor — same read-only nav as Executive (see utils/permissions.js
   // on the backend: identical default permission set), now its own role
   // instead of an 'exec' account carrying the Executive Owner flag.
-  vc: ['overview', 'framework', 'planning', 'compliance', 'reports', 'messages'],
-  employee: ['entry', 'overview', 'framework', 'messages'],
-  unithead: ['entry', 'approvals', 'overview', 'framework', 'orgBuilder', 'planning', 'messages'],
-  rep: ['entry', 'approvals', 'overview', 'framework', 'orgBuilder', 'planning', 'messages'],
+  vc: ['overview', 'framework', 'planning', 'compliance', 'reports'],
+  employee: ['entry', 'overview', 'framework'],
+  unithead: ['entry', 'overview', 'framework', 'orgBuilder', 'planning'],
+  rep: ['entry', 'overview', 'framework', 'orgBuilder', 'planning'],
   // 'users' added explicitly (not left to the granted-permission fallback
   // in currentNav below) so it lands in this deliberate position rather
   // than tacked on at the very end — CPU holds view_users by default (see
   // utils/permissions.js on the backend), which gets it into the Users
   // directory read-only; Users.jsx itself hides every action button for a
   // viewer who lacks manage_users.
-  cpu: ['overview', 'approvals', 'framework', 'kpiManagement', 'orgBuilder', 'planning', 'compliance', 'reports', 'users', 'audit', 'settings', 'messages'],
+  cpu: ['overview', 'approvals', 'framework', 'kpiManagement', 'orgBuilder', 'planning', 'compliance', 'reports', 'users', 'audit', 'settings'],
   // ICT System Administrator keeps 'framework' — the org chart read-only,
   // same as every other role — alongside the pages that act on the org
   // (KPI Management / Organisation Setup / Organisation Maintenance).
-  ictadmin: ['overview', 'framework', 'kpiManagement', 'orgBuilder', 'users', 'permissions', 'audit', 'messages'],
+  ictadmin: ['overview', 'framework', 'kpiManagement', 'orgBuilder', 'users', 'permissions', 'audit'],
   // 'approvals' added: a Sub-programme's own KPI submission is approved by
   // its own Programme Head, finally (see lib/scope.js's isApprover /
   // routes/kpis.js) — CPU has no role in this cascade — so Programme Head
   // needs a real Approvals Queue of their own now, not just read-only
   // oversight.
-  programme: ['overview', 'approvals', 'framework', 'planning', 'reports', 'messages'],
-  // University Council: read-only oversight (Overview/Framework/Reports,
-  // same as every other role) plus the one real action that's theirs —
-  // validating and approving (or returning) the University Annual Plan on
-  // Annual Plan & Budget once CPU has submitted it. See pages/Planning.jsx's
-  // CouncilPanel / routes/plans.js's POST /university/approve|return.
-  council: ['overview', 'planning', 'framework', 'reports', 'messages'],
+  programme: ['overview', 'framework', 'planning', 'reports'],
+  // University Council: read-only oversight of the annual plan and reports.
+  council: ['overview', 'planning', 'framework', 'reports'],
 };
 
 export function currentNav(user, hasPerm) {
   const roleKeys = ROLE_NAV_KEYS[user.role] || ['overview'];
   // A permission grant must be enough to make its page reachable, even when
   // the recipient's role did not originally list that page. Role lists still
-  // control pages with no permission gate, such as Planning and Messages.
+  // control pages with no permission gate, such as Planning.
   const grantedKeys = Object.keys(NAV_ITEMS).filter((key) => NAV_ITEMS[key].perm && !roleKeys.includes(key));
   const keys = [...roleKeys, ...grantedKeys];
   return keys.filter((k) => {

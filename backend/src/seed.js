@@ -1,17 +1,66 @@
-// Populates the real SQLite database with the ZOU org structure, accounts,
-// and starter KPIs. Safe to re-run: it wipes and rebuilds every table, so use
-// it for first-time setup or to reset the demo data — not on a live system
-// with real submitted data you want to keep.
+// Creates the starter ZOU org structure, accounts, and KPIs on an empty
+// database. Pass --reset only to deliberately rebuild demo data; never use
+// that mode on a production database.
 require('dotenv').config();
 const bcrypt = require('bcryptjs');
 const db = require('./db');
 const { PERMISSIONS, DEFAULT_PERMS_BY_ROLE } = require('./utils/permissions');
-const { emailFor } = require('./utils/email');
+const DASHBOARD_OUTPUT_KPIS = require('./data/dashboardOutputs');
+// ZOU email convention: surname + first-name initial (e.g. Takudzwa Zuze -> zuzet@zou.ac.zw).
+// Titles and post-name descriptions are ignored. Ambiguous one-token names use the
+// surname only; duplicate addresses are rejected below rather than silently altered.
+function emailFor(fullName) {
+  const clean = String(fullName || '')
+    .replace(/\([^)]*\)/g, ' ')
+    .split(/[—–-]/)[0]
+    .replace(/\b(Mr|Mrs|Ms|Miss|Dr|Prof|Professor|Eng|Engineer|Rev|Reverend)\.?\b/gi, ' ')
+    .replace(/[^A-Za-z.\s'-]/g, ' ')
+    .trim();
+  const parts = clean.split(/[\s.]+/).filter(Boolean);
+  if (!parts.length) throw new Error(`Cannot derive email from name: ${fullName}`);
+  const surname = parts[parts.length - 1].toLowerCase().replace(/[^a-z]/g, '');
+  const firstInitial = parts.length > 1 ? parts[0][0].toLowerCase() : '';
+  if (!surname) throw new Error(`Cannot derive surname for email: ${fullName}`);
+  return `${surname}${firstInitial}@zou.ac.zw`;
+}
 
+const RESET_SEED = process.argv.includes('--reset');
 const DEMO_PASSWORD = process.env.SEED_PASSWORD || 'Zou@2026';
 
 const txn = db.transaction(async () => {
-  console.log('Wiping existing data...');
+  if (!RESET_SEED) {
+    await db.prepare('SELECT pg_advisory_xact_lock(?)').get(20261117);
+    const existingData = await db.prepare(`
+      SELECT
+        EXISTS (SELECT 1 FROM users)
+        OR EXISTS (SELECT 1 FROM programmes)
+        OR EXISTS (SELECT 1 FROM subs)
+        OR EXISTS (SELECT 1 FROM units)
+        OR EXISTS (SELECT 1 FROM employees)
+        OR EXISTS (SELECT 1 FROM kpis)
+        OR EXISTS (SELECT 1 FROM kpi_values)
+        OR EXISTS (SELECT 1 FROM kpi_contributions)
+        OR EXISTS (SELECT 1 FROM kpi_assignments)
+        OR EXISTS (SELECT 1 FROM kpi_templates)
+        OR EXISTS (SELECT 1 FROM kpi_hidden)
+        OR EXISTS (SELECT 1 FROM plan_proposals)
+        OR EXISTS (SELECT 1 FROM structural_proposals)
+        OR EXISTS (SELECT 1 FROM messages)
+        OR EXISTS (SELECT 1 FROM message_recipients)
+        OR EXISTS (SELECT 1 FROM mfa_recovery_codes)
+        OR EXISTS (SELECT 1 FROM settings)
+        OR EXISTS (SELECT 1 FROM audit_log)
+        OR EXISTS (SELECT 1 FROM role_definitions WHERE built_in = 0)
+        AS has_data
+    `).get();
+    if (existingData.has_data) {
+      throw new Error('The database already contains application data. Initial setup only runs on an empty database; use the app to preserve existing data.');
+    }
+    console.log('Initializing the empty database schema and starter data...');
+  } else {
+    console.log('Reset mode enabled: wiping existing data...');
+  }
+
   await db.exec(`
     DELETE FROM message_recipients; DELETE FROM messages;
     DELETE FROM plan_proposals; DELETE FROM kpi_assignments; DELETE FROM structural_proposals;
@@ -49,118 +98,202 @@ const txn = db.transaction(async () => {
     'INSERT INTO users (name, title, email, password_hash, role, scope_type, scope_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
   );
   const setPerms = db.prepare('INSERT INTO user_permissions (user_id, permission_key) VALUES (?, ?)');
+  const usedEmails = new Map();
   async function makeUser(name, title, role, scopeType, scopeId, permsOverride) {
     const email = emailFor(name);
+    if (usedEmails.has(email)) {
+      throw new Error(`Duplicate generated email ${email}: \"${usedEmails.get(email)}\" and \"${name}\". Resolve the name ambiguity before seeding.`);
+    }
+    usedEmails.set(email, name);
     const { lastInsertRowid: id } = await insertUser.run(name, title, email, passwordHash, role, scopeType, scopeId);
     const perms = permsOverride || DEFAULT_PERMS_BY_ROLE[role] || [];
     for (const k of perms) await setPerms.run(id, k);
     return id;
   }
 
-  console.log('Seeding executive & admin accounts...');
-  // The Vice Chancellor is this university's Executive Owner — the one
-  // account structurally accountable for overall institutional performance
-  // against the Plan (see users.is_executive_owner / routes/org.js's GET /,
-  // which exposes this to every signed-in account, and Overview.jsx's
-  // "Overall Institutional Performance" card). A real designation, not just
-  // a job title: it's what the app itself points to when it says who owns
-  // that number.
-  const vcId = await makeUser('Prof. L. Chareka', 'Vice Chancellor', 'vc', null, null);
-  await db.prepare('UPDATE users SET is_executive_owner = 1 WHERE id = ?').run(vcId);
-  // University Council: the final validation/approval authority over the
-  // compiled University Annual Plan, above CPU's own compile-and-submit
-  // step — see routes/plans.js's POST /university/approve|return. A real
-  // account tier (role='council'), not a relabeled Executive — read-only
-  // everywhere else in the app (DEFAULT_PERMS_BY_ROLE.council), the one
-  // thing this account can actually do is validate and either approve
-  // (putting it into effect) or return the Annual Plan once CPU submits it.
-  await makeUser('Mr. F. Museta', 'Council Chairperson', 'council', null, null);
-  const cpuId = await makeUser('T. Moyo', 'Corporate Planning Unit', 'cpu', null, null);
-  const ictId = await makeUser('L. Chikomo', 'ICT Systems Administrator', 'ictadmin', null, null);
+  console.log('Seeding ZOU executive management and actual organisational hierarchy...');
 
-  console.log('Seeding programmes, sub-programmes, units, employees...');
   const insertProgramme = db.prepare('INSERT INTO programmes (name, head) VALUES (?, ?)');
   const insertSub = db.prepare('INSERT INTO subs (programme_id, name, head, unit_label, rep_user_id) VALUES (?, ?, ?, ?, ?)');
   const insertUnit = db.prepare('INSERT INTO units (sub_id, name, head, kind, head_user_id) VALUES (?, ?, ?, ?, ?)');
   const insertEmployee = db.prepare('INSERT INTO employees (unit_id, name, role_title, user_id) VALUES (?, ?, ?, ?)');
 
-  const pGovId = (await insertProgramme.run('Governance & Administration', 'Mr. S. Chitiyo — DVC Administration')).lastInsertRowid;
-  const pHcdId = (await insertProgramme.run('Human Capital Development', 'Prof. B. Manyanga — DVC Academic')).lastInsertRowid;
-  const pRiiId = (await insertProgramme.run('Research, Innovation & Industrialisation', 'Prof. E. Mavhunga — DVC Research & Innovation')).lastInsertRowid;
+  // Executive leadership: the Vice Chancellor remains the institutional owner.
+  const vcId = await makeUser('Dr. Mutanho', 'Vice Chancellor', 'vc', null, null);
+  await db.prepare('UPDATE users SET is_executive_owner = 1 WHERE id = ?').run(vcId);
+  const executiveAccounts = [
+  ['Mr. Tom', 'Bursar'],
+  ['Dr. P. Kahwema', 'Director, Academic Affairs'],
+];
 
-  // Each Programme's own head gets a real login account — a genuine
-  // 'programme' role scoped (scope_type/scope_id) to that Programme only,
-  // same pattern as every Sub-programme Rep / Unit Head account above. The
-  // Programme's own free-text `head` field (already the exact name used
-  // here) becomes this account's name, so "who leads this Programme" reads
-  // the same in the org chart and in the account directory.
-  const PROGRAMME_HEADS = [
-    { programme: pGovId, name: 'Mr. S. Chitiyo', title: 'DVC Administration — Programme Head, Governance & Administration' },
-    { programme: pHcdId, name: 'Prof. B. Manyanga', title: 'DVC Academic — Programme Head, Human Capital Development' },
-    { programme: pRiiId, name: 'Prof. E. Mavhunga', title: 'DVC Research & Innovation — Programme Head, Research, Innovation & Industrialisation' },
+for (const [name, title] of executiveAccounts) {
+  await makeUser(name, title, 'employee', null, null);
+}
+
+// ICT Systems Administrator
+// Sandy Goreraza receives the dedicated ICT administrator role.
+const ictAdminId = await makeUser(
+  'Sandy Goreraza',
+  'ICT Systems Administrator',
+  'ictadmin',
+  null,
+  null
+);
+// Corporate Planning Unit (CPU)
+// All four CPU members share exactly the same permission bundle.
+// Permissions are inherited from DEFAULT_PERMS_BY_ROLE.cpu.
+
+console.log('Seeding Corporate Planning Unit members...');
+
+const CPU_MEMBERS = [
+  'Dr P Mutanho',
+  'Mr F Chabata',
+  'Ms N Kupara',
+  'Miss F Dengu',
+];
+
+const cpuPermissions = DEFAULT_PERMS_BY_ROLE.cpu;
+
+if (!cpuPermissions || cpuPermissions.length === 0) {
+  throw new Error(
+    'CPU permissions are missing from DEFAULT_PERMS_BY_ROLE in utils/permissions.js'
+  );
+}
+
+for (const name of CPU_MEMBERS) {
+  await makeUser(
+    name,
+    'Corporate Planning Unit Member',
+    'cpu',
+    null,
+    null,
+    cpuPermissions
+  );
+}
+  // Programme heads are mapped to the supplied leadership designations.
+  const pGovId = (await insertProgramme.run('Governance and Administration', 'Mr. Murehwa — Registrar')).lastInsertRowid;
+  const pHcdId = (await insertProgramme.run('Human Capital Development', 'Dr. Kahwema — Pro-Vice Chancellor, Academic Affairs')).lastInsertRowid;
+  const pRiiId = (await insertProgramme.run('Research, Innovation and Industrialisation', 'Mr. Mutyasira — Pro-Vice Chancellor, Research, Innovation and Enterprise Development')).lastInsertRowid;
+  const programmeHeads = [
+    { id: pGovId, name: 'Mr. Murehwa', title: 'Registrar — Programme Head, Governance and Administration' },
+    { id: pHcdId, name: 'Dr. Kahwema', title: 'Pro-Vice Chancellor, Academic Affairs — Programme Head, Human Capital Development' },
+    { id: pRiiId, name: 'Mr. Mutyasira', title: 'Pro-Vice Chancellor, Research, Innovation and Enterprise Development — Programme Head, Research, Innovation and Industrialisation' },
   ];
-  for (const ph of PROGRAMME_HEADS) {
-    const headUserId = await makeUser(ph.name, ph.title, 'programme', 'programme', ph.programme);
-    await db.prepare('UPDATE programmes SET head_user_id = ? WHERE id = ?').run(headUserId, ph.programme);
+  for (const ph of programmeHeads) {
+    const headUserId = await makeUser(ph.name, ph.title, 'programme', 'programme', ph.id);
+    await db.prepare('UPDATE programmes SET head_user_id = ? WHERE id = ?').run(headUserId, ph.id);
   }
 
+  // The three strategic programmes contain the supplied sub-programme groupings.
+  // Research-related categories are retained as separate sub-programmes pending
+  // any later confirmation that some should instead be units.
   const SUBS_SEED = [
-    { key: 's1', programme: pGovId, name: 'Administration', head: 'Mr. T. Muzawazi — Director, Administration', rep: 'P. Marecha (Administration Officer)', unitLabel: 'Department' },
-    { key: 's2', programme: pGovId, name: 'Financial Services', head: 'Mrs. C. Nyoni — Director, Finance', rep: 'L. Sithole (Finance Officer)', unitLabel: 'Department' },
-    { key: 's3', programme: pGovId, name: 'ICT', head: 'Eng. T. Marufu — Director, ICT', rep: 'B. Gwatidzo (ICT Planning Officer)', unitLabel: 'Unit' },
-    { key: 's4', programme: pGovId, name: 'Governance', head: 'Mr. W. Dube — Registrar', rep: 'S. Mapfumo (Governance Officer)', unitLabel: 'Unit' },
-    { key: 's5', programme: pHcdId, name: 'Teaching & Learning', head: 'Prof. B. Manyanga — DVC Academic', rep: 'F. Mutasa (Planning Officer, T&L)', unitLabel: 'Faculty' },
-    { key: 's6', programme: pHcdId, name: 'Library & Information Services', head: 'Ms. R. Ncube — University Librarian', rep: 'N. Chivasa (Library Officer)', unitLabel: 'Unit' },
-    { key: 's7', programme: pRiiId, name: 'Research', head: 'Prof. K. Gumbo — Director, Research', rep: 'P. Sibanda (Research Officer)', unitLabel: 'Unit' },
-    { key: 's8', programme: pRiiId, name: 'Innovation & Enterprises', head: 'Mr. K. Chikafu — Director, Innovation & Enterprises', rep: 'T. Zulu (Innovation Officer)', unitLabel: 'Unit' },
+    { key: 's1', programme: pGovId, name: 'Administration', head: 'Mr. Murehwa — Registrar', unitLabel: 'Department' },
+    { key: 's2', programme: pGovId, name: 'Bursary', head: 'Mr. Tom — Bursar', unitLabel: 'Department' },
+    { key: 's3', programme: pGovId, name: 'Governance and Corporate Services', head: 'Mr. Murehwa — Registrar', unitLabel: 'Unit' },
+    { key: 's4', programme: pGovId, name: 'ICT and Digital Services', head: 'Eng. M. Mvenge — Director, ICT', unitLabel: 'Unit' },
+    { key: 's5', programme: pHcdId, name: 'Teaching and Learning', head: 'Dr. Kahwema — Pro-Vice Chancellor, Academic Affairs', unitLabel: 'Faculty' },
+    { key: 's6', programme: pHcdId, name: 'Library and Information Services', head: 'Mr. Madziwo — Librarian', unitLabel: 'Unit' },
+    { key: 's7', programme: pRiiId, name: 'Research and Postgraduate Studies', head: 'Mr. Mutyoraringa — Pro-Vice Chancellor, Research, Innovation and Enterprise Development', unitLabel: 'Unit' },
+    { key: 's8', programme: pRiiId, name: 'Innovation and Enterprise Development', head: 'Mr. Mutyasira — Pro-Vice Chancellor, Research, Innovation and Enterprise Development', unitLabel: 'Unit' },
   ];
   const subIds = {};
   for (const s of SUBS_SEED) {
-    const repUserId = await makeUser(s.rep, `Sub-programme Rep — ${s.name}`, 'rep', 'sub', null);
-    const { lastInsertRowid: id } = await insertSub.run(s.programme, s.name, s.head, s.unitLabel, repUserId);
-    await db.prepare('UPDATE users SET scope_id = ? WHERE id = ?').run(id, repUserId);
+    // No sub-programme representative was explicitly identified in the supplied roster.
+    // Keep this nullable rather than inventing a person or login account.
+    const { lastInsertRowid: id } = await insertSub.run(s.programme, s.name, s.head, s.unitLabel, null);
     subIds[s.key] = id;
   }
 
+  // Units/departments/faculties are populated from the organisational list supplied.
+  // A named leader is attached only where the designation clearly matches the unit.
   const UNITS_SEED = [
-    { key: 'u1', sub: 's1', name: 'Registry', head: 'Mrs. P. Chikonzo — Registry Manager' },
-    { key: 'u2', sub: 's1', name: 'Human Resources', head: 'Mr. F. Mangwiro — HR Manager' },
-    { key: 'u3', sub: 's2', name: 'Bursary Office', head: 'Mrs. J. Mutandwa — Bursar' },
-    { key: 'u4', sub: 's2', name: 'Procurement Office', head: 'Mr. D. Kanyimo — Procurement Manager' },
-    { key: 'u5', sub: 's3', name: 'Network Infrastructure Unit', head: 'Mr. R. Chinamasa — Network Manager' },
-    { key: 'u6', sub: 's3', name: 'LMS Support Unit', head: 'Ms. V. Mafuta — LMS Support Manager' },
-    { key: 'u7', sub: 's4', name: 'Legal & Compliance Office', head: 'Mrs. G. Chitando — Legal Officer' },
-    { key: 'u8', sub: 's4', name: 'Council Secretariat', head: 'Mr. E. Mabhena — Council Secretary' },
-    { key: 'u9', sub: 's5', name: 'Faculty of Arts & Education', head: 'Prof. L. Mazango — Dean, Arts & Education' },
-    { key: 'u10', sub: 's5', name: 'Faculty of Commerce & Law', head: 'Prof. S. Chiweshe — Dean, Commerce & Law' },
-    { key: 'u11', sub: 's6', name: 'Regional Library Services', head: 'Mrs. A. Mutepfa — Regional Libraries Manager' },
-    { key: 'u12', sub: 's6', name: 'Digital Repository Unit', head: 'Mr. C. Nyathi — Digital Repository Manager' },
-    { key: 'u13', sub: 's7', name: 'Postgraduate Research Unit', head: 'Dr. M. Chirisa — Postgraduate Research Coordinator' },
-    { key: 'u14', sub: 's7', name: 'Grants & Ethics Office', head: 'Dr. F. Rusike — Grants & Ethics Officer' },
-    { key: 'u15', sub: 's8', name: 'Innovation Hub', head: 'Mr. T. Mudimu — Innovation Hub Manager' },
-    { key: 'u16', sub: 's8', name: 'Enterprise Development Unit', head: 'Ms. N. Gutu — Enterprise Development Manager' },
+    { key: 'u1', sub: 's1', name: 'Academic Registry', head: 'Mr. A. Dzobo', title: 'Deputy Registrar, Academic Registry', kind: 'Department' },
+    { key: 'u2', sub: 's1', name: 'Human Resources', head: 'Mrs. Y.P. Museruka', title: 'Deputy Registrar, Human Resources', kind: 'Department' },
+    { key: 'u3', sub: 's2', name: 'Finance and Administration', head: 'Ms. M. Makaza', title: 'Deputy Bursar, Finance & Administration', kind: 'Department' },
+    { key: 'u4', sub: 's2', name: 'Cost Management, Budgetary Control and Student Accounts', head: 'Mr. L. Tom', title: 'Deputy Bursar, Costing, Budgetary Control & Student Accounts', kind: 'Department' },
+    { key: 'u5', sub: 's4', name: 'Infrastructure and Networks', head: 'Mr. C. Nsingo', title: 'Manager, Infrastructure and Networks', kind: 'Unit' },
+    { key: 'u6', sub: 's4', name: 'Information Systems and ICT', head: 'Eng. M. Mvenge', title: 'Director, ICT', kind: 'Unit' },
+    { key: 'u7', sub: 's3', name: 'Legal Services, Partnerships and Internationalisation', head: 'Dr. T. Kasuso', title: 'Manager, Legal Services, Partnerships and Internationalisation Affairs', kind: 'Unit' },
+    { key: 'u8', sub: 's3', name: 'Quality Assurance', head: 'Ms. J. Mudzamiri', title: 'Acting Manager, Quality Assurance', kind: 'Unit' },
+    { key: 'u9', sub: 's5', name: 'Faculty of Arts, Culture and Heritage Studies', head: 'Professor S. Nyota', title: 'Dean, Faculty of Arts, Culture and Heritage Studies', kind: 'Faculty' },
+    { key: 'u10', sub: 's5', name: 'Faculty of Education', head: 'Professor T. Tshabalala', title: 'Dean, Faculty of Education', kind: 'Faculty' },
+    { key: 'u11', sub: 's6', name: 'Library Services', head: 'Mr. Madziwo', title: 'Librarian', kind: 'Unit' },
+    { key: 'u12', sub: 's6', name: 'Records Management', head: 'Mr. N. Vhumbunu', title: 'Manager, Records Management Unit', kind: 'Unit' },
+    { key: 'u13', sub: 's7', name: 'Postgraduate Studies', head: 'Dr. G. Masengwe', title: 'Research Fellow', kind: 'Unit' },
+    { key: 'u14', sub: 's7', name: 'Research and Research Support', head: 'Professor T. Mapolisa', title: 'Director, Research, Innovation & Technological Transfer', kind: 'Unit' },
+    { key: 'u15', sub: 's8', name: 'Innovation and Intellectual Property', head: 'Mr. T. Makandwa', title: 'Manager, Intellectual Property', kind: 'Unit' },
+    { key: 'u16', sub: 's8', name: 'Enterprise Development', head: 'Mr. B. Mutyoraringa', title: 'Manager, Enterprise Development', kind: 'Unit' },
+    { key: 'u17', sub: 's5', name: 'Faculty of Law', head: 'Dr. I. Nzero', title: 'Dean, Faculty of Law', kind: 'Faculty' },
+    { key: 'u18', sub: 's5', name: 'Faculty of Applied Social Sciences', head: 'Dr. G. Tsvuura', title: 'Dean, Faculty of Applied Social Sciences', kind: 'Faculty' },
+    { key: 'u19', sub: 's5', name: 'Faculty of Science', head: 'Dr. K. Dzinavatonga', title: 'Dean, Faculty of Science', kind: 'Faculty' },
+    { key: 'u20', sub: 's5', name: 'Faculty of Technology', head: 'Mr. H. Marufu', title: 'Acting Dean, Faculty of Technology', kind: 'Faculty' },
+    { key: 'u21', sub: 's5', name: 'Faculty of Commerce', head: 'Dr. B. Mbuyisa', title: 'Dean, Faculty of Commerce', kind: 'Faculty' },
+    { key: 'u22', sub: 's3', name: 'Corporate Communications and Marketing', head: 'Mrs. S. Moyo', title: 'Director, Corporate Communications & Marketing', kind: 'Unit' },
+    { key: 'u23', sub: 's3', name: 'Works and Estates', head: 'Mr. C. Jaricha', title: 'Acting Director, Works & Estates', kind: 'Unit' },
+    { key: 'u24', sub: 's3', name: 'Community Engagement and Outreach', head: 'Dr. T. Rugoho', title: 'Manager, Community Engagement & Outreach', kind: 'Unit' },
+    { key: 'u25', sub: 's3', name: 'Procurement', head: 'Dr. S. Ndebele', title: 'Manager, Procurement', kind: 'Unit' },
+    { key: 'u26', sub: 's3', name: 'Risk Management', head: 'Ms. B. Mugandani', title: 'Acting Manager, Risk Management', kind: 'Unit' },
+    { key: 'u27', sub: 's3', name: 'Internal Audit', head: 'Mr. M. Mangoma', title: 'Senior Internal Auditor', kind: 'Unit' },
+    { key: 'u28', sub: 's3', name: 'Admissions', head: 'Mr. E. Maendaenda', title: 'Manager, Admissions', kind: 'Unit' },
+    { key: 'u29', sub: 's3', name: 'Examinations', head: 'Ms. J. Mutumha', title: 'Manager, Examinations', kind: 'Unit' },
+    { key: 'u30', sub: 's3', name: 'Staff Development and Industrial Relations', head: 'Mr. M. Chirima', title: 'Manager, Staff Development and Industrial Relations', kind: 'Unit' },
+    { key: 'u31', sub: 's3', name: 'Human Resources Management', head: 'Ms. M. Masveure', title: 'Manager, Human Resources Management', kind: 'Unit' },
+    { key: 'u32', sub: 's3', name: 'Security Services', head: 'Dr. M. Dzichauya', title: 'Chief Security Officer', kind: 'Unit' },
+    { key: 'u33', sub: 's3', name: 'Transport and Logistics', head: 'Mr. N. Garira', title: 'Acting Manager, Transport and Logistics', kind: 'Unit' },
+    { key: 'u34', sub: 's8', name: 'Business Development', head: 'Dr. T. Chikuvire', title: 'Manager, Business Development', kind: 'Unit' },
+    { key: 'u35', sub: 's8', name: 'Printing Press', head: 'Mr. N. Shati', title: 'Manager, Printing Press', kind: 'Unit' },
+    { key: 'u36', sub: 's5', name: 'Student Affairs', head: 'Mr. E. Mberi', title: 'Manager, Student Affairs', kind: 'Unit' },
+    { key: 'u37', sub: 's3', name: 'Campus Radio', head: 'Mr. C. Mabaso', title: 'Director, Campus Radio', kind: 'Unit' },
+    { key: 'u38', sub: 's5', name: 'Teaching and Learning', head: 'Professor C. Chiome', title: 'Director, Teaching and Learning', kind: 'Unit' },
+    { key: 'u39', sub: 's3', name: 'Vice Chancellor Office', head: 'Dr. M. Chiwodza', title: "Executive Director, Vice Chancellor's Office", kind: 'Unit' },
+    { key: 'u40', sub: 's5', name: 'Graduate School of Business', head: 'Professor L. Dube', title: 'Director, Graduate School of Business', kind: 'Unit' },
+    { key: 'u41', sub: 's1', name: 'Corporate Planning and Administration', head: null, title: null, kind: 'Department' },
+    { key: 'u42', sub: 's1', name: 'Alumni Relations', head: null, title: null, kind: 'Unit' },
+    { key: 'u43', sub: 's5', name: 'Regional Campuses', head: null, title: null, kind: 'Unit' },
+    { key: 'u44', sub: 's5', name: 'Materials Development', head: null, title: null, kind: 'Unit' },
   ];
+
   const unitIds = {};
+  const assignedNames = new Set();
   for (const u of UNITS_SEED) {
-    const headUserId = await makeUser(u.head, `Unit Head — ${u.name}`, 'unithead', 'unit', null);
-    const { lastInsertRowid: id } = await insertUnit.run(subIds[u.sub], u.name, u.head, 'Unit', headUserId);
-    await db.prepare('UPDATE users SET scope_id = ? WHERE id = ?').run(id, headUserId);
+    const headUserId = u.head ? await makeUser(u.head, u.title, 'unithead', 'unit', null) : null;
+    const { lastInsertRowid: id } = await insertUnit.run(subIds[u.sub], u.name, u.head, u.kind || 'Unit', headUserId);
+    if (headUserId) await db.prepare('UPDATE users SET scope_id = ? WHERE id = ?').run(id, headUserId);
     unitIds[u.key] = id;
+    if (u.head) assignedNames.add(u.head);
   }
 
-  const EMPLOYEES_SEED = [
-    { key: 'i1', unit: 'u9', name: 'T. Chikwanha', role: 'Programme Coordinator' },
-    { key: 'i2', unit: 'u1', name: 'R. Chidziva', role: 'Student Records Officer' },
-    { key: 'i3', unit: 'u13', name: 'Dr. N. Moyana', role: 'Postgraduate Coordinator' },
-    { key: 'i4', unit: 'u6', name: 'S. Chikafu', role: 'Systems Support Officer' },
+  // Additional officers from the supplied roster are attached to the closest
+  // explicitly named functional unit; similar surnames remain separate people.
+  const STAFF_SEED = [
+    { unit: 'u1', name: 'Mr. D. Mrewa', role: 'Deputy Registrar, Administration' },
+    { unit: 'u8', name: 'Mr. B. Gabi', role: 'Director, Quality Assurance' },
+    { unit: 'u3', name: 'Mr. L. Tom', role: 'Deputy Bursar, Costing, Budgetary Control & Student Accounts' },
+    { unit: 'u11', name: 'Mr. E. Madziwo', role: 'Deputy Librarian' },
+    { unit: 'u5', name: 'Mr. A. Muramba', role: 'Manager, Information Systems' },
+    { unit: 'u14', name: 'Dr. G. Masengwe', role: 'Research Fellow' },
+    { unit: 'u24', name: 'Professor E. S. Gudhlanga', role: 'Acting Director, Community Engagement & Outreach' },
+    { unit: 'u16', name: 'Mr. B. Mutyoraringa', role: 'Manager, Enterprise Development' },
+    { unit: 'u15', name: 'Mr. T. Makandwa', role: 'Manager, Intellectual Property' },
+    { unit: 'u34', name: 'Dr. T. Chikuvire', role: 'Manager, Business Development' },
+    { unit: 'u35', name: 'Mr. N. Shati', role: 'Manager, Printing Press' },
+    { unit: 'u37', name: 'Mr. C. Mabaso', role: 'Director, Campus Radio' },
   ];
   const employeeIds = {};
-  for (const ind of EMPLOYEES_SEED) {
-    const userId = await makeUser(ind.name, ind.role, 'employee', 'employee', null);
-    const { lastInsertRowid: id } = await insertEmployee.run(unitIds[ind.unit], ind.name, ind.role, userId);
+  let employeeCounter = 1;
+  for (const person of STAFF_SEED) {
+    if (assignedNames.has(person.name)) continue;
+    const userId = await makeUser(person.name, person.role, 'employee', 'employee', null);
+    const { lastInsertRowid: id } = await insertEmployee.run(unitIds[person.unit], person.name, person.role, userId);
     await db.prepare('UPDATE users SET scope_id = ? WHERE id = ?').run(id, userId);
-    employeeIds[ind.key] = id;
+    employeeIds[`i${employeeCounter++}`] = id;
   }
+
+  // Council approval account retained as a distinct role, but the roster supplied
+  // does not identify the Council Chairperson by name; therefore no fictional
+  // Council user is created in this seed.
+  const ictId = await db.prepare('SELECT id FROM users WHERE name = ?').get('Eng. M. Mvenge');
 
   console.log('Seeding KPIs...');
   const insertKpi = db.prepare(
@@ -199,6 +332,16 @@ const txn = db.transaction(async () => {
     ['unit', 'u14', 'Research Grants Secured', 'Output', 'USD', 120000, 300000],
     ['unit', 'u15', 'Innovation Projects Incubated', 'Output', 'projects', 4, 12],
     ['unit', 'u16', 'Revenue from University Enterprises', 'Outcome', 'USD', 80000, 200000],
+    ['unit', 'u1', 'Council meetings held', 'Output', 'meetings', 0, 3],
+    ['unit', 'u1', 'Performance contracts signed', 'Output', 'contracts', 0, 7],
+    ['unit', 'u1', 'Performance contract evaluations', 'Output', 'evaluations', 0, 20],
+    ['sub', 's5', 'New programmes developed', 'Output', 'programmes', 0, 15],
+    ['sub', 's5', 'Faculty radio educational programmes', 'Output', 'programmes', 0, 16],
+    ['sub', 's7', 'Postgraduate students graduated', 'Output', 'students', 0, 100],
+    ['sub', 's7', 'Publications produced', 'Output', 'publications', 0, 200],
+    ['unit', 'u11', 'E-theses archived', 'Output', 'theses', 0, 2000],
+    ['unit', 'u11', 'LIS systems integrated', 'Output', 'systems', 0, 4],
+    ['unit', 'u3', 'Annual budget produced', 'Output', 'budgets', 0, 10],
     ['employee', 'i1', 'Students Mentored to Completion', 'Output', 'students', 15, 25],
     ['employee', 'i2', 'Student Records Processed', 'Output', 'records', 200, 350],
     ['employee', 'i3', 'Postgraduate Theses Reviewed', 'Output', 'theses', 4, 10],
@@ -211,6 +354,15 @@ const txn = db.transaction(async () => {
     const { lastInsertRowid: id } = await insertKpi.run(ownerType, ownerId, name, type, measure, baseline, target, isAutomated ? 1 : 0);
     kpiIds.push(id);
   }
+  const unitIdsByName = new Map(UNITS_SEED.map((unit) => [unit.name, unitIds[unit.key]]));
+  for (const kpi of DASHBOARD_OUTPUT_KPIS) {
+    const ownerId = unitIdsByName.get(kpi.ownerName);
+    if (!ownerId) throw new Error(`No seeded unit found for dashboard KPI "${kpi.name}": ${kpi.ownerName}`);
+    const { lastInsertRowid: id } = await insertKpi.run(
+      'unit', ownerId, kpi.name, kpi.type, kpi.measure, kpi.baseline, kpi.target, 0
+    );
+    kpiIds.push(id);
+  }
 
   console.log('Seeding a starter monthly value (current month, draft, empty) per KPI...');
   const insertValue = db.prepare(
@@ -221,14 +373,20 @@ const txn = db.transaction(async () => {
 
   console.log('Seeding audit log entries for setup...');
   const insertAudit = db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)');
-  await insertAudit.run(ictId, 'seed', 'system', null, 'Database seeded with initial org structure, accounts, and KPIs.');
+  await insertAudit.run(ictId?.id || null, 'seed', 'system', null, 'Database seeded with ZOU leadership, organisational structure, accounts, and starter KPIs.');
 
   console.log('Done. Demo login: any seeded email + password "' + DEMO_PASSWORD + '".');
-  console.log('e.g. t.moyo@zou.ac.zw (CPU), l.chikomo@zou.ac.zw (ICT Admin), l.chareka@zou.ac.zw (VC / Executive Owner), f.museta@zou.ac.zw (University Council).');
+  console.log('Email format: surname + first initial (e.g. zuzet@zou.ac.zw). Review the generated user accounts before distributing credentials.');
 });
 
 (async () => {
   try {
+    if (RESET_SEED && process.env.NODE_ENV === 'production') {
+      throw new Error('Destructive seed reset is disabled in production.');
+    }
+    if (!RESET_SEED && !process.env.SEED_PASSWORD) {
+      throw new Error('Set SEED_PASSWORD to a strong one-time password before running initial setup.');
+    }
     await db.ready();
     await txn();
   } catch (err) {

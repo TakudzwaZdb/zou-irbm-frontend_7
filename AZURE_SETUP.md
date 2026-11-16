@@ -49,7 +49,10 @@ who's hosting the server.
    Server denies all connections by default.
 3. Create a database on the server (e.g. `zou_irbm`) and a login role with
    a strong password.
-4. Set these in `backend/.env`:
+4. Use the same database name, `zou_irbm`, if you want to keep it
+   consistent with local development. Set the hosted server's connection
+   details in `backend/.env` (the host, username, and password are the
+   online database's, not the local ones):
 
    ```
    PGHOST=<your-server-name>.postgres.database.azure.com
@@ -64,6 +67,8 @@ who's hosting the server.
    works too — `db.js` accepts either form, and a `DATABASE_URL` takes
    precedence if both are set.)
 
+   The database name can stay `zou_irbm`; changing `PGHOST` and the
+   credentials is what connects to Azure instead of your local Postgres.
    Flexible Server requires TLS; `DB_SSL=true` is what turns it on.
    `db.js` sets `rejectUnauthorized: false` when SSL is enabled, so this
    works out of the box without bundling Azure's root CA. If your
@@ -71,8 +76,20 @@ who's hosting the server.
    instead, download Azure's current CA bundle and pass it as
    `ssl: { ca: fs.readFileSync('/path/to/DigiCertGlobalRootCA.crt.pem') }`
    in `db.js`'s `poolConfig.ssl` in place of `rejectUnauthorized: false`.
-5. Run `node src/seed.js` once against the new database to create its
-   schema and demo accounts, the same as for local Postgres.
+5. To initialize a starter/demo database, run `npm run db:setup` from
+   `backend` once with these database settings available to the command.
+   Set `SEED_PASSWORD` to a strong temporary password in the environment
+   before running it. The command creates the schema and sample accounts,
+   organisation, and KPIs, and refuses to seed a database that already
+   contains application data. The seeded accounts are sample data, not
+   real ZOU accounts.
+
+   For a real production database that must not contain sample people or
+   figures, skip the demo seed: `npm start` creates/applies the schema
+   automatically, and `npm run create-account -- --email=<real-email>
+   --role=ictadmin --name="<real name>" --azure` can bootstrap the real ICT
+   administrator without inserting demo records. Then build the real
+   organisation and KPIs in the app.
 6. `backend/src/backup.js` (`pg_dump`/`pg_restore`-based) works unchanged
    against a Flexible Server target — it reads the same `PG*` env vars.
 
@@ -317,6 +334,8 @@ the repo — these live only in Azure):
 
 - `JWT_SECRET` — a long random value (see `.env.example`'s comment for how
   to generate one). Required; the app refuses to start without it.
+- `NODE_ENV=production` — enables production safeguards, including blocking
+  the destructive demo-seed reset command.
 - `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` (or a single
   `DATABASE_URL`) — pointed at your database. `DB_SSL=true` if it's Azure
   Database for PostgreSQL (see Part A) or any other Postgres that requires
@@ -342,6 +361,12 @@ the repo — these live only in Azure):
 You do **not** need to set `PORT` — Azure's Linux Node containers inject
 their own `PORT` and this app already listens on `process.env.PORT` (see
 `server.js`), so it picks that up automatically.
+
+Use the App Service startup command from step 4 (`node backend/src/server.js`),
+not `npm run db:setup`.
+The server applies schema changes at startup; the one-time setup command is
+for an empty database and also inserts sample data. Remove the temporary
+`SEED_PASSWORD` setting after demo setup.
 
 ### 3. Restrict who can sign in (required before going live)
 
@@ -475,8 +500,10 @@ onto the Portal's **Deployment Center → ZIP Deploy**.
 
 After the first deploy: `https://<your-app-name>.azurewebsites.net/api/health`
 should return `{ "ok": true, ... }`, and the login page should load at the
-site's root. Run `npm run seed` once against the production database
-before the first real use (from wherever you can reach it — the App
-Service's **SSH** console under **Development Tools**, or from your own
-machine with `PG*`/`DATABASE_URL` pointed at it) so there's an initial org
-structure and at least one `ictadmin` account to sign in with.
+site's root. The server applies the schema automatically. For a real
+production database, create the real ICT administrator without demo data
+by running `npm run create-account -- --email=<real-email>
+--role=ictadmin --name="<real name>" --azure` from `backend` with the online
+database settings. This command also runs the schema setup if needed. Build
+the real organisation through the app. Only run `npm run db:setup` if you
+want sample data, and only against an empty database.

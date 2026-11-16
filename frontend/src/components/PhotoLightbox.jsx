@@ -3,8 +3,8 @@ import { useEffect, useRef } from 'react';
 // A full-size view of a profile photo, opened from the small thumbnails used
 // everywhere in the app (header, Profile, Users directory) — those are all
 // deliberately tiny (28-64px) for layout, so this is the only place a photo
-// can actually be looked at properly. Same backdrop-click-to-close modal
-// pattern as ComposeModal in Messages.jsx, plus an Escape-key handler since
+// can actually be looked at properly. Uses a backdrop-click-to-close modal
+// pattern, plus an Escape-key handler since
 // a photo viewer is exactly the kind of thing people expect to dismiss with
 // the keyboard. role="dialog"/aria-modal tell a screen reader this is a
 // modal layer over the page, and moving focus to the close button on open
