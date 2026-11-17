@@ -61,11 +61,25 @@ export function AppProvider({ children }) {
   // not just a rendering choice, so there's no second path that bypasses
   // it. Overview.jsx also avoids rendering the deeper cards as clickable in
   // the first place; this is the backstop.
+  const navigateToNode = useCallback((nextNode) => {
+    const saved = window.history.state?.zouApp;
+    const currentNode = saved?.userId === user?.id ? saved.selNode : null;
+    if (currentNode?.kind === nextNode?.kind && currentNode?.id === nextNode?.id) return;
+    window.history.pushState({
+      zouApp: {
+        userId: user?.id,
+        route: saved?.userId === user?.id ? saved.route : 'overview',
+        selNode: nextNode,
+      },
+    }, '', window.location.href);
+    setSelNode(nextNode);
+  }, [user]);
   const selectNode = useCallback((kind, id) => {
     if (!canDrillToKind(user, kind)) return;
-    setSelNode({ kind, id });
-  }, [user]);
-  const clearSelNode = useCallback(() => setSelNode(null), []);
+    navigateToNode({ kind, id });
+  }, [user, navigateToNode]);
+  const clearSelNode = useCallback(() => navigateToNode(null), [navigateToNode]);
+  const restoreSelNode = useCallback((node) => setSelNode(node), []);
 
   // A separate, read-only "performance lens" (Overview/Reports) — see
   // lib/period.js. Data entry always stays on the monthly `period` above.
@@ -123,6 +137,7 @@ export function AppProvider({ children }) {
     setPerfPeriod(next);
     loadPerfValues(next);
   }, [loadPerfValues]);
+  const reloadPerfValues = useCallback(() => loadPerfValues(perfPeriod), [loadPerfValues, perfPeriod]);
 
   const reloadUser = useCallback(async () => {
     const r = await api('/auth/me');
@@ -343,6 +358,10 @@ export function AppProvider({ children }) {
     try { await api('/auth/logout-everywhere', { method: 'POST' }); } finally { logout(); }
   }, [logout]);
 
+  const reloadOverviewValues = useCallback(async () => {
+    await Promise.all([loadValuesForPeriod(period), loadPerfValues(perfPeriod)]);
+  }, [period, perfPeriod, loadValuesForPeriod, loadPerfValues]);
+
   const value = {
     booting, user, loginError, login, verifyMfa, logout, logoutEverywhere, completePasswordChange, completeAzureLogin, reportAzureLoginError, hasPerm, refreshUser,
     org, kpis, settings, values, period, changePeriod,
@@ -351,8 +370,8 @@ export function AppProvider({ children }) {
     templates, reloadTemplates,
     hiddenKpiIds, hideKpi, unhideKpi,
     contributions, reloadContributions: () => loadContributionsForPeriod(period),
-    selNode, selectNode, clearSelNode,
-    perfPeriod, perfValues, changePerfPeriod,
+    selNode, selectNode, clearSelNode, restoreSelNode,
+    perfPeriod, perfValues, changePerfPeriod, reloadPerfValues, reloadOverviewValues,
     refreshAll, quickRefresh, quickSyncing,
     reloadCore: () => loadCore(period),
     reloadValues: () => Promise.all([loadValuesForPeriod(period), loadContributionsForPeriod(period), loadSubmissionWindow(period)]),

@@ -430,15 +430,21 @@ CREATE INDEX IF NOT EXISTS idx_kpi_contributions_period ON kpi_contributions(yea
 CREATE INDEX IF NOT EXISTS idx_message_recipients_recipient ON message_recipients(recipient_id);
 CREATE INDEX IF NOT EXISTS idx_mfa_recovery_codes_user ON mfa_recovery_codes(user_id);
 
--- Appointment integrity: Employee accounts may repeat, CPU is a multi-seat
--- global role, and every other role may occur only once per organisation
--- scope (partial unique indexes — supported identically in Postgres).
+-- Appointment integrity: Employee, CPU, and ICT administrator accounts may
+-- repeat. Other roles may occur only once per organisation scope.
 CREATE UNIQUE INDEX IF NOT EXISTS users_unique_active_scoped_appointment
   ON users (role, scope_type, scope_id)
-  WHERE deleted_at IS NULL AND role <> 'employee' AND scope_id IS NOT NULL;
+  WHERE deleted_at IS NULL
+    AND role <> 'employee'
+    AND role <> 'ictadmin'
+    AND scope_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS users_unique_active_global_appointment
   ON users (role)
-  WHERE deleted_at IS NULL AND role <> 'employee' AND role <> 'cpu' AND scope_id IS NULL;
+  WHERE deleted_at IS NULL
+    AND role <> 'employee'
+    AND role <> 'cpu'
+    AND role <> 'ictadmin'
+    AND scope_id IS NULL;
 `;
 
 const BUILT_IN_ROLES = [
@@ -606,9 +612,9 @@ async function migrateIndividualRoleToEmployee() {
 }
 
 let readyPromise = null;
-// Allow multiple active CPU members to hold the global CPU role.
-// Other global roles remain restricted to one active appointment.
-async function migrateCpuGlobalAppointments() {
+// Allow multiple active CPU and ICT administrator accounts. Older databases
+// may still have the original one-account indexes, so update both indexes once.
+async function migrateMultiSeatRoleAppointments() {
   const client = await pool.connect();
 
   try {
@@ -622,15 +628,22 @@ async function migrateCpuGlobalAppointments() {
       SELECT pg_get_expr(i.indpred, i.indrelid) AS predicate
       FROM pg_index i
       JOIN pg_class c ON c.oid = i.indexrelid
-      WHERE c.relname = 'users_unique_active_global_appointment'
+      WHERE c.relname IN (
+        'users_unique_active_global_appointment',
+        'users_unique_active_scoped_appointment'
+      )
     `);
 
-    const predicate = result.rows[0]?.predicate || '';
+    const globalPredicate = result.rows.find((row) => row.predicate && /scope_id IS NULL/i.test(row.predicate))?.predicate || '';
+    const scopedPredicate = result.rows.find((row) => row.predicate && /scope_id IS NOT NULL/i.test(row.predicate))?.predicate || '';
 
-    if (!/role\s*<>\s*'cpu'/i.test(predicate)) {
-      await client.query(`
-        DROP INDEX IF EXISTS users_unique_active_global_appointment
-      `);
+    if (
+      !/role\s*<>\s*'cpu'/i.test(globalPredicate)
+      || !/role\s*<>\s*'ictadmin'/i.test(globalPredicate)
+      || !/role\s*<>\s*'ictadmin'/i.test(scopedPredicate)
+    ) {
+      await client.query('DROP INDEX IF EXISTS users_unique_active_global_appointment');
+      await client.query('DROP INDEX IF EXISTS users_unique_active_scoped_appointment');
 
       await client.query(`
         CREATE UNIQUE INDEX users_unique_active_global_appointment
@@ -638,7 +651,16 @@ async function migrateCpuGlobalAppointments() {
         WHERE deleted_at IS NULL
           AND role <> 'employee'
           AND role <> 'cpu'
+          AND role <> 'ictadmin'
           AND scope_id IS NULL
+      `);
+      await client.query(`
+        CREATE UNIQUE INDEX users_unique_active_scoped_appointment
+        ON users (role, scope_type, scope_id)
+        WHERE deleted_at IS NULL
+          AND role <> 'employee'
+          AND role <> 'ictadmin'
+          AND scope_id IS NOT NULL
       `);
     }
 
@@ -713,10 +735,51 @@ async function migrateDashboardOutputKpis() {
     client.release();
   }
 }
+
+async function migrateDirectKpiActualSnapshots() {
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(20261117)');
+    const changed = await client.query(`
+      SELECT kv.id, kv.kpi_id, kv.year, kv.month, kv.value AS old_value, kv.entered_value AS actual
+      FROM kpi_values kv
+      JOIN kpis k ON k.id = kv.kpi_id
+      WHERE k.is_automated = 0
+        AND kv.status = 'approved'
+        AND kv.entered_value IS NOT NULL
+        AND kv.value IS DISTINCT FROM kv.entered_value
+      FOR UPDATE OF kv
+    `);
+
+    for (const row of changed.rows) {
+      await client.query('UPDATE kpi_values SET value = $1 WHERE id = $2', [row.actual, row.id]);
+      await client.query(
+        'INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (NULL, $1, $2, $3, $4)',
+        [
+          'direct_actual_migration',
+          'kpi',
+          row.kpi_id,
+          `${row.year}-${String(row.month).padStart(2, '0')} actual corrected from ${row.old_value} to submitted cumulative actual ${row.actual}.`,
+        ],
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* connection already broken */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 async function ensureSchema() {
   await migrateIndividualRoleToEmployee();
   await pool.query(SCHEMA_SQL);
-  await migrateCpuGlobalAppointments();
+  await migrateMultiSeatRoleAppointments();
+  await migrateDirectKpiActualSnapshots();
   await pool.query('ALTER TABLE plan_proposals ADD COLUMN IF NOT EXISTS targets TEXT');
   await pool.query('ALTER TABLE plan_proposals ADD COLUMN IF NOT EXISTS plan_title TEXT');
   await pool.query(`

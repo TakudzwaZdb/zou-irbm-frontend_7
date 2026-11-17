@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
-import { byId, computeRag, computeVariance, ownerName, valueStatus } from '../lib/scope.js';
+import { byId, computeRag, computeVariance, hasPendingPreview, ownerName, valueStatus } from '../lib/scope.js';
 import { ContributorsBreakdown } from './KpiCard.jsx';
 
 const STATUS_LABEL = {
@@ -20,7 +20,7 @@ const STATUS_LABEL = {
 // expands a detail row rather than always being on screen, to keep the
 // table itself readable at a glance.
 export default function ApprovalsTable({ kpis, interactive }) {
-  const { user, org, values, settings, period, hasPerm, assignments, contributions, reloadValues } = useApp();
+  const { user, org, values, settings, period, hasPerm, assignments, contributions, reloadValues, reloadPerfValues } = useApp();
   const toast = useToast();
   const confirm = useConfirm();
   const [expandedId, setExpandedId] = useState(null);
@@ -31,7 +31,7 @@ export default function ApprovalsTable({ kpis, interactive }) {
   function rowFor(kpi) {
     const valueRow = values[`${kpi.id}-${period.year}-${period.month}`];
     const status = valueStatus(valueRow);
-    const isPreview = !!(valueRow && valueRow.value == null && valueRow.preview_value != null);
+    const isPreview = hasPendingPreview(valueRow);
     const effectiveRow = isPreview ? { ...valueRow, value: valueRow.preview_value } : valueRow;
     const rag = computeRag(kpi, effectiveRow, settings);
     // The pace/variance shown here must be about THIS submission, for the
@@ -56,8 +56,19 @@ export default function ApprovalsTable({ kpis, interactive }) {
 
   async function run(kpi, fn, okMsg) {
     setBusyId(kpi.id);
-    try { await fn(); toast(okMsg); await reloadValues(); }
-    catch (err) { toast(err.message, 'err'); }
+    try {
+      await fn();
+    } catch (err) {
+      toast(err.message, 'err');
+      setBusyId(null);
+      return;
+    }
+    try {
+      await Promise.all([reloadValues(), reloadPerfValues()]);
+      toast(okMsg);
+    } catch (err) {
+      toast(`${okMsg} Approval succeeded, but Overview refresh failed: ${err.message}`, 'err');
+    }
     finally { setBusyId(null); }
   }
 
@@ -75,7 +86,7 @@ export default function ApprovalsTable({ kpis, interactive }) {
             <th className="px-3 py-2.5 text-right">Baseline</th>
             <th className="px-3 py-2.5 text-right">Target</th>
             <th className="px-3 py-2.5 text-right">Current</th>
-            <th className="px-3 py-2.5 text-right min-w-[110px]">Submitted</th>
+            <th className="px-3 py-2.5 text-right min-w-[110px]">Submitted actual</th>
             <th className="px-3 py-2.5">Score</th>
             <th className="px-3 py-2.5">Pace</th>
             <th className="px-3 py-2.5 min-w-[140px] max-w-[200px]">Note</th>
@@ -119,6 +130,7 @@ export default function ApprovalsTable({ kpis, interactive }) {
                   <td className="px-3 py-2.5"><span className={`chip text-[11px] px-2 py-0.5 ${r.rag.cls}`}>{r.rag.label}</span></td>
                   <td className="px-3 py-2.5">
                     {r.variance.flag === 'attention' && <span className="chip bg-critical text-white text-[10.5px] px-1.5 py-0.5" title={`${r.variance.actualPct}% actual vs ${r.variance.expectedPct}% expected pace`}>⚠ {r.variance.variance}pts behind</span>}
+                    {r.variance.flag === 'behind' && <span className="chip chip-rag-amber text-[10.5px] px-1.5 py-0.5" title={`${r.variance.actualPct}% actual vs ${r.variance.expectedPct}% expected pace`}>{r.variance.variance}pts behind</span>}
                     {r.variance.flag === 'ahead' && <span className="chip chip-rag-green text-[10.5px] px-1.5 py-0.5">+{r.variance.variance}pts ahead</span>}
                     {r.variance.flag === 'on-pace' && <span className="text-ink-muted text-[11px]" title={`${r.variance.actualPct}% actual vs ${r.variance.expectedPct}% expected pace`}>On pace</span>}
                     {r.variance.flag === 'none' && <span className="text-ink-muted text-[11px]">—</span>}
@@ -267,6 +279,7 @@ export function TeamApprovalsTable({ kpis }) {
                   <td className="px-3 py-2.5"><span className={`chip text-[11px] px-2 py-0.5 ${rag.cls}`}>{rag.label}</span></td>
                   <td className="px-3 py-2.5">
                     {variance.flag === 'attention' && <span className="chip bg-critical text-white text-[10.5px] px-1.5 py-0.5">⚠ {variance.variance}pts behind</span>}
+                    {variance.flag === 'behind' && <span className="chip chip-rag-amber text-[10.5px] px-1.5 py-0.5">{variance.variance}pts behind</span>}
                     {variance.flag === 'ahead' && <span className="chip chip-rag-green text-[10.5px] px-1.5 py-0.5">+{variance.variance}pts ahead</span>}
                     {variance.flag === 'on-pace' && <span className="text-ink-muted text-[11px]" title={`${variance.actualPct}% actual vs ${variance.expectedPct}% expected pace`}>On pace</span>}
                     {variance.flag === 'none' && <span className="text-ink-muted text-[11px]">—</span>}

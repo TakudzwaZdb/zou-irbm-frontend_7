@@ -140,7 +140,8 @@ export function nodeRagCls(rollup, settings) {
   if (rollup.avgPct == null) return 'chip-rag-none';
   const green = Number(settings.ragGreen ?? 80);
   const amber = Number(settings.ragAmber ?? 50);
-  return rollup.avgPct >= green ? 'chip-rag-green' : rollup.avgPct >= amber ? 'chip-rag-amber' : 'chip-rag-red';
+  const pct = rollup.avgRawPct ?? rollup.avgPct;
+  return pct >= green ? 'chip-rag-green' : pct >= amber ? 'chip-rag-amber' : 'chip-rag-red';
 }
 
 // The node kind+id an org node's own entity sits at, and its full ancestor
@@ -321,15 +322,32 @@ export function canEnterData(user, kpi) {
 export function canContribute(user, kpi, assignments = []) {
   return isAssignedEmployee(user, kpi, assignments);
 }
+export function hasPendingPreview(valueRow) {
+  return valueRow?.status === 'submitted' && valueRow.preview_value != null;
+}
+export function effectiveKpiValue(valueRow) {
+  if (!valueRow) return null;
+  if (hasPendingPreview(valueRow)) return valueRow.preview_value;
+  if (valueRow.override_value != null) return valueRow.override_value;
+  return valueRow.value != null ? valueRow.value : valueRow.preview_value;
+}
+// A pending amendment retains its last approved value until CPU approves the
+// replacement; approved_at distinguishes that official value from a draft.
+export function officialKpiValueRow(valueRow) {
+  if (!valueRow || (valueRow.status !== 'approved' && valueRow.approved_at == null)) return null;
+  if (valueRow.value == null && valueRow.override_value == null) return null;
+  return { ...valueRow, preview_value: null };
+}
 export function computeRag(kpi, valueRow, settings) {
-  const v = valueRow ? (valueRow.override_value != null ? valueRow.override_value : valueRow.value) : null;
-  if (v == null) return { cls: 'chip-rag-none', label: 'No data', pct: null };
+  const v = effectiveKpiValue(valueRow);
+  if (v == null) return { cls: 'chip-rag-none', label: 'No data', pct: null, rawPct: null };
   const base = Number(kpi.baseline), tgt = Number(kpi.target);
-  const pct = tgt === base ? (v >= tgt ? 100 : 0) : Math.round(((v - base) / (tgt - base)) * 100);
+  const rawPct = tgt === base ? (v >= tgt ? 100 : 0) : ((v - base) / (tgt - base)) * 100;
+  const pct = roundMeasure(rawPct);
   const green = Number(settings.ragGreen ?? 80);
   const amber = Number(settings.ragAmber ?? 50);
-  const cls = pct >= green ? 'chip-rag-green' : pct >= amber ? 'chip-rag-amber' : 'chip-rag-red';
-  return { cls, label: `${pct}%`, pct };
+  const cls = rawPct >= green ? 'chip-rag-green' : rawPct >= amber ? 'chip-rag-amber' : 'chip-rag-red';
+  return { cls, label: `${pct}%`, pct, rawPct };
 }
 // A KPI value row is stored with status draft/submitted/approved only — a
 // "returned" submission is really just a draft that carries a return_comment
@@ -339,19 +357,18 @@ export function computeRag(kpi, valueRow, settings) {
 //
 // IMPORTANT: this used to treat `valueRow.value == null` as "nothing's
 // happened yet" — that was true back when `value` was the only figure a
-// submitter ever typed. Since the automated cumulative-performance feature
-// (see routes/kpis.js), `value` is the OFFICIAL cumulative total, which is
-// only ever computed and stored at approval time — a perfectly normal
-// draft or submitted row has `value == null` right up until someone
-// approves it. Keying "has anything happened" off `value` therefore made
-// every submitted-but-not-yet-approved row read as "none" everywhere
-// (My Data Entry's counts, the Approvals Queue's pending list, Overview),
-// which silently made submissions invisible to approvers and approval
-// itself unreachable — status now comes from the real `status` column
-// first, and only reports 'none' when a draft genuinely has nothing typed
-// or computed into it yet (checking both `entered_value`, what a direct
-// submitter types, and `value`, what an automated/contribution-summed row
-// carries even while still a draft).
+// submitter ever typed. With both direct snapshots and automated cumulative
+// performance (see routes/kpis.js), `value` is the official value stored at
+// approval time — a perfectly normal draft or submitted row has
+// `value == null` right up until someone approves it. Keying "has anything
+// happened" off `value` therefore made every submitted-but-not-yet-approved
+// row read as "none" everywhere (My Data Entry's counts, the Approvals
+// Queue's pending list, Overview), which silently made submissions
+// invisible to approvers and approval itself unreachable — status now comes
+// from the real `status` column first, and only reports 'none' when a draft
+// genuinely has nothing typed or computed into it yet (checking both
+// `entered_value`, what a direct submitter types, and `value`, what an
+// automated/contribution-summed row carries even while still a draft).
 export function valueStatus(valueRow) {
   if (!valueRow) return 'none';
   if (valueRow.status === 'draft') {
@@ -424,9 +441,10 @@ export function performanceRollup(kpiList, valuesByKpiId, settings) {
   kpiList.forEach((k) => {
     const rag = computeRag(k, valuesByKpiId[k.id], settings);
     counts[rag.cls.replace('chip-rag-', '')]++;
-    if (rag.pct != null) { pctSum += rag.pct; pctCount++; }
+    if (rag.rawPct != null) { pctSum += rag.rawPct; pctCount++; }
   });
-  return { count: kpiList.length, avgPct: pctCount ? Math.round(pctSum / pctCount) : null, counts };
+  const avgRawPct = pctCount ? pctSum / pctCount : null;
+  return { count: kpiList.length, avgPct: avgRawPct == null ? null : roundMeasure(avgRawPct), avgRawPct, counts };
 }
 
 // ---- variance analysis (Monthly / Quarterly / Bi-annual / Annual) --------
@@ -453,7 +471,7 @@ export function performanceRollup(kpiList, valuesByKpiId, settings) {
 // of a given month.
 export function expectedPacePct(asOfMonth) {
   const m = Math.max(0, Math.min(12, Number(asOfMonth) || 0));
-  return Math.round((m / 12) * 100);
+  return (m / 12) * 100;
 }
 
 // The threshold this app treats as needing attention: variance of -10 or
@@ -470,11 +488,24 @@ export const VARIANCE_AHEAD_THRESHOLD = 10;
 // no value yet — there's nothing to compare.
 export function computeVariance(kpi, valueRow, settings) {
   const rag = computeRag(kpi, valueRow, settings);
-  if (rag.pct == null) return { actualPct: null, expectedPct: null, asOfMonth: null, variance: null, flag: 'none' };
-  const expectedPct = expectedPacePct(valueRow.month);
-  const variance = rag.pct - expectedPct;
-  const flag = variance <= VARIANCE_ATTENTION_THRESHOLD ? 'attention' : variance >= VARIANCE_AHEAD_THRESHOLD ? 'ahead' : 'on-pace';
-  return { actualPct: rag.pct, expectedPct, asOfMonth: valueRow.month, variance, flag };
+  if (rag.rawPct == null) return { actualPct: null, rawActualPct: null, expectedPct: null, rawExpectedPct: null, asOfMonth: null, variance: null, rawVariance: null, flag: 'none' };
+  const rawExpectedPct = expectedPacePct(valueRow.month);
+  const rawVariance = rag.rawPct - rawExpectedPct;
+  const flag = rawVariance <= VARIANCE_ATTENTION_THRESHOLD
+    ? 'attention'
+    : rawVariance < 0
+      ? 'behind'
+      : rawVariance >= VARIANCE_AHEAD_THRESHOLD ? 'ahead' : 'on-pace';
+  return {
+    actualPct: rag.pct,
+    rawActualPct: rag.rawPct,
+    expectedPct: roundMeasure(rawExpectedPct),
+    rawExpectedPct,
+    asOfMonth: valueRow.month,
+    variance: roundMeasure(rawVariance),
+    rawVariance,
+    flag,
+  };
 }
 
 // The same rollup shape performanceRollup produces, but for variance: one
@@ -548,7 +579,7 @@ export function roundMeasure(n) {
 // against.
 export function monthlyPace(kpi, valueRow) {
   if (!valueRow || valueRow.month == null) return null;
-  const actual = valueRow.override_value != null ? valueRow.override_value : valueRow.value;
+  const actual = effectiveKpiValue(valueRow);
   if (actual == null) return null;
   const month = valueRow.month;
   const expected = expectedValueForMonth(kpi, month);
@@ -579,10 +610,13 @@ export function yearRange(fromYear, toYear = YEAR_GRID_MAX) {
 export function varianceRollup(kpiList, valuesByKpiId, settings) {
   const items = kpiList.map((k) => ({ kpi: k, ...computeVariance(k, valuesByKpiId[k.id], settings) }));
   const withData = items.filter((i) => i.variance != null);
-  const avgVariance = withData.length ? Math.round(withData.reduce((sum, i) => sum + i.variance, 0) / withData.length) : null;
-  const avgExpectedPct = withData.length ? Math.round(withData.reduce((sum, i) => sum + i.expectedPct, 0) / withData.length) : null;
+  const avgRawVariance = withData.length ? withData.reduce((sum, i) => sum + i.rawVariance, 0) / withData.length : null;
+  const avgRawExpectedPct = withData.length ? withData.reduce((sum, i) => sum + i.rawExpectedPct, 0) / withData.length : null;
+  const avgVariance = avgRawVariance == null ? null : roundMeasure(avgRawVariance);
+  const avgExpectedPct = avgRawExpectedPct == null ? null : roundMeasure(avgRawExpectedPct);
   const attentionCount = items.filter((i) => i.flag === 'attention').length;
-  return { items, avgVariance, avgExpectedPct, attentionCount };
+  const behindCount = items.filter((i) => i.flag === 'behind' || i.flag === 'attention').length;
+  return { items, avgVariance, avgRawVariance, avgExpectedPct, avgRawExpectedPct, attentionCount, behindCount };
 }
 
 // "Overall Institutional Performance" is the average of the Programmes'
@@ -611,11 +645,14 @@ export function institutionalRollup(org, kpis, valuesByKpiId, settings) {
     };
   });
   const withPerf = perProgramme.filter((r) => r.performance.avgPct != null);
-  const avgPct = withPerf.length ? Math.round(withPerf.reduce((sum, r) => sum + r.performance.avgPct, 0) / withPerf.length) : null;
+  const avgRawPct = withPerf.length ? withPerf.reduce((sum, r) => sum + r.performance.avgRawPct, 0) / withPerf.length : null;
+  const avgPct = avgRawPct == null ? null : roundMeasure(avgRawPct);
   const withVar = perProgramme.filter((r) => r.variance.avgVariance != null);
-  const avgVariance = withVar.length ? Math.round(withVar.reduce((sum, r) => sum + r.variance.avgVariance, 0) / withVar.length) : null;
+  const avgRawVariance = withVar.length ? withVar.reduce((sum, r) => sum + r.variance.avgRawVariance, 0) / withVar.length : null;
+  const avgVariance = avgRawVariance == null ? null : roundMeasure(avgRawVariance);
   const withExpected = perProgramme.filter((r) => r.variance.avgExpectedPct != null);
-  const avgExpectedPct = withExpected.length ? Math.round(withExpected.reduce((sum, r) => sum + r.variance.avgExpectedPct, 0) / withExpected.length) : null;
+  const avgRawExpectedPct = withExpected.length ? withExpected.reduce((sum, r) => sum + r.variance.avgRawExpectedPct, 0) / withExpected.length : null;
+  const avgExpectedPct = avgRawExpectedPct == null ? null : roundMeasure(avgRawExpectedPct);
   const counts = { green: 0, amber: 0, red: 0, none: 0 };
   perProgramme.forEach((r) => {
     const c = r.performance.counts;
@@ -625,8 +662,8 @@ export function institutionalRollup(org, kpis, valuesByKpiId, settings) {
   const items = perProgramme.flatMap((r) => r.variance.items);
   const attentionCount = perProgramme.reduce((sum, r) => sum + r.variance.attentionCount, 0);
   return {
-    performance: { count, avgPct, counts },
-    variance: { items, avgVariance, avgExpectedPct, attentionCount },
+    performance: { count, avgPct, avgRawPct, counts },
+    variance: { items, avgVariance, avgRawVariance, avgExpectedPct, avgRawExpectedPct, attentionCount, behindCount: items.filter((i) => i.flag === 'behind' || i.flag === 'attention').length },
     perProgramme,
   };
 }

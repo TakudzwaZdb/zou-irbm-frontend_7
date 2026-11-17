@@ -110,10 +110,10 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
     children = employeesOfUnit(org, entity.id).map((e) => ({ id: e.id, name: employeePosition(e), ...performanceRollup(nodeOwnKpis(org, kpis, 'employee', e.id), perfValues, settings) }));
   }
 
-  function ragCls(pct) {
+  function ragCls(pct, classificationPct = pct) {
     if (pct == null) return 'chip-rag-none';
     const green = Number(settings.ragGreen ?? 80), amber = Number(settings.ragAmber ?? 50);
-    return pct >= green ? 'chip-rag-green' : pct >= amber ? 'chip-rag-amber' : 'chip-rag-red';
+    return classificationPct >= green ? 'chip-rag-green' : classificationPct >= amber ? 'chip-rag-amber' : 'chip-rag-red';
   }
   function fileStem() {
     return `zou-report-${(entityName || 'overall').replace(/[^a-z0-9]+/gi, '-')}-${periodLabel.replace(/\s+/g, '-')}`;
@@ -196,7 +196,7 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
         body: variance.items.map(({ kpi, actualPct, flag }) => [
           kpi.name, `${reportOwnerLabel(org, kpi)} (${ownerKindLabel(kpi)})`, kpi.baseline, kpi.target,
           actualPct != null ? `${actualPct}%` : '—',
-          flag === 'attention' ? 'Behind pace' : flag === 'ahead' ? 'Ahead of pace' : flag === 'on-pace' ? 'On pace' : '—',
+          flag === 'attention' || flag === 'behind' ? 'Behind pace' : flag === 'ahead' ? 'Ahead of pace' : flag === 'on-pace' ? 'On pace' : '—',
         ]),
         styles: { fontSize: 8.5, cellPadding: 4, lineColor: [224, 226, 230], lineWidth: 0.3 },
         headStyles: { fillColor: [25, 34, 48], textColor: 255 },
@@ -258,7 +258,7 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
         <>
           <div className="flex flex-wrap gap-2 mb-3">
             <SummaryStat label="KPIs" value={rollup.count} />
-            <SummaryStat label="Avg. progress" value={rollup.avgPct != null ? `${rollup.avgPct}%` : '—'} cls={ragCls(rollup.avgPct)} />
+            <SummaryStat label="Avg. progress" value={rollup.avgPct != null ? `${rollup.avgPct}%` : '—'} cls={ragCls(rollup.avgPct, rollup.avgRawPct)} />
             <SummaryStat label="On track" value={rollup.counts.green} cls="chip-rag-green" />
             <SummaryStat label="At risk" value={rollup.counts.amber} cls="chip-rag-amber" />
             <SummaryStat label="Off track" value={rollup.counts.red} cls="chip-rag-red" />
@@ -302,13 +302,14 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
                 {variance.items.length === 0 && (
                   <tr><td className="px-3 py-3 text-ink-muted" colSpan={4}>No KPIs at this level.</td></tr>
                 )}
-                {variance.items.map(({ kpi, actualPct, flag }) => (
+                {variance.items.map(({ kpi, actualPct, rawActualPct, flag }) => (
                   <tr key={kpi.id} className="border-t border-line hover:bg-sunken/30">
                     <td className="px-3 py-2.5 font-medium">{kpi.name}</td>
                     <td className="px-3 py-2.5 text-ink-secondary">{reportOwnerLabel(org, kpi)} <span className="text-ink-muted">({ownerKindLabel(kpi)})</span></td>
-                    <td className="px-3 py-2.5"><span className={`chip ${ragCls(actualPct)}`}>{actualPct != null ? `${actualPct}%` : 'No data'}</span></td>
+                    <td className="px-3 py-2.5"><span className={`chip ${ragCls(actualPct, rawActualPct)}`}>{actualPct != null ? `${actualPct}%` : 'No data'}</span></td>
                     <td className="px-3 py-2.5">
                       {flag === 'attention' && <span className="chip chip-rag-red">Behind pace</span>}
+                      {flag === 'behind' && <span className="chip chip-rag-amber">Behind pace</span>}
                       {flag === 'ahead' && <span className="chip chip-rag-green">Ahead of pace</span>}
                       {flag === 'on-pace' && <span className="chip chip-rag-amber">On pace</span>}
                       {flag === 'none' && <span className="chip chip-rag-none">—</span>}

@@ -28,7 +28,7 @@ function GreetingBanner({ name }) {
   return (
     <div
       role="status"
-      className="fixed top-[78px] left-1/2 -translate-x-1/2 z-50 max-w-[calc(100vw-2rem)] rounded-full bg-ink text-page text-[13px] font-semibold text-center px-4 py-2 shadow-lg animate-[fadeIn_.25s_ease]"
+      className="fixed top-[78px] left-1/2 -translate-x-1/2 z-50 max-w-[calc(100vw-2rem)] rounded-full bg-ink text-page text-[14px] font-semibold text-center px-4 py-2 shadow-lg animate-[fadeIn_.25s_ease]"
     >
       Welcome, {name}! You're signed in to the ZOU Strategic Plan Monitor.
     </div>
@@ -83,24 +83,24 @@ export default function Layout({ route, setRoute, children }) {
           {/* The FULL ZOU logo — crest + "Zimbabwe Open University" wordmark
               + tagline, the same lockup the Login screen uses — not just the
               crest cropped out of it, from sm: up where there's room for it.
-              w-auto (no fixed width) lets its own ~6.9:1 aspect ratio decide
-              the width, so it always renders complete, never stretched or
-              edge-clipped. The wordmark's dark ink sits on a transparent
+              A fixed width keeps the logo's horizontal footprint unchanged;
+              the taller image box increases its vertical visibility without
+              widening the header. The wordmark's dark ink sits on a transparent
               background in the source file, so a light plate behind it
               (rather than the header's own bg-surface, which turns dark in
               dark mode) is what keeps it legible in both themes — the exact
               same white the Login card already provides it for free. Below
-              sm, the full lockup's ~200px width would crowd out the
+              sm, the full lockup's ~193px width would crowd out the
               hamburger and the header's own action icons on a phone, so a
-              narrow viewport keeps just the compact crest instead. */}
+              narrow               viewport keeps just the compact crest instead. */}
           <span className="hidden sm:flex items-center bg-white border border-line rounded-lg px-2 py-1 flex-none">
-            <img src="/assets/zou-logo.png" alt="Zimbabwe Open University" className="h-7 w-auto object-contain" />
+            <img src="/assets/zou-logo.png" alt="Zimbabwe Open University" className="h-8 lg:h-9 w-[193px] object-fill" />
           </span>
           <img src="/assets/zou-mark.png" alt="Zimbabwe Open University" className="sm:hidden h-10 w-auto object-contain flex-none" />
           <span className="hidden sm:block w-px self-stretch bg-line" aria-hidden="true" />
           <div className="leading-tight min-w-0">
-            <div className="font-display font-extrabold text-[15.5px] truncate">Strategic Plan Monitor</div>
-            <div className="text-[11.5px] text-ink-secondary truncate">IRBM Monitoring &amp; Evaluation</div>
+            <div className="font-display font-extrabold text-[18px] truncate">Strategic Plan Monitor</div>
+            <div className="text-[13px] text-ink-secondary truncate">IRBM Monitoring &amp; Evaluation</div>
           </div>
         </div>
         <div className="flex-1" />
@@ -115,20 +115,20 @@ export default function Layout({ route, setRoute, children }) {
           {user.avatar ? (
             <img src={user.avatar} alt="" className="w-[30px] h-[30px] rounded-full object-cover flex-none" />
           ) : (
-            <span className={`w-[30px] h-[30px] rounded-full flex items-center justify-center text-[11.5px] font-bold flex-none ${avatarClass(user.id)}`}>
+            <span className={`w-[30px] h-[30px] rounded-full flex items-center justify-center text-[12.5px] font-bold flex-none ${avatarClass(user.id)}`}>
               {initialsOf(user.name)}
             </span>
           )}
           <div className="leading-tight min-w-0 text-left">
-            <div className="text-[12.5px] font-bold truncate max-w-[180px] flex items-center gap-1.5">
+            <div className="text-[14px] font-bold truncate max-w-[180px] flex items-center gap-1.5">
               <span className="truncate">{user.name}</span>
               {user.is_executive_owner && (
-                <span className="chip bg-accent-500 text-white text-[9px] px-1.5 py-0.5 flex-none" title="Accountable for overall institutional performance against the Plan">
+                <span className="chip bg-accent-500 text-white text-[10.5px] px-1.5 py-0.5 flex-none" title="Accountable for overall institutional performance against the Plan">
                   Executive Owner
                 </span>
               )}
             </div>
-            <div className="text-[10.8px] text-ink-secondary truncate max-w-[180px]">{user.title || ROLE_LABEL[user.role] || user.role}</div>
+            <div className="text-[12px] text-ink-secondary truncate max-w-[180px]">{user.title || ROLE_LABEL[user.role] || user.role}</div>
           </div>
         </button>
         <button className="btn btn-sm" onClick={logout}>Sign out</button>
@@ -140,11 +140,11 @@ export default function Layout({ route, setRoute, children }) {
         )}
         <nav
           aria-label="Primary"
-          className={`no-print w-56 flex-none border-r border-line bg-surface p-2.5 overflow-y-auto overscroll-contain
+          className={`no-print w-60 flex-none border-r border-line bg-surface p-2.5 overflow-y-auto overscroll-contain
             fixed md:static top-16 bottom-0 left-0 z-40 transition-transform
             ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
         >
-          <div className="text-[10.8px] uppercase tracking-wide text-ink-muted font-bold px-2.5 mb-1.5">
+          <div className="text-[12px] uppercase tracking-[0.12em] text-ink-muted font-bold px-2.5 mb-2">
             {ROLE_LABEL[user.role] || user.role}
           </div>
           <div className="flex flex-col gap-0.5">
@@ -156,8 +156,8 @@ export default function Layout({ route, setRoute, children }) {
             <button
               onClick={() => { setRoute('profile'); setSidebarOpen(false); }}
               aria-current={route === 'profile' ? 'page' : undefined}
-              className={`sm:hidden flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[12.8px] font-semibold text-left
-                ${route === 'profile' ? 'bg-accent-50 text-accent-600' : 'text-ink-secondary hover:bg-sunken'}`}
+              className={`sm:hidden flex items-center gap-2.5 px-2.5 py-2.5 border-l-2 rounded-lg text-[14px] font-semibold text-left
+                ${route === 'profile' ? 'border-accent-500 bg-accent-50 text-accent-700 shadow-sm' : 'border-transparent text-ink-secondary hover:bg-sunken'}`}
             >
               <span className="w-4 text-center flex-none" aria-hidden="true">👤</span>
               My Profile
@@ -170,8 +170,8 @@ export default function Layout({ route, setRoute, children }) {
                   key={k}
                   onClick={() => { setRoute(k); setSidebarOpen(false); }}
                   aria-current={active ? 'page' : undefined}
-                  className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[12.8px] font-semibold text-left
-                    ${active ? 'bg-accent-50 text-accent-600' : 'text-ink-secondary hover:bg-sunken'}`}
+                  className={`flex items-center gap-2.5 px-2.5 py-2.5 border-l-2 rounded-lg text-[14px] font-semibold text-left
+                    ${active ? 'border-accent-500 bg-accent-50 text-accent-700 shadow-sm' : 'border-transparent text-ink-secondary hover:bg-sunken'}`}
                 >
                   <span className="w-4 text-center flex-none" aria-hidden="true">{item.icon}</span>
                   {item.label}
@@ -181,7 +181,7 @@ export default function Layout({ route, setRoute, children }) {
           </div>
           {showTree && (
             <>
-              <div className="text-[10.8px] uppercase tracking-wide text-ink-muted font-bold px-2.5 mt-4 mb-1.5">
+              <div className="text-[12px] uppercase tracking-[0.12em] text-ink-muted font-bold px-2.5 mt-5 mb-2">
                 Programme structure
               </div>
               <OrgTree setRoute={setRoute} onNavigate={() => setSidebarOpen(false)} />

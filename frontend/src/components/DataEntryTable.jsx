@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
 import {
-  byId, computeRag, computeVariance, ownerName, valueStatus,
+  byId, computeRag, computeVariance, hasPendingPreview, ownerName, valueStatus,
 } from '../lib/scope.js';
 import { readDraft, writeDraft, clearDraft, draftDiffersFrom, debounce } from '../lib/autosave.js';
 import { AssignmentManager } from './KpiCard.jsx';
@@ -26,7 +26,7 @@ function pctOfTargetLabel(kpi, rawValue) {
   const baseline = Number(kpi.baseline) || 0;
   const span = target - baseline;
   const pct = span !== 0 ? Math.round(((val - baseline) / span) * 100) : Math.round((val / target) * 100);
-  return `${pct}% of target${pct < 0 ? ' (below baseline)' : pct > 100 ? ' (above target)' : ''}`;
+  return `${pct}% progress from baseline${pct < 0 ? ' (below baseline)' : pct > 100 ? ' (above target)' : ''}`;
 }
 
 // One row, one table, one Save and one Submit — replaces what used to be a
@@ -89,7 +89,7 @@ export default function DataEntryTable({ kpis, interactive = true }) {
   function rowFor(kpi) {
     const valueRow = values[`${kpi.id}-${period.year}-${period.month}`];
     const status = valueStatus(valueRow);
-    const isPreview = !!(valueRow && valueRow.value == null && valueRow.preview_value != null);
+    const isPreview = hasPendingPreview(valueRow);
     const effectiveRow = isPreview ? { ...valueRow, value: valueRow.preview_value } : valueRow;
     const rag = computeRag(kpi, effectiveRow, settings);
     // Pace for THIS period's own row (effectiveRow — same one rag uses,
@@ -256,7 +256,7 @@ export default function DataEntryTable({ kpis, interactive = true }) {
               <th className="px-3 py-2.5 text-right">Baseline</th>
               <th className="px-3 py-2.5 text-right">Target</th>
               <th className="px-3 py-2.5 text-right">Current</th>
-              <th className="px-3 py-2.5 min-w-[130px]">This period's actual</th>
+              <th className="px-3 py-2.5 min-w-[130px]">Submitted actual</th>
               <th className="px-3 py-2.5">Score</th>
               <th className="px-3 py-2.5">Pace</th>
               <th className="px-3 py-2.5 min-w-[180px]">Notes</th>
@@ -341,6 +341,11 @@ export default function DataEntryTable({ kpis, interactive = true }) {
                     {r.variance.flag === 'attention' && (
                       <span className="chip bg-critical text-white text-[10.5px] px-1.5 py-0.5" title={`${r.variance.actualPct}% actual vs ${r.variance.expectedPct}% expected pace`}>
                         ⚠ {r.variance.variance}pts behind
+                      </span>
+                    )}
+                    {r.variance.flag === 'behind' && (
+                      <span className="chip chip-rag-amber text-[10.5px] px-1.5 py-0.5" title={`${r.variance.actualPct}% actual vs ${r.variance.expectedPct}% expected pace`}>
+                        {r.variance.variance}pts behind
                       </span>
                     )}
                     {r.variance.flag === 'ahead' && (

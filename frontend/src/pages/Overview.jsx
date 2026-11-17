@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import {
   relevantKpis, computeRag, canEnterData, canContribute, performanceRollup, varianceRollup, institutionalRollup, VARIANCE_ATTENTION_THRESHOLD, valueStatus, scopeBreadcrumb, MONTHS,
-  byId, subsOfProgramme, unitsOfSub, employeesOfUnit, nodeOwnKpis, nodeAncestryChain, defaultNodeForRole, canDrillToKind, ownerName, ownerKindLabel,
+  byId, subsOfProgramme, unitsOfSub, employeesOfUnit, nodeOwnKpis, nodeAncestryChain, defaultNodeForRole, canDrillToKind, ownerName, ownerKindLabel, officialKpiValueRow,
 } from '../lib/scope.js';
 import { employeePosition, headPosition, orgNodeLabel } from '../lib/orgDisplay.js';
 import { labelFor } from '../lib/period.js';
@@ -16,7 +16,30 @@ import PeriodTypePicker from '../components/PeriodTypePicker.jsx';
 const KIND_LABEL = { programme: 'Programme', sub: 'Sub-programme', unit: 'Unit', employee: 'Employee' };
 
 export default function Overview() {
-  const { user, org, kpis, values, contributions, settings, period, assignments, selNode, selectNode, clearSelNode, hasPerm } = useApp();
+  const { user, org, kpis, values, contributions, settings, period, assignments, selNode, selectNode, clearSelNode, hasPerm, reloadOverviewValues } = useApp();
+  const [refreshError, setRefreshError] = useState(null);
+  useEffect(() => {
+    let active = true;
+    let refreshing = false;
+    const refresh = () => {
+      if (document.visibilityState !== 'visible' || refreshing) return;
+      refreshing = true;
+      reloadOverviewValues()
+        .then(() => { if (active) setRefreshError(null); })
+        .catch((err) => { if (active) setRefreshError(err.message || 'Unknown error'); })
+        .finally(() => { refreshing = false; });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 10_000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [reloadOverviewValues]);
   const isGlobal = ['cpu', 'exec', 'vc', 'ictadmin', 'council'].includes(user.role);
   // The university-wide "All Programmes" rollup is no longer an automatic
   // consequence of holding one of the four "global" roles above — it's now
@@ -62,6 +85,12 @@ export default function Overview() {
         )}
       </div>
 
+      {refreshError && (
+        <p role="alert" className="mb-4 rounded-lg bg-warning-soft text-warning text-[12px] px-3.5 py-2.5">
+          Overview could not refresh live results: {refreshError}. It will retry automatically.
+        </p>
+      )}
+
       {totalReturned > 0 && (
         <div className="mb-4 rounded-lg bg-warning-soft text-warning text-[12.8px] px-3.5 py-2.5 font-semibold">
           {totalReturned} of your submission{totalReturned > 1 ? 's were' : ' was'} returned with feedback — head to My Data Entry to review and resubmit.
@@ -99,15 +128,15 @@ function InstitutionalAccessRestricted() {
 // The automated Monthly/Quarterly/Bi-annual/Annual appraisal — every
 // role sees this, for whatever's currently in view (their own place in the
 // structure by default, "All Programmes" for a global role, or wherever
-// they've drilled to): a live rollup of the SAME KPI value data as the
+// they've drilled to): a live rollup of the same CPU-approved KPI values as
 // monthly figures below it, just read at a coarser cadence via the
 // performance lens (see lib/period.js's rangeFor/latestInRange — a
-// quarter's "performance" is the latest actual value filed within it, not
+// quarter's "performance" is the latest CPU-approved actual within it, not
 // a separately-typed number). Changing the period here changes it
 // everywhere else that reads perfPeriod too (every card's RAG dot, the
 // sidebar tree's RAG dots). Nothing here is simulated — it's the exact
 // same real kpi_values rows the monthly view reads, just aggregated by a
-// wider date range.
+// wider date range and excluding submissions CPU has not approved.
 // `rollup` — when passed ({ performance, variance }, see lib/scope.js's
 // institutionalRollup) — is used exactly as-is instead of computing a flat
 // average from `kpiList`. Only "All Programmes" passes this: the
@@ -156,7 +185,7 @@ function AppraisalCard({ kpiList, heading, rollup, avgOfProgrammes = false }) {
         </div>
         <div>
           <div className="text-[11px] uppercase tracking-wide text-ink-muted font-bold mb-0.5">Avg. variance vs. pace</div>
-          <div className={`font-display font-extrabold text-[30px] tabular-nums ${variance.avgVariance == null ? '' : variance.avgVariance <= VARIANCE_ATTENTION_THRESHOLD ? 'text-critical' : variance.avgVariance >= 10 ? 'text-good' : ''}`}>
+          <div className={`font-display font-extrabold text-[30px] tabular-nums ${variance.avgVariance == null ? '' : (variance.avgRawVariance ?? variance.avgVariance) <= VARIANCE_ATTENTION_THRESHOLD ? 'text-critical' : (variance.avgRawVariance ?? variance.avgVariance) < 0 ? 'text-warning' : (variance.avgRawVariance ?? variance.avgVariance) >= 10 ? 'text-good' : ''}`}>
             {variance.avgVariance == null ? '—' : `${variance.avgVariance > 0 ? '+' : ''}${variance.avgVariance}pts`}
           </div>
         </div>
@@ -174,8 +203,8 @@ function AppraisalCard({ kpiList, heading, rollup, avgOfProgrammes = false }) {
           : `Automated from ${appraisal.count} KPI${appraisal.count > 1 ? 's' : ''} — `}
         data entry stays monthly, this is
         just a rollup lens: switch Monthly/Quarterly/Bi-annual/Annual above and it recomputes from the real
-        submitted values, live. Variance compares each KPI's actual progress to the pace expected as of the
-        month its own latest value was recorded in{variance.avgExpectedPct != null ? ` (avg. ${variance.avgExpectedPct}% of the way there)` : ''} —
+        CPU-approved values, refreshing automatically. Variance compares each KPI's actual progress to the pace expected as of
+        the month its own latest value was approved{variance.avgExpectedPct != null ? ` (avg. ${variance.avgExpectedPct}% of the way there)` : ''} —
         a KPI on a straight line from baseline to target would read 0. Anything 10+ points behind that pace is
         flagged for attention below; 10+ points ahead is flagged too, just not as an alert.
       </p>
@@ -206,7 +235,7 @@ function AllProgrammesView({ onSelect }) {
   list.forEach((k) => {
     const v = values[`${k.id}-${period.year}-${period.month}`];
     counts[valueStatus(v)]++;
-    ragCounts[computeRag(k, v, settings).cls.replace('chip-rag-', '')]++;
+    ragCounts[computeRag(k, officialKpiValueRow(v), settings).cls.replace('chip-rag-', '')]++;
   });
   // "Overall Institutional Performance" is the average of the org's 3
   // Programmes' own averages (one Programme, one vote) — see
@@ -274,7 +303,7 @@ function NodeView({ node, onHome, onSelect }) {
   ownKpis.forEach((k) => {
     const v = values[`${k.id}-${period.year}-${period.month}`];
     counts[valueStatus(v)]++;
-    ragCounts[computeRag(k, v, settings).cls.replace('chip-rag-', '')]++;
+    ragCounts[computeRag(k, officialKpiValueRow(v), settings).cls.replace('chip-rag-', '')]++;
   });
 
   // entity.head can be null now — Programme/Sub-programme/Unit creation no
@@ -484,7 +513,7 @@ function NodeCard({ kind, node, subtitle, org, kpis, perfValues, settings, onSel
       </div>
       <div className="h-1.5 rounded-full bg-sunken overflow-hidden mt-3">
         <div
-          className={`h-full ${roll.avgPct == null ? 'bg-sunken' : roll.avgPct >= Number(settings.ragGreen ?? 80) ? 'bg-good' : roll.avgPct >= Number(settings.ragAmber ?? 50) ? 'bg-warning' : 'bg-critical'}`}
+          className={`h-full ${roll.avgPct == null ? 'bg-sunken' : (roll.avgRawPct ?? roll.avgPct) >= Number(settings.ragGreen ?? 80) ? 'bg-good' : (roll.avgRawPct ?? roll.avgPct) >= Number(settings.ragAmber ?? 50) ? 'bg-warning' : 'bg-critical'}`}
           style={{ width: `${Math.max(2, Math.min(100, roll.avgPct || 0))}%` }}
         />
       </div>
@@ -496,7 +525,8 @@ function NodeCard({ kind, node, subtitle, org, kpis, perfValues, settings, onSel
 }
 
 function RagChip({ rollup, settings }) {
-  const cls = rollup.avgPct == null ? 'chip-rag-none' : rollup.avgPct >= Number(settings.ragGreen ?? 80) ? 'chip-rag-green' : rollup.avgPct >= Number(settings.ragAmber ?? 50) ? 'chip-rag-amber' : 'chip-rag-red';
+  const pct = rollup.avgRawPct ?? rollup.avgPct;
+  const cls = rollup.avgPct == null ? 'chip-rag-none' : pct >= Number(settings.ragGreen ?? 80) ? 'chip-rag-green' : pct >= Number(settings.ragAmber ?? 50) ? 'chip-rag-amber' : 'chip-rag-red';
   return <span className={`chip ${cls} flex-none`}>{rollup.avgPct != null ? `${rollup.avgPct}%` : '—'}</span>;
 }
 

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { useApp } from './context/AppContext.jsx';
 import { currentNav } from './lib/nav.js';
 // Login and ForcedPasswordChange render before the route switch below even
@@ -53,18 +53,47 @@ const PAGES = {
 };
 
 export default function App() {
-  const { booting, user, hasPerm } = useApp();
-  const [route, setRoute] = useState('overview');
+  const { booting, user, hasPerm, restoreSelNode } = useApp();
+  const [route, setRouteState] = useState('overview');
+  const setRoute = useCallback((nextRoute) => {
+    if (route === nextRoute) return;
+    window.history.pushState({
+      zouApp: {
+        userId: user.id,
+        route: nextRoute,
+        selNode: window.history.state?.zouApp?.userId === user.id ? window.history.state.zouApp.selNode : null,
+      },
+    }, '', window.location.href);
+    setRouteState(nextRoute);
+  }, [route, user]);
   const nav = user ? currentNav(user, hasPerm) : [];
 
-  // Land on whatever's first in this person's own nav — same as the
-  // original prototype (a data-entry role opens straight to My Data Entry,
-  // an oversight role opens to Overview) — the moment they sign in, not on
-  // every render (that would fight anyone who's since navigated away).
+  // Restore this account's last app location on reload, or start on the
+  // first page available in its navigation. Each transition is stored in
+  // the browser history so its native Back/Forward controls work as expected.
   useEffect(() => {
-    if (user) setRoute(nav[0] || 'overview');
+    if (user) {
+      const saved = window.history.state?.zouApp;
+      const sameUser = saved?.userId === user.id;
+      const nextRoute = sameUser && nav.includes(saved.route) ? saved.route : (nav[0] || 'overview');
+      const nextNode = sameUser ? saved.selNode || null : null;
+      window.history.replaceState({ zouApp: { userId: user.id, route: nextRoute, selNode: nextNode } }, '', window.location.href);
+      setRouteState(nextRoute);
+      restoreSelNode(nextNode);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
+
+  useEffect(() => {
+    function restoreFromHistory(event) {
+      const saved = event.state?.zouApp;
+      if (!user || saved?.userId !== user.id) return;
+      setRouteState(saved.route);
+      restoreSelNode(saved.selNode || null);
+    }
+    window.addEventListener('popstate', restoreFromHistory);
+    return () => window.removeEventListener('popstate', restoreFromHistory);
+  }, [user, restoreSelNode]);
 
   if (booting) {
     return <div className="min-h-dvh flex items-center justify-center text-ink-muted text-sm">Loading…</div>;

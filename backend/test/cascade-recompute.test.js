@@ -16,33 +16,24 @@ async function getValue(token, kpiId, year, month) {
   return r.body.values.find((v) => v.year === year && v.month === month);
 }
 
-// The one bug this whole "correct all" pass was built around: a cumulative
-// KPI's official value is always "the previous period's official total plus
-// this period's own entry" (see kpis.js's previousOfficialValue). Amending
-// an already-approved period and re-approving it must ripple that new total
-// forward through every later already-approved period too — before the fix,
-// only the amended period itself updated, silently leaving every later
-// period's official total built on the stale number. This test builds a
-// real multi-month chain through the real API (enter → submit → approve, an
-// actual Employee and their actual Unit Head account, not a direct DB
-// write) and then amends the first period, asserting the SECOND period's
-// value moves too.
-test('amending and re-approving an earlier period cascades the new total forward', async () => {
+// Direct KPI entries are cumulative snapshots, not monthly increments.
+// Each approved month must retain the actual submitted for that month;
+// amending an earlier snapshot must not rewrite later months.
+test('approved direct KPI entries remain monthly snapshots when an earlier month is amended', async () => {
   const org = await api.request('/api/org', { token: ictadmin });
   const employee = org.body.employees[0];
   const unit = org.body.units.find((u) => u.id === employee.unit_id);
   assert.ok(unit, 'expected the seeded employee\'s unit to exist');
 
-  // Find the real login accounts for this Employee and their Unit Head —
-  // exactly the two roles who actually own/approve an Employee-owned KPI
-  // (see kpis.js's isOwner/isApprover).
+  // Find the real login accounts for the Employee who owns the KPI and CPU,
+  // the final approver for every KPI tier.
   const users = await api.request('/api/users', { token: ictadmin });
   const employeeUser = users.body.users.find((u) => u.role === 'employee' && u.scope_id === employee.id);
-  const headUser = users.body.users.find((u) => u.role === 'unithead' && u.scope_id === employee.unit_id);
-  assert.ok(employeeUser && headUser, 'expected real login accounts for both the Employee and their Unit Head');
+  const cpuUser = users.body.users.find((u) => u.role === 'cpu');
+  assert.ok(employeeUser && cpuUser, 'expected real login accounts for the Employee and CPU');
 
   const { token: indivToken } = await api.login(employeeUser.email);
-  const { token: headToken } = await api.login(headUser.email);
+  const { token: cpuToken } = await api.login(cpuUser.email);
 
   const kpiRes = await api.request('/api/kpis', {
     method: 'POST', token: ictadmin,
@@ -65,12 +56,11 @@ test('amending and re-approving an earlier period cascades the new total forward
     assert.equal(r.status, 200, `enter ${year}-${month} failed: ${JSON.stringify(r.body)}`);
     r = await api.request(`/api/kpis/${kpiId}/submit`, { method: 'POST', token: indivToken, body: { year, month }, ...withinWindow(year, month) });
     assert.equal(r.status, 200, `submit ${year}-${month} failed: ${JSON.stringify(r.body)}`);
-    r = await api.request(`/api/kpis/${kpiId}/approve`, { method: 'POST', token: headToken, body: { year, month } });
+    r = await api.request(`/api/kpis/${kpiId}/approve`, { method: 'POST', token: cpuToken, body: { year, month } });
     assert.equal(r.status, 200, `approve ${year}-${month} failed: ${JSON.stringify(r.body)}`);
   }
 
-  // Three consecutive months, entered smallest-first: 10, then 15, then 20.
-  // Baseline is 0, so the real running totals should be 10, 25, 45.
+  // Three monthly cumulative actuals: 10, 15, and 20.
   await enterSubmitApprove(2025, 1, 10);
   await enterSubmitApprove(2025, 2, 15);
   await enterSubmitApprove(2025, 3, 20);
@@ -79,32 +69,33 @@ test('amending and re-approving an earlier period cascades the new total forward
   let feb = await getValue(ictadmin, kpiId, 2025, 2);
   let mar = await getValue(ictadmin, kpiId, 2025, 3);
   assert.equal(jan.value, 10);
-  assert.equal(feb.value, 25, 'February must be January\'s total plus February\'s own entry');
-  assert.equal(mar.value, 45, 'March must build on February\'s total');
+  assert.equal(feb.value, 15);
+  assert.equal(mar.value, 20);
 
-  // Now amend January's entry from 10 to 30 (an entered_value correction —
-  // e.g. a late-discovered data error) and re-approve it. This is exactly
-  // the "amend an already-approved period" path the correctness audit
-  // flagged: before the fix, only January's own value updated (to 30) and
-  // February/March silently kept their stale totals (25 and 45) — built on
-  // top of the OLD January figure — until someone happened to re-touch them.
+  // Amend January's snapshot from 10 to 30 and re-approve it. February and
+  // March remain their own independent cumulative snapshots.
   let r = await api.request(`/api/kpis/${kpiId}/value`, { method: 'PUT', token: indivToken, body: { year: 2025, month: 1, value: 30 } });
   assert.equal(r.status, 200);
   jan = await getValue(ictadmin, kpiId, 2025, 1);
   assert.equal(jan.status, 'submitted', 'amending an approved period must return it to submitted, pending re-approval');
+  const range = await api.request('/api/kpis/values-range?year=2025&fromMonth=1&toMonth=3', { token: ictadmin });
+  assert.equal(range.status, 200);
+  const janPreview = range.body.values.find((value) => value.kpi_id === kpiId && value.month === 1);
+  assert.equal(janPreview.value, 10, 'the previous approved value remains official while the amendment is pending');
+  assert.equal(janPreview.preview_value, 30, 'performance-range reads should prefer the pending submitted actual');
 
-  r = await api.request(`/api/kpis/${kpiId}/approve`, { method: 'POST', token: headToken, body: { year: 2025, month: 1 } });
+  r = await api.request(`/api/kpis/${kpiId}/approve`, { method: 'POST', token: cpuToken, body: { year: 2025, month: 1 } });
   assert.equal(r.status, 200);
 
   jan = await getValue(ictadmin, kpiId, 2025, 1);
   feb = await getValue(ictadmin, kpiId, 2025, 2);
   mar = await getValue(ictadmin, kpiId, 2025, 3);
   assert.equal(jan.value, 30, 'January\'s own total should now be the corrected 30');
-  assert.equal(feb.value, 45, 'February must cascade-recompute: 30 (new Jan total) + 15 (Feb\'s own entry)');
-  assert.equal(mar.value, 65, 'March must cascade-recompute too: 45 (new Feb total) + 20 (Mar\'s own entry)');
+  assert.equal(feb.value, 15, 'February keeps its own cumulative actual');
+  assert.equal(mar.value, 20, 'March keeps its own cumulative actual');
 
-  // And the cascade must be traceable — never a silent correction.
+  // Manual snapshot approvals never trigger the automated contribution cascade.
   const audit = await api.request('/api/audit?limit=500', { token: ictadmin });
   const cascadeEntries = audit.body.entries.filter((e) => e.action === 'cascade_recompute' && e.entity_id === kpiId);
-  assert.ok(cascadeEntries.length >= 2, 'expected an audit trail entry for each later period the cascade actually recomputed (February and March)');
+  assert.equal(cascadeEntries.length, 0);
 });

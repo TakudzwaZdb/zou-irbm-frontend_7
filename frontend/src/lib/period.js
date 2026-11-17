@@ -5,6 +5,8 @@
 // month by month. A quarter/half/year's "performance" is the latest actual
 // value available within that range (the same as viewing a running
 // scorecard as of today), fetched via GET /kpis/values-range.
+import { effectiveKpiValue, officialKpiValueRow } from './scope.js';
+
 export const PERIOD_TYPES = ['monthly', 'quarterly', 'biannual', 'annual'];
 export const PERIOD_TYPE_LABEL = { monthly: 'Monthly', quarterly: 'Quarterly', biannual: 'Bi-annual', annual: 'Annual' };
 
@@ -35,13 +37,16 @@ export function labelFor(type, year, idx, monthNames) {
 }
 
 // Given every kpi_values row in range for one KPI, the "as of" row for the
-// period — the latest month with a value, so a quarter reports on whatever
-// has actually come in so far rather than demanding every month be filled.
+// period — the latest CPU-approved month with an official value, so a
+// quarter reports on approved results without including pending submissions.
 export function latestInRange(rows) {
   let best = null;
   rows.forEach((r) => {
-    if (r.value == null) return;
-    if (!best || r.month > best.month) best = r;
+    const officialRow = officialKpiValueRow(r);
+    if (!officialRow) return;
+    const value = effectiveKpiValue(officialRow);
+    if (value == null) return;
+    if (!best || r.month > best.month) best = officialRow;
   });
   return best;
 }

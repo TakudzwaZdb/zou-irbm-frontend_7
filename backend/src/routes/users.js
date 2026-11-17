@@ -87,12 +87,8 @@ router.get('/', requireAnyPerm('manage_users', 'view_users'), async (req, res) =
 // selected person's existing organisation scope exactly as it was (the one
 // exception: an individual-employee-record scope is meaningless on any
 // role but Employee, which this route never assigns, so that one combination
-// is cleared rather than carried over). Same single-holder-per-role rule
-// PATCH /:id/role already enforces: each user is assigned in turn inside
-// one transaction, so if two selected users would both occupy the same
-// currently-vacant global seat, the first succeeds and the rest fail with
-// "already occupied" by that same person — reported back per user rather
-// than silently dropped or crashing the whole batch.
+// is cleared rather than carried over). Appointment uniqueness still applies
+// to other roles; ICT administrators are multi-seat and exempt.
 router.post('/assign-role', requireRole('ictadmin'), async (req, res) => {
   const { userIds, role } = req.body || {};
   if (!Array.isArray(userIds) || userIds.length === 0) return res.status(400).json({ error: 'Select at least one user.' });
@@ -114,7 +110,7 @@ router.post('/assign-role', requireRole('ictadmin'), async (req, res) => {
       // route never assigns that role.
       const nextScopeType = target.scope_type === 'employee' ? null : target.scope_type;
       const nextScopeId = target.scope_type === 'employee' ? null : target.scope_id;
-      const occupied = nextScopeType
+      const occupied = role === 'ictadmin' ? null : nextScopeType
         ? await db.prepare('SELECT name FROM users WHERE role = ? AND scope_type = ? AND scope_id = ? AND deleted_at IS NULL AND id != ?').get(role, nextScopeType, nextScopeId, id)
         : await db.prepare('SELECT name FROM users WHERE role = ? AND scope_type IS NULL AND scope_id IS NULL AND deleted_at IS NULL AND id != ?').get(role, id);
       if (occupied) { results.push({ id, ok: false, error: `Already occupied by ${occupied.name}.` }); continue; }
@@ -394,11 +390,9 @@ router.patch('/:id/role', requireRole('ictadmin'), async (req, res) => {
     }
   }
 
-  // A role represents a single occupied appointment at its scope. Global
-  // roles have one university-wide appointment; scoped roles have one
-  // appointment per selected Programme, Sub-programme, or Unit. Employee
-  // is deliberately exempt because multiple Employee accounts are valid.
-  if (role !== 'employee') {
+  // Most roles represent a single occupied appointment at their scope.
+  // Employee and ICT administrator are multi-seat roles.
+  if (role !== 'employee' && role !== 'ictadmin') {
     const occupied = scopeType
       ? await db.prepare('SELECT name FROM users WHERE role = ? AND scope_type = ? AND scope_id = ? AND deleted_at IS NULL AND id != ? ORDER BY id LIMIT 1')
         .get(role, scopeType, scopeId, id)

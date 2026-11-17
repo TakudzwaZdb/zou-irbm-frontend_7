@@ -52,10 +52,9 @@ export const NAV_ITEMS = {
 // let them add a unit, create a KPI, or edit targets from that same page.
 // Compliance & Escalations is the org-wide oversight view (late-submission
 // compliance and Red-KPI performance escalation, both surfaced from real
-// data — see lib/compliance usage in pages/Compliance.jsx) — visible to the
-// two roles who actually act on an escalation (Programme Head / VC chain):
-// Corporate Planning Unit and Executives. It isn't a per-tier data-entry
-// concern, so Reps/Unit Heads/Employees don't need it in their nav.
+// data — see pages/Compliance.jsx) — visible to global oversight roles that
+// review or administer the escalation process. It isn't a per-tier
+// data-entry concern, so Reps/Unit Heads/Employees don't need it in their nav.
 // Overview and Framework are visible to every role by default (every seeded
 // account holds view_overview/view_framework — see utils/permissions.js on
 // the backend) but, like Reports/Audit/Settings/Users below, that's now a
@@ -109,7 +108,7 @@ export const ROLE_NAV_KEYS = {
   // ICT System Administrator keeps 'framework' — the org chart read-only,
   // same as every other role — alongside the pages that act on the org
   // (KPI Management / Organisation Setup / Organisation Maintenance).
-  ictadmin: ['overview', 'framework', 'kpiManagement', 'orgBuilder', 'users', 'permissions', 'audit'],
+  ictadmin: ['overview', 'framework', 'kpiManagement', 'orgBuilder', 'compliance', 'users', 'permissions', 'audit'],
   // 'approvals' added: a Sub-programme's own KPI submission is approved by
   // its own Programme Head, finally (see lib/scope.js's isApprover /
   // routes/kpis.js) — CPU has no role in this cascade — so Programme Head

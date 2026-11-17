@@ -5,7 +5,7 @@ import { Bar, BarChart, CartesianGrid, Cell, Legend, ReferenceLine, Tooltip, XAx
 // meaning: on/ahead of pace reads good, behind pace reads critical) — the
 // "Expected pace" bar stays a single neutral ink-muted tone throughout,
 // since it's a reference line, not a status.
-const FLAG_COLOR = { attention: '#d03b3b', ahead: '#0ca30c', 'on-pace': '#2f6fed', none: '#c7c4b8' };
+const FLAG_COLOR = { attention: '#d03b3b', behind: '#d08a16', ahead: '#0ca30c', 'on-pace': '#2f6fed', none: '#c7c4b8' };
 
 // A tick with two lines instead of one: the KPI's own (truncated) name on
 // top, who owns it underneath in a smaller, muted line — so a bar reads

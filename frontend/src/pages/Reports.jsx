@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { api } from '../lib/api.js';
-import { nodeOwnKpis, performanceRollup, varianceRollup, ownerName, employeesOfUnit, VARIANCE_ATTENTION_THRESHOLD, VARIANCE_AHEAD_THRESHOLD, valueStatus, MONTHS } from '../lib/scope.js';
+import { nodeOwnKpis, institutionalRollup, performanceRollup, varianceRollup, ownerName, employeesOfUnit, VARIANCE_ATTENTION_THRESHOLD, VARIANCE_AHEAD_THRESHOLD, valueStatus, MONTHS } from '../lib/scope.js';
 import { labelFor } from '../lib/period.js';
 import { employeePosition } from '../lib/orgDisplay.js';
 import RagByProgrammeChart from '../components/RagByProgrammeChart.jsx';
@@ -81,12 +81,12 @@ export default function Reports() {
   // flagged KPI at once, not one node at a time like Overview.
   const orgWideKpis = kpis;
   const orgVariance = varianceRollup(orgWideKpis, perfValues, settings);
-  const overallRollup = performanceRollup(orgWideKpis, perfValues, settings);
+  const overallRollup = institutionalRollup(org, orgWideKpis, perfValues, settings).performance;
   const designations = [...new Set(org.employees.map(employeePosition))].sort((a, b) => a.localeCompare(b));
   const programmeVarianceData = programmeRows.map((r) => ({
     name: r.p.name, actual: r.avgPct ?? 0, expected: r.variance.avgExpectedPct ?? 0,
     variance: r.variance.avgVariance,
-    flag: r.variance.avgVariance == null ? 'none' : r.variance.avgVariance <= VARIANCE_ATTENTION_THRESHOLD ? 'attention' : r.variance.avgVariance >= VARIANCE_AHEAD_THRESHOLD ? 'ahead' : 'on-pace',
+    flag: r.variance.avgVariance == null ? 'none' : r.variance.avgRawVariance <= VARIANCE_ATTENTION_THRESHOLD ? 'attention' : r.variance.avgRawVariance < 0 ? 'behind' : r.variance.avgRawVariance >= VARIANCE_AHEAD_THRESHOLD ? 'ahead' : 'on-pace',
   }));
   const orgRagCounts = chartRows.reduce((acc, r) => {
     acc.green += r.counts.green; acc.amber += r.counts.amber; acc.red += r.counts.red; acc.none += r.counts.none;
@@ -226,7 +226,7 @@ export default function Reports() {
     doc.text(`Actual progress vs. the pace expected by this point (${orgVariance.avgExpectedPct ?? '—'}% of the year elapsed).`, marginX, y);
     y += 14;
 
-    const flagged = orgVariance.items.filter((it) => it.flag === 'attention' || it.flag === 'ahead');
+    const flagged = orgVariance.items.filter((it) => it.flag === 'attention' || it.flag === 'behind' || it.flag === 'ahead');
     if (flagged.length > 0) {
       autoTable(doc, {
         startY: y,
@@ -234,7 +234,7 @@ export default function Reports() {
         head: [['KPI', 'Owner', 'Actual %', 'Expected %', 'Variance (pts)', 'Flag']],
         body: flagged.map((it) => [
           it.kpi.name, reportOwnerLabel(org, it.kpi), `${it.actualPct}%`, `${it.expectedPct}%`, it.variance,
-          it.flag === 'attention' ? 'Behind pace' : 'Ahead of pace',
+          it.flag === 'attention' || it.flag === 'behind' ? 'Behind pace' : 'Ahead of pace',
         ]),
         styles: { fontSize: 8.5, cellPadding: 4, lineColor: [224, 226, 230], lineWidth: 0.3 },
         headStyles: { fillColor: [25, 34, 48], textColor: 255 },

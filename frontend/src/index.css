@@ -12,6 +12,14 @@
   --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-display: "Manrope", system-ui, sans-serif;
 
+  --text-xs: 0.8125rem;
+  --text-sm: 0.9375rem;
+  --text-base: 1.0625rem;
+  --text-lg: 1.1875rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.625rem;
+  --text-3xl: 2rem;
+
   --color-accent-50: #eaf2fc;
   --color-accent-100: #d6e6fa;
   --color-accent-400: #5b9bec;
@@ -47,8 +55,8 @@
      while staying visibly a step lighter than ink-secondary (7.83:1) so the
      three-tier ink/ink-secondary/ink-muted hierarchy still reads clearly. */
   --color-ink-muted: #6e6c65;
-  --color-line: rgb(21 20 15 / 0.12);
-  --color-line-strong: rgb(21 20 15 / 0.20);
+  --color-line: rgb(21 20 15 / 0.15);
+  --color-line-strong: rgb(21 20 15 / 0.25);
 }
 
 /* System preference ("system" theme choice — the default until someone
@@ -62,8 +70,8 @@
     --color-ink: #f5f4f0;
     --color-ink-secondary: #c7c4b8;
     --color-ink-muted: #8f8c82;
-    --color-line: rgb(245 244 240 / 0.12);
-    --color-line-strong: rgb(245 244 240 / 0.22);
+    --color-line: rgb(245 244 240 / 0.16);
+    --color-line-strong: rgb(245 244 240 / 0.28);
   }
 }
 /* Explicit "dark" choice — wins over system preference either way. */
@@ -74,14 +82,32 @@
   --color-ink: #f5f4f0;
   --color-ink-secondary: #c7c4b8;
   --color-ink-muted: #8f8c82;
-  --color-line: rgb(245 244 240 / 0.12);
-  --color-line-strong: rgb(245 244 240 / 0.22);
+  --color-line: rgb(245 244 240 / 0.16);
+  --color-line-strong: rgb(245 244 240 / 0.28);
 }
 
 @layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border: 2px solid transparent;
+    border-radius: 9999px;
+    background-clip: content-box;
+  }
   body {
     font-family: var(--font-sans);
-    font-size-adjust: 0.54;
+    font-size-adjust: 0.62;
+    line-height: 1.55;
     @apply bg-page text-ink antialiased;
   }
   h1, h2, h3, h4 {
@@ -106,12 +132,8 @@
 }
 
 @layer components {
-  /* Every size below is nudged up half a step from the original (11→11.5,
-     12.5→13, 11.5→12, 12→12.5, 13→13.5) — small enough to change no layout
-     that already worked, but a real, app-wide readability gain since these
-     four classes back nearly every chip, button, and form field in the app. */
   .chip {
-    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11.5px] font-bold whitespace-nowrap;
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12.5px] font-bold whitespace-nowrap;
   }
   .chip-rag-green { @apply bg-good-soft text-good; }
   .chip-rag-amber { @apply bg-warning-soft text-warning; }
@@ -125,18 +147,18 @@
   .chip-tag { @apply bg-sunken text-ink-secondary font-semibold; }
 
   .btn {
-    @apply inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-[13px] font-semibold text-ink hover:bg-sunken disabled:opacity-40 disabled:cursor-not-allowed transition-colors;
+    @apply inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-[14.5px] font-semibold text-ink hover:bg-sunken disabled:opacity-40 disabled:cursor-not-allowed transition-colors;
   }
   .btn-primary { @apply bg-accent-500 text-white border-transparent hover:bg-accent-600; }
   .btn-danger { @apply text-critical border-critical/40 hover:bg-critical-soft; }
   .btn-ghost { @apply border-transparent bg-transparent hover:bg-sunken; }
-  .btn-sm { @apply px-2 py-1 text-[12px] rounded-md; }
+  .btn-sm { @apply px-2 py-1 text-[13.5px] rounded-md; }
 
   .card { @apply rounded-2xl border border-line bg-surface p-4 shadow-sm; }
 
-  .field-label { @apply text-[12.5px] font-bold text-ink-secondary; }
+  .field-label { @apply text-[14px] font-bold text-ink-secondary; }
   .field-input {
-    @apply w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-[13.5px] text-ink outline-none focus:ring-2 focus:ring-accent-500/50 focus:border-accent-500;
+    @apply w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-[15px] text-ink outline-none focus:ring-2 focus:ring-accent-500/50 focus:border-accent-500;
   }
 }
 

@@ -20,12 +20,29 @@ const STATUS_LABEL = { on_time: 'On time', due_soon: 'Due soon', late: 'Late', n
 export default function Compliance() {
   const { period } = useApp();
   const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
-    api(`/compliance?year=${period.year}&month=${period.month}`).then(setData).catch(() => setData(null));
-  }, [period]);
+    let active = true;
+    setData(null);
+    setError(null);
+    api(`/compliance?year=${period.year}&month=${period.month}`)
+      .then((result) => { if (active) setData(result); })
+      .catch((err) => { if (active) setError(err.message || 'Unable to load compliance results.'); });
+    return () => { active = false; };
+  }, [period.year, period.month, retry]);
 
-  if (!data) return <div className="text-ink-muted text-[13px]">Loading…</div>;
+  if (error) {
+    return (
+      <div role="alert" className="card max-w-xl">
+        <p className="font-semibold mb-1">Compliance &amp; Escalations could not be loaded</p>
+        <p className="text-[13px] text-ink-secondary mb-3">{error}</p>
+        <button type="button" className="btn btn-sm" onClick={() => setRetry((value) => value + 1)}>Retry</button>
+      </div>
+    );
+  }
+  if (!data) return <div role="status" className="text-ink-muted text-[13px]">Loading compliance results…</div>;
 
   return (
     <div>

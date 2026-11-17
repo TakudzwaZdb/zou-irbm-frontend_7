@@ -13,6 +13,7 @@ const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { isGlobalReader, canReadSub, canReadKpi } = require('../utils/scope');
+const { consecutiveRedStreak } = require('../utils/compliance');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -61,13 +62,10 @@ router.get('/', async (req, res) => {
   const monthEnd = new Date(Date.UTC(year, month, 0, 23, 59, 59));
   const dueDate = new Date(monthEnd.getTime() + settings.lateCutoffSub * 86400000);
 
-  // Only exec/cpu ever navigate here (see lib/nav.js's ROLE_NAV_KEYS — the
-  // two roles who actually act on an escalation), and both are global
-  // readers already, so this changes nothing either of them could already
-  // see. It closes the same direct-API gap as kpis.js/plans.js for anyone
-  // else calling this endpoint straight: a Sub Rep/Unit Head/Programme
-  // Head/Employee gets their own branch's compliance picture, never
-  // another's (see utils/scope.js).
+  // Every role that navigates here is a global reader (see lib/nav.js's
+  // ROLE_NAV_KEYS), so each sees the org-wide compliance picture. Other
+  // authenticated roles calling the endpoint directly remain scoped to
+  // their own branch (see utils/scope.js).
   const seesWholeOrg = isGlobalReader(req.user);
   const allSubs = await db.prepare(
     `SELECT s.id, s.name, p.name AS programme_name FROM subs s JOIN programmes p ON p.id = s.programme_id
@@ -109,16 +107,10 @@ router.get('/', async (req, res) => {
   for (const kpi of allKpis) { if (seesWholeOrg || await canReadKpi(req.user, kpi)) kpis.push(kpi); }
   const redKpis = [];
   for (const kpi of kpis) {
-    const history = await db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? ORDER BY year DESC, month DESC').all(kpi.id);
-    let streak = 0;
-    for (const v of history) {
-      const val = v.override_value != null ? v.override_value : v.value;
-      if (val == null) break;
-      const base = Number(kpi.baseline), tgt = Number(kpi.target);
-      const pct = tgt === base ? (val >= tgt ? 100 : 0) : Math.round(((val - base) / (tgt - base)) * 100);
-      if (pct >= settings.ragAmber) break; // amber or green — the streak of Red ends here
-      streak++;
-    }
+    const history = await db.prepare(
+      'SELECT * FROM kpi_values WHERE kpi_id = ? AND (year < ? OR (year = ? AND month <= ?)) ORDER BY year DESC, month DESC'
+    ).all(kpi.id, year, year, month);
+    const streak = consecutiveRedStreak(history, kpi, settings.ragAmber);
     if (streak > 0) redKpis.push({ kpiId: kpi.id, kpiName: kpi.name, ownerType: kpi.owner_type, ownerName: await ownerName(kpi), streak });
   }
 

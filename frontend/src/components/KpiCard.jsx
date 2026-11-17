@@ -4,8 +4,8 @@ import { useToast } from '../context/ToastContext.jsx';
 import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
 import {
-  byId, computeRag, computeVariance, ownerName, valueStatus,
-  canEnterData, canContribute,
+  byId, computeRag, computeVariance, hasPendingPreview, ownerName, valueStatus,
+  canEnterData, canContribute, officialKpiValueRow,
 } from '../lib/scope.js';
 import { readDraft, writeDraft, clearDraft, draftDiffersFrom, debounce } from '../lib/autosave.js';
 import { employeePosition } from '../lib/orgDisplay.js';
@@ -59,19 +59,12 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
   const kpiContributions = isShared ? contributions.filter((c) => c.kpi_id === kpi.id) : [];
   const valueRow = values[`${kpi.id}-${period.year}-${period.month}`];
   const status = valueStatus(valueRow);
-  // A submitted-but-not-yet-approved row's real `value` is deliberately
-  // still null (see below) — so without this, whoever is about to approve
-  // or return it would see a blank "Current" figure and a "No data" score,
-  // with nothing to actually judge the submission against. The backend now
-  // attaches a read-only `preview_value` to exactly these rows (see
-  // routes/kpis.js's attachPreview) — previousOfficialValue + entered_value,
-  // the identical math final approval itself uses — and this builds a
-  // synthetic row with that preview standing in for `value`, used ONLY for
-  // display (score chip, Current figure, the pace bar): every write action
-  // (Save/Submit/Approve/Return) still reads and writes the real valueRow,
-  // never this one.
-  const isPreview = !!(valueRow && valueRow.value == null && valueRow.preview_value != null);
-  const effectiveRow = isPreview ? { ...valueRow, value: valueRow.preview_value } : valueRow;
+  const officialRow = officialKpiValueRow(valueRow);
+  // A pending direct submission previews its entered cumulative actual;
+  // this also takes precedence over an old official value when an approved
+  // period has been amended and resubmitted.
+  const isPreview = mode !== 'readOnly' && hasPendingPreview(valueRow);
+  const effectiveRow = mode === 'readOnly' ? officialRow : isPreview ? { ...valueRow, value: valueRow.preview_value } : valueRow;
   const rag = computeRag(kpi, effectiveRow, settings);
   // Variance vs. the pace expected by the currently-selected performance
   // period (Monthly/Quarterly/Bi-annual/Annual — see LiveIndicator's sibling
@@ -80,13 +73,8 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
   // Only shown when it's actually notable (10+ points either side); an
   // on-pace KPI doesn't need a fifth badge repeating "it's fine".
   const variance = computeVariance(kpi, perfValues[kpi.id], settings);
-  // "Current" is the KPI's OFFICIAL running total — real performance to
-  // date, only ever updated at the moment a period is approved (see
-  // backend's previousOfficialValue / POST :id/approve). What's typed into
-  // the box below is a completely different number: THIS period's own
-  // entry on its own, never a running total the submitter has to work out
-  // by hand — the server adds it to the previous period's official total
-  // automatically, the moment this one is approved.
+  // Direct entries are cumulative actual snapshots. Approval makes the
+  // submitted actual the official value for this reporting month.
   const current = effectiveRow ? (effectiveRow.override_value != null ? effectiveRow.override_value : effectiveRow.value) : null;
   const enteredValue = valueRow ? valueRow.entered_value : null;
 
@@ -171,6 +159,11 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
                 ⚠ {variance.variance}pts behind pace
               </span>
             )}
+            {variance.flag === 'behind' && (
+              <span className="chip chip-rag-amber" title={`${variance.actualPct}% actual vs ${variance.expectedPct}% expected pace`}>
+                {variance.variance}pts behind pace
+              </span>
+            )}
             {variance.flag === 'ahead' && (
               <span className="chip chip-rag-green" title={`${variance.actualPct}% actual vs ${variance.expectedPct}% expected pace`}>
                 +{variance.variance}pts ahead of pace
@@ -202,22 +195,24 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
         <div className="flex gap-x-8 gap-y-2 flex-wrap">
           <Fig k="Baseline" v={kpi.baseline} />
           <Fig k="Target" v={kpi.target} />
-          {/* The raw submitted figure itself — entered_value — separate from
-              the cumulative total below. Without this, a reviewer had no way
-              to see what was actually typed in before deciding whether to
-              approve it. Shown for anyone reviewing or looking back at a
-              period that's actually had something entered. */}
-          {valueRow?.entered_value != null && ['submitted', 'approved'].includes(status) && (
-            <Fig k="Submitted this period" v={`${valueRow.entered_value} ${kpi.measure}`} />
+          {/* Keep the submitted snapshot visible beside the official value
+              so reviewers can compare the approved and pending actuals. */}
+          {mode !== 'readOnly' && valueRow?.entered_value != null && ['submitted', 'approved'].includes(status) && (
+            <Fig k="Submitted actual" v={`${valueRow.entered_value} ${kpi.measure}`} />
           )}
           <Fig
-            k={isPreview ? 'Projected total if approved' : 'Current (cumulative)'}
+            k={isPreview ? 'Submitted actual (if approved)' : mode === 'readOnly' ? 'Approved actual' : 'Current actual'}
             v={current != null ? current : '—'}
           />
         </div>
         {isPreview && (
           <p className="text-[11px] text-ink-muted mt-2 italic">
-            Not yet official — this is what the cumulative total and score above would become if this submission is approved as-is.
+            Not yet official — this actual and its score will be published if the submission is approved.
+          </p>
+        )}
+        {mode === 'readOnly' && status === 'submitted' && (
+          <p className="text-[11px] text-ink-muted mt-2 italic">
+            Awaiting CPU approval — Overview metrics use approved values only.
           </p>
         )}
 
@@ -255,12 +250,11 @@ export default function KpiCard({ kpi, mode = 'readOnly', context = 'entry', all
             </div>
           )}
           <p className="text-[11.5px] text-ink-muted mt-3 max-w-[60ch]">
-            Enter this period's own figure only — not a running total. The moment it's approved, it's added
-            automatically to {current != null ? <>the current cumulative total ({current})</> : "the KPI's baseline"} to become the new "Current" figure above.
+            Enter the cumulative actual measured as of this month, not only the change since last month. On approval, this value becomes the month's official actual.
           </p>
           <div className="flex gap-2 flex-wrap items-end mt-2">
             <div className="space-y-1">
-              <label className="field-label">This period's entry ({kpi.measure})</label>
+              <label className="field-label">Cumulative actual as of this month ({kpi.measure})</label>
               <input type="number" step="any" disabled={locked} value={entryValue}
                 onChange={(e) => onEntryValueChange(e.target.value)}
                 onKeyUp={onValueKeyRelease} onBlur={onValueKeyRelease}

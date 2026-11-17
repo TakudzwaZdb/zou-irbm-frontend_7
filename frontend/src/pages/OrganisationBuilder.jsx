@@ -266,7 +266,7 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
     const values = isEditing ? draft : row;
     return (
       <>
-        <td className="px-3 py-2.5 font-semibold">{entityKey === 'employee' ? 'Employee' : isEditing ? input('name') : row.name}</td>
+        <td className="px-3 py-2.5 font-semibold">{isEditing ? input('name') : row.name}</td>
         <td className="px-3 py-2.5">{isEditing && entityKey !== 'programme' ? (
           entityKey === 'sub' ? select('programmeId', org.programmes) : entityKey === 'unit' ? select('subId', org.subs) : select('unitId', eligibleUnits)
         ) : parentLabel(row)}</td>

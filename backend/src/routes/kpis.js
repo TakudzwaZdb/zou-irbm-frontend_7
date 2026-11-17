@@ -67,22 +67,10 @@ function isUnitHeadOwner(user, kpi) {
   return user.role === 'unithead' && kpi.owner_type === 'unit' && user.scope_id === kpi.owner_id;
 }
 
-// Is this user the tier ABOVE this KPI's owner (i.e. can approve/return it)?
-// Every tier is single-stage, one real approver, straight to 'approved':
-// Employee-owned by their Unit Head, Unit-owned by their Sub-programme
-// Rep, and Sub-owned by that Sub-programme's own Programme Head — the same
-// shape all the way up. A sub-owned KPI used to pass through a second CPU
-// sign-off stage after the Programme Head ('programme_approved', an
-// intermediate status); that's been removed by deliberate request — the
-// Programme Head's own approval is now final, and CPU has no approval role
-// in this cascade at all. See db.js's one-time migration for any row still
-// sitting at the retired 'programme_approved' status from before this
-// change, and POST /:id/approve below for where the cumulative value is
-// actually computed (now at the Programme Head's approval, for a sub-owned
-// KPI, exactly like every other tier's one true approval).
+// CPU is the final approver for every KPI owner tier. Other managers may
+// review subordinate contributions, but only CPU approval makes the KPI
+// value official.
 async function isApprover(user, kpi) {
-  // Heads contribute figures in their own scope. Corporate Planning Unit is
-  // the single institutional authority for review and approval.
   return user.role === 'cpu';
 }
 
@@ -119,47 +107,39 @@ async function getKpiOr404(req, res) {
   return kpi;
 }
 
-// The automated cumulative-performance engine, in one place: "what was this
-// KPI's official total as of the most recent period BEFORE this one?" —
-// real chronological order (December of last year counts as "before"
-// January of this one), skipping over any period that was never actually
-// approved (its value is still NULL), all the way back if it has to. A KPI
-// with no approved period at all yet starts from its own baseline — the
-// same number the monthly pace tracker already treats as "where this KPI
-// started" (see lib/scope.js's assumedMonthlyBaseline on the frontend).
-// override_value wins over value when both are set, matching every other
-// reader of a kpi_values row (computeRag, the pace tracker, Reports).
+// Contribution-based shared KPIs accumulate monthly team contributions.
+// Directly entered KPIs instead store the submitted cumulative actual for
+// each month and must never be added to a previous month's value.
 async function previousOfficialValue(kpiId, year, month, baseline) {
   const row = await db.prepare(
     `SELECT value, override_value FROM kpi_values
-     WHERE kpi_id = ? AND value IS NOT NULL AND (year < ? OR (year = ? AND month < ?))
+     WHERE kpi_id = ? AND value IS NOT NULL
+       AND (status = 'approved' OR approved_at IS NOT NULL)
+       AND (year < ? OR (year = ? AND month < ?))
      ORDER BY year DESC, month DESC LIMIT 1`
   ).get(kpiId, year, year, month);
   if (!row) return baseline;
   return row.override_value != null ? row.override_value : row.value;
 }
 
-// A submitted-but-not-yet-approved row's own `value` is deliberately still
-// NULL — it only ever becomes the KPI's real official figure at final
-// approval (see POST :id/approve above) — so whoever is reviewing it would
-// otherwise see a completely blank "Current" figure and score, with nothing
-// to actually judge the submission against before they approve or return
-// it. This attaches a read-only `preview_value` — never stored, recomputed
-// fresh on every read, and never trusted for anything real — showing what
-// the official cumulative total WOULD become if this exact submission were
-// approved as-is: previousOfficialValue + entered_value, the identical math
-// POST :id/approve itself uses. Automated (shared/contribution-summed)
-// KPIs are deliberately excluded: their `value` is already kept live by
-// recomputeUnitTotal the moment any contribution is approved, well before
-// the KPI's own tier-above approval, so there's already a real figure to
-// show — nothing to preview.
+// A submitted direct entry is already the cumulative actual for its month.
+// Expose it as a preview for the CPU review queue; Overview/Reports only use
+// official values. An amended approved row may still carry its old official
+// `value`, so the pending preview must take precedence in review until the
+// new actual is approved.
 async function attachPreview(row) {
-  if (!row || row.value != null || row.entered_value == null) return row;
-  if (row.status !== 'submitted') return row;
+  if (!row || row.status !== 'submitted') return row;
   const kpi = await db.prepare('SELECT baseline, is_automated FROM kpis WHERE id = ?').get(row.kpi_id);
-  if (!kpi || kpi.is_automated) return row;
+  if (!kpi) return row;
+  if (!kpi.is_automated) {
+    return row.entered_value == null ? row : { ...row, preview_value: Number(row.entered_value) };
+  }
   const base = await previousOfficialValue(row.kpi_id, row.year, row.month, kpi.baseline);
-  return { ...row, preview_value: base + Number(row.entered_value) };
+  const contributions = await db.prepare(
+    "SELECT value FROM kpi_contributions WHERE kpi_id = ? AND year = ? AND month = ? AND status = 'approved'"
+  ).all(row.kpi_id, row.year, row.month);
+  const total = base + contributions.reduce((sum, contribution) => sum + Number(contribution.value || 0), 0);
+  return { ...row, preview_value: total };
 }
 
 // Marks a kpi_values (or kpi_contributions — both carry year/month/status/
@@ -175,10 +155,9 @@ async function attachLate(row) {
 }
 
 // The automated heart of the shared-KPI feature: whenever a contribution is
-// approved, changed after approval, or returned, recompute this KPI's own
-// official value for that period as the SUM of every currently-approved
-// contribution — this is "the overall score of that KPI", built from real
-// approved numbers, never a guess. A KPI with no assignees at all is
+// approved, changed after approval, or returned, recompute this KPI's
+// working total for the period as the sum of currently-approved
+// contributions. CPU approval publishes it as the official value. A KPI with no assignees at all is
 // untouched (this only ever runs for KPIs someone has actually assigned).
 // Once a KPI has been through this once it's permanently marked automated
 // (matching the existing is_automated/override mechanism everywhere else in
@@ -187,7 +166,7 @@ async function attachLate(row) {
 // approves the Unit's own value on anyone's behalf — the Unit Head still
 // has to explicitly review and click Submit, same as any other Unit KPI,
 // which is what sends it on to the Sub-programme Rep.
-async function recomputeUnitTotal(kpiId, year, month, userId) {
+async function recomputeUnitTotal(kpiId, year, month) {
   const hasAssignees = await db.prepare('SELECT 1 FROM kpi_assignments WHERE kpi_id = ? AND deleted_at IS NULL').get(kpiId);
   if (!hasAssignees) return;
   const kpi = await db.prepare('SELECT * FROM kpis WHERE id = ?').get(kpiId);
@@ -197,10 +176,8 @@ async function recomputeUnitTotal(kpiId, year, month, userId) {
   const anyApproved = rows.length > 0;
   // Each contributor's own figure is that person's contribution FOR THIS
   // MONTH ALONE (never a running total they'd have to track themselves) —
-  // summing them gives this month's total contribution, which then gets
-  // added to the Unit's own previous month's official figure below, the
-  // exact same automated cumulative rule a directly-owned KPI gets at its
-  // own approval (see previousOfficialValue / POST :id/approve).
+  // summing them gives this month's contribution total, which is added to
+  // the Unit's previous official figure below.
   const periodTotal = anyApproved ? rows.reduce((s, r) => s + Number(r.value || 0), 0) : null;
   const sum = periodTotal != null ? (await previousOfficialValue(kpiId, year, month, kpi.baseline)) + periodTotal : null;
 
@@ -208,81 +185,41 @@ async function recomputeUnitTotal(kpiId, year, month, userId) {
 
   const existing = await db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpiId, year, month);
   if (existing) {
-    const wasApproved = existing.status === 'approved';
-    // Same amendment rule as a manual edit in PUT /:id/value: if the Rep had
-    // already approved this period and the computed total just changed
-    // underneath them, it goes back to "submitted" so they re-review the
-    // new number rather than an approval silently going stale.
-    await db.prepare('UPDATE kpi_values SET value = ?, status = ? WHERE id = ?')
-      .run(sum, wasApproved ? 'submitted' : existing.status, existing.id);
+    const hasOfficialValue = existing.value != null && (existing.status === 'approved' || existing.approved_at != null);
+    const nextStatus = existing.status === 'approved' ? 'submitted' : existing.status;
+    if (hasOfficialValue) {
+      await db.prepare('UPDATE kpi_values SET status = ? WHERE id = ?').run(nextStatus, existing.id);
+    } else {
+      await db.prepare('UPDATE kpi_values SET value = ?, status = ? WHERE id = ?')
+        .run(sum, nextStatus, existing.id);
+    }
   } else {
     await db.prepare('INSERT INTO kpi_values (kpi_id, year, month, value, status) VALUES (?, ?, ?, ?, \'draft\')').run(kpiId, year, month, sum);
   }
-  // This month's total just changed (or was set for the first time) — walk
-  // every later period forward and correct any that were chained off the
-  // old figure. See cascadeRecomputeForward below for why this matters even
-  // for a period that isn't formally "approved" yet: an automated KPI's
-  // value is a real, live-displayed number the moment any contribution is
-  // approved, and previousOfficialValue treats it as a real link in the
-  // chain regardless of status.
-  await cascadeRecomputeForward(kpiId, year, month, userId);
+  // Keep the new total as a preview until CPU approves the Unit's
+  // submission. Only that final approval may affect later official periods.
 }
 
-// The forward half of the cumulative engine, and the fix for a real,
-// confirmed gap: recomputeUnitTotal and POST :id/approve both correctly set
-// THIS period's own official value from whatever the chain looked like at
-// the moment they ran — but until this function existed, nothing ever
-// revisited a LATER period that had already built its own value on top of
-// this one. Amend and re-approve an old month, and every later approved
-// month silently kept its stale total forever, along with every RAG/
-// variance/rollup figure built on it — reproduced live during this app's
-// correctness audit (Jan 100→300 left Feb frozen at the old 150 instead of
-// the correct 350).
-//
-// This walks forward chronologically from the period that just changed and
-// rebuilds each later period from the exact same rule that produced it in
-// the first place: previousOfficialValue (itself now correct, since we're
-// walking in order — its own DB query always sees whatever this loop just
-// wrote) plus that period's own already-recorded contribution — entered_value
-// for a directly-entered KPI, or a fresh sum of that period's own approved
-// contributions for an automated one (never read back from a total that
-// might itself have been stale). A period whose recomputed total doesn't
-// actually change is left untouched — no audit noise, no unnecessary write.
-// An already-approved directly-entered period's status is deliberately
-// never reverted here (unlike a fresh amendment via PUT :id/value): the
-// figure is corrected in place and logged as a system correction, not
-// silently un-approved out from under whoever signed off on it. A period
-// still mid-amendment (non-automated, value non-null but status no longer
-// 'approved') is skipped — its own upcoming re-approval will call
-// previousOfficialValue itself at that time and pick up the right base
-// automatically, so touching it early here would be redundant.
+// Recompute later automated shared-KPI totals when an earlier contribution
+// total or override changes. Direct KPI values are monthly cumulative
+// snapshots, so changing one month must not rewrite another month's actual.
 async function cascadeRecomputeForward(kpiId, year, month, userId) {
   const kpi = await db.prepare('SELECT * FROM kpis WHERE id = ?').get(kpiId);
-  if (!kpi) return;
+  if (!kpi || !kpi.is_automated) return;
   const laterRows = await db.prepare(
     `SELECT * FROM kpi_values WHERE kpi_id = ? AND value IS NOT NULL
+     AND status = 'approved'
      AND (year > ? OR (year = ? AND month > ?))
      ORDER BY year ASC, month ASC`
   ).all(kpiId, year, year, month);
 
   for (const period of laterRows) {
-    if (!kpi.is_automated && period.status !== 'approved') continue;
-
     const base = await previousOfficialValue(kpiId, period.year, period.month, kpi.baseline);
-    let newValue;
-    if (kpi.is_automated) {
-      const contributions = await db.prepare(
-        "SELECT value FROM kpi_contributions WHERE kpi_id = ? AND year = ? AND month = ? AND status = 'approved'"
-      ).all(kpiId, period.year, period.month);
-      // Nothing approved for this period any more — recomputeUnitTotal
-      // would already have nulled its value itself when that happened, so
-      // a non-null row here with no approved contributions shouldn't occur;
-      // skip rather than guess if it somehow does.
-      if (contributions.length === 0) continue;
-      newValue = base + contributions.reduce((s, r) => s + Number(r.value || 0), 0);
-    } else {
-      newValue = base + Number(period.entered_value || 0);
-    }
+    const contributions = await db.prepare(
+      "SELECT value FROM kpi_contributions WHERE kpi_id = ? AND year = ? AND month = ? AND status = 'approved'"
+    ).all(kpiId, period.year, period.month);
+    if (contributions.length === 0) continue;
+    const newValue = base + contributions.reduce((s, r) => s + Number(r.value || 0), 0);
     if (newValue === period.value) continue;
 
     const oldValue = period.value;
@@ -291,10 +228,7 @@ async function cascadeRecomputeForward(kpiId, year, month, userId) {
       userId || null, 'cascade_recompute', 'kpi', kpiId,
       `${period.year}-${String(period.month).padStart(2, '0')} automatically recalculated from ${oldValue} to ${newValue} — an earlier period it was built on top of just changed.`
     );
-    // period.value written above now feeds the NEXT iteration's
-    // previousOfficialValue lookup (a fresh query, not a cached figure),
-    // so the chain stays correct all the way forward even when several
-    // periods in a row need correcting.
+    // period.value written above feeds the next iteration's previous total.
   }
 }
 
@@ -476,7 +410,9 @@ router.get('/values-range', async (req, res) => {
   const allowed = await readableKpiIds(req.user);
   const rows = (await db.prepare('SELECT * FROM kpi_values WHERE year = ? AND month BETWEEN ? AND ? ORDER BY month').all(year, fromMonth, toMonth))
     .filter((row) => allowed.has(row.kpi_id));
-  res.json({ values: rows });
+  const values = [];
+  for (const row of rows) values.push(await attachPreview(row));
+  res.json({ values });
 });
 
 // Live submission-window status for one reporting period — lets the
@@ -603,7 +539,7 @@ router.put('/:id/contribution', requirePerm('data_entry'), async (req, res) => {
     await db.prepare('INSERT INTO kpi_contributions (kpi_id, employee_id, year, month, value) VALUES (?, ?, ?, ?, ?)')
       .run(kpi.id, req.user.scope_id, year, month, value);
   }
-  await recomputeUnitTotal(kpi.id, year, month, req.user.id);
+  await recomputeUnitTotal(kpi.id, year, month);
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, wasApproved ? 'amend_contribution' : 'enter_contribution', 'kpi', kpi.id,
     `${year}-${String(month).padStart(2, '0')} contribution set to ${value}${wasApproved ? ' (amendment on a previously approved contribution — returned to submitted).' : '.'}`
@@ -650,7 +586,7 @@ router.post('/:id/contribution/:employeeId/approve', requireRole('cpu'), async (
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that period.' });
 
   await db.prepare('UPDATE kpi_contributions SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
-  await recomputeUnitTotal(kpi.id, year, month, req.user.id);
+  await recomputeUnitTotal(kpi.id, year, month);
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'approve_contribution', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} contribution from employee #${req.params.employeeId} approved.`
   );
@@ -665,7 +601,7 @@ router.post('/:id/contribution/:employeeId/return', requireRole('cpu'), async (r
   if (!row || row.status !== 'submitted') return res.status(400).json({ error: 'Nothing pending review for that period.' });
 
   await db.prepare('UPDATE kpi_contributions SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment, row.id);
-  await recomputeUnitTotal(kpi.id, year, month, req.user.id);
+  await recomputeUnitTotal(kpi.id, year, month);
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'return_contribution', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} contribution from employee #${req.params.employeeId} returned: "${comment}"`
   );
@@ -811,10 +747,10 @@ router.post('/:id/restore', requireAnyPerm('create_kpi', 'delete_kpi'), async (r
   res.json({ kpi: await db.prepare('SELECT * FROM kpis WHERE id = ?').get(kpi.id) });
 });
 
-// What gets typed here is THIS PERIOD'S OWN figure — never a running total
-// the submitter has to calculate by hand — so it's stored in entered_value,
-// never directly into value (the KPI's official cumulative figure; see
-// db.js's note above this table). value is deliberately left untouched
+// What gets typed here is the KPI's cumulative actual as of this month. It
+// is stored in entered_value and only becomes the official `value` when
+// approved, so an amendment to an approved period remains a preview until
+// its new actual is approved.
 // here, even on an amendment to an already-approved period: nothing about
 // "the official current performance" changes until an approver actually
 // re-approves it (see POST :id/approve below) — same principle a
@@ -844,7 +780,7 @@ router.put('/:id/value', requirePerm('data_entry'), async (req, res) => {
   }
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, wasApproved ? 'amend_value' : 'enter_value', 'kpi', kpi.id,
-    `${year}-${String(month).padStart(2, '0')} entry set to ${value}${wasApproved ? ' (amendment on a previously approved period — returned to submitted; the official total stays as last approved until this is re-approved).' : ' — added to the previous period once approved.'}`
+    `${year}-${String(month).padStart(2, '0')} cumulative actual set to ${value}${wasApproved ? ' (amendment on a previously approved period, returned to submitted until re-approved).' : '.'}`
   );
   res.json({ value: await db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month) });
 });
@@ -872,17 +808,9 @@ router.post('/:id/submit', requirePerm('data_entry'), async (req, res) => {
   res.json({ ok: true, late: win.late });
 });
 
-// This is where "current performance" actually becomes official — the
-// automated cumulative-addition moment the whole feature turns on. For a
-// directly-entered KPI (any tier: Employee, Unit, or Sub-programme — same
-// route, same rule every time), the newly-approved figure is never just
-// dropped in on its own: it's added to whatever this KPI's official total
-// already was as of the most recent earlier period (see
-// previousOfficialValue), so "current performance" always reads as a real
-// running total built up submission by submission. An automated (shared)
-// KPI's own row skips this — recomputeUnitTotal already applied the exact
-// same rule the moment its contributions were approved, so re-deriving it
-// here from a null entered_value would wipe out a correct number.
+// Directly-entered values are cumulative actual snapshots. Automated shared
+// values are computed from approved monthly contributions. Neither becomes
+// official until CPU approves the Unit's submission.
 router.post('/:id/approve', requireRole('cpu'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
   const { year, month } = req.body || {};
@@ -894,30 +822,23 @@ router.post('/:id/approve', requireRole('cpu'), async (req, res) => {
   if (!row || !pendingStatuses.includes(row.status)) return res.status(400).json({ error: 'Nothing pending review for that period.' });
   if (!await isApprover(req.user, kpi)) return res.status(403).json({ error: 'You are not the approver for this KPI.' });
 
-  // This is where "current performance" actually becomes official — the
-  // one true approval for every tier alike, including a sub-owned KPI now
-  // approved directly and finally by its Programme Head (no further CPU
-  // stage). This is where the automated cumulative-addition actually
-  // happens (see previousOfficialValue above): the newly-approved figure
-  // is added to whatever this KPI's official total already was as of the
-  // most recent earlier period, so "current performance" always reads as
-  // a real running total. An automated (shared) KPI's own row skips this —
-  // recomputeUnitTotal already applied the exact same rule the moment its
-  // contributions were approved.
+  // This is where current performance becomes official: direct values are
+  // stored as monthly cumulative actuals, and shared totals are recomputed
+  // from approved contributions only now.
   let detail = `${year}-${String(month).padStart(2, '0')} approved.`;
   if (!kpi.is_automated) {
-    const base = await previousOfficialValue(kpi.id, Number(year), Number(month), kpi.baseline);
-    const newValue = base + Number(row.entered_value);
-    await db.prepare('UPDATE kpi_values SET value = ?, status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(newValue, row.id);
-    detail = `${year}-${String(month).padStart(2, '0')} approved: ${row.entered_value} added to the previous total of ${base} → ${newValue}.`;
-    // This is exactly the "amend an old period, re-approve it" moment the
-    // correctness audit flagged — this period's own total may have just
-    // changed (a first-time approval, or a corrected re-approval), so walk
-    // every later already-approved period forward and fix any that were
-    // built on top of the old figure. See cascadeRecomputeForward above.
-    await cascadeRecomputeForward(kpi.id, Number(year), Number(month), req.user.id);
+    const actual = Number(row.entered_value);
+    await db.prepare('UPDATE kpi_values SET value = ?, status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(actual, row.id);
+    detail = `${year}-${String(month).padStart(2, '0')} approved with cumulative actual ${actual}.`;
   } else {
-    await db.prepare('UPDATE kpi_values SET status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(row.id);
+    const base = await previousOfficialValue(kpi.id, year, month, kpi.baseline);
+    const contributions = await db.prepare(
+      "SELECT value FROM kpi_contributions WHERE kpi_id = ? AND year = ? AND month = ? AND status = 'approved'"
+    ).all(kpi.id, year, month);
+    const actual = base + contributions.reduce((sum, contribution) => sum + Number(contribution.value || 0), 0);
+    await db.prepare('UPDATE kpi_values SET value = ?, status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(actual, row.id);
+    await cascadeRecomputeForward(kpi.id, Number(year), Number(month), req.user.id);
+    detail = `${year}-${String(month).padStart(2, '0')} approved with automated cumulative actual ${actual}.`;
   }
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'approve', 'kpi', kpi.id, detail

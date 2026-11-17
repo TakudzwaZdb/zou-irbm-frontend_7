@@ -376,7 +376,7 @@ export default function Settings() {
                         <button
                           type="submit"
                           disabled={busy !== null || !changed || !valid}
-                          className="btn btn-primary min-w-[82px] justify-center"
+                          className="btn min-w-[82px] justify-center border-accent-700 bg-accent-700 text-white hover:bg-accent-700 disabled:border-accent-100 disabled:bg-accent-50 disabled:text-accent-700 disabled:opacity-100"
                         >
                           {saving ? 'Saving…' : changed ? 'Save' : 'Saved'}
                         </button>
