@@ -8,6 +8,7 @@
     "node": ">=22.5.0"
   },
   "scripts": {
+    "db:init": "node src/init-db.js",
     "db:setup": "node src/seed.js",
     "seed": "node src/seed.js",
     "seed:reset": "node src/seed.js --reset",

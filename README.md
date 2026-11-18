@@ -1495,15 +1495,18 @@ That changed: the backend now talks to a real PostgreSQL server (`pg`,
 a pure-JS driver — still nothing to compile) via `backend/src/db.js`,
 so this app can run against a managed, durable, backupable database
 service instead of a single file on local disk — the natural choice for
-anything beyond a local demo. Local development is still simple: install
-Postgres locally (or use a container), create an empty database, and
-point `.env`'s `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` at
-it — `npm run db:setup` creates the schema and demo data inside it, and
-refuses to modify a populated database. The server also applies schema
-changes automatically on startup. For a managed production database (e.g.
-Azure Database for PostgreSQL Flexible Server), keep `PGDATABASE=zou_irbm`
-if desired; set `PGHOST` and credentials to the hosted server. See
-**AZURE_SETUP.md**.
+anything beyond a local demo. For local development, create an empty
+database and point `.env`'s `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/
+`PGDATABASE` at it; `npm run db:setup` creates the schema and starter data,
+and refuses to modify a populated database. For a hosted deployment with
+the project's existing starter accounts, create an empty hosted database
+(it can also be named `zou_irbm`), configure the hosted connection details,
+set `SEED_PASSWORD`, and run `cd backend && npm ci --omit=dev && npm run
+db:setup`. This creates the tables and seeds the accounts and sample
+organisation defined in `backend/src/seed.js`. To deploy without sample
+data, use `npm run db:init` and create a real administrator with
+`npm run create-account` instead. Startup also applies schema changes
+automatically. See **AZURE_SETUP.md** for the full hosted deployment steps.
 
 ## Backing up the database
 

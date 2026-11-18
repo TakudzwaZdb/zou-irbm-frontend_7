@@ -76,20 +76,32 @@ who's hosting the server.
    instead, download Azure's current CA bundle and pass it as
    `ssl: { ca: fs.readFileSync('/path/to/DigiCertGlobalRootCA.crt.pem') }`
    in `db.js`'s `poolConfig.ssl` in place of `rejectUnauthorized: false`.
-5. To initialize a starter/demo database, run `npm run db:setup` from
-   `backend` once with these database settings available to the command.
-   Set `SEED_PASSWORD` to a strong temporary password in the environment
-   before running it. The command creates the schema and sample accounts,
-   organisation, and KPIs, and refuses to seed a database that already
-   contains application data. The seeded accounts are sample data, not
-   real ZOU accounts.
+5. To deploy with the starter accounts already defined in the project,
+   point the backend at the empty database you created above. The app
+   creates its tables and permission catalog; it does not create the
+   database itself. Ensure the configured database user can create tables,
+   indexes, and sequences in that database's `public` schema. From the
+   `backend` folder, set a strong initial password and run:
 
-   For a real production database that must not contain sample people or
-   figures, skip the demo seed: `npm start` creates/applies the schema
-   automatically, and `npm run create-account -- --email=<real-email>
-   --role=ictadmin --name="<real name>" --azure` can bootstrap the real ICT
-   administrator without inserting demo records. Then build the real
-   organisation and KPIs in the app.
+   ```bash
+   npm ci --omit=dev
+   export SEED_PASSWORD='<strong temporary password>'
+   npm run db:setup
+   ```
+
+   `db:setup` creates the full schema and seeds the accounts, organisation,
+   settings, and sample KPIs defined in `backend/src/seed.js`. All seeded
+   accounts use the `SEED_PASSWORD` value; account emails follow the format
+   documented by the command's output. This setup refuses to run when it
+   finds existing application data. Start the server after setup. Its
+   schema check also runs automatically on startup. `PGDATABASE` can remain
+   `zou_irbm`; the hosted `PGHOST` and credentials select the online server.
+
+   The included account names and KPI figures are starter/sample data, not
+   confirmation that those accounts or figures are real. If you want a
+   schema-only deployment instead, use `npm run db:init` and create an
+   administrator with `npm run create-account`. Never run
+   `npm run seed:reset` against a live database.
 6. `backend/src/backup.js` (`pg_dump`/`pg_restore`-based) works unchanged
    against a Flexible Server target — it reads the same `PG*` env vars.
 

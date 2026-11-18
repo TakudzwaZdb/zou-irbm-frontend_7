@@ -48,7 +48,10 @@ const txn = db.transaction(async () => {
         OR EXISTS (SELECT 1 FROM messages)
         OR EXISTS (SELECT 1 FROM message_recipients)
         OR EXISTS (SELECT 1 FROM mfa_recovery_codes)
-        OR EXISTS (SELECT 1 FROM settings)
+        OR EXISTS (
+          SELECT 1 FROM settings
+          WHERE key NOT IN ('kpiLifecycleBackfillDone', 'alertWarningGap', 'alertCriticalGap')
+        )
         OR EXISTS (SELECT 1 FROM audit_log)
         OR EXISTS (SELECT 1 FROM role_definitions WHERE built_in = 0)
         AS has_data
@@ -70,7 +73,7 @@ const txn = db.transaction(async () => {
   `);
 
   console.log('Seeding permission catalog...');
-  const insertPerm = db.prepare('INSERT INTO permissions (key, label, group_name) VALUES (?, ?, ?)');
+  const insertPerm = db.prepare('INSERT OR IGNORE INTO permissions (key, label, group_name) VALUES (?, ?, ?)');
   for (const p of PERMISSIONS) await insertPerm.run(p.key, p.label, p.group);
 
   const insertRolePerm = db.prepare('INSERT OR IGNORE INTO role_permissions (role_key, permission_key) VALUES (?, ?)');
