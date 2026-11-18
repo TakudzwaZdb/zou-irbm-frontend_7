@@ -5,6 +5,7 @@ import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
 import { byId, computeRag, computeVariance, hasPendingPreview, ownerName, valueStatus } from '../lib/scope.js';
 import { ContributorsBreakdown } from './KpiCard.jsx';
+import PaginatedRows from './PaginatedRows.jsx';
 
 const STATUS_LABEL = {
   none: 'Not started', draft: 'Draft', returned: 'Returned', submitted: 'Submitted', approved: 'Approved',
@@ -96,7 +97,7 @@ export default function ApprovalsTable({ kpis, interactive }) {
           </tr>
         </thead>
         <tbody>
-          {kpis.map((kpi) => {
+          <PaginatedRows items={kpis} colSpan={interactive ? 10 : 9} emptyMessage="No KPIs to review." renderRow={(kpi) => {
             const r = rowFor(kpi);
             const isOpen = expandedId === kpi.id;
             const canOverride = !!kpi.is_automated && hasPerm('apply_override');
@@ -225,7 +226,7 @@ export default function ApprovalsTable({ kpis, interactive }) {
                 )}
               </Fragment>
             );
-          })}
+          }} />
         </tbody>
       </table>
     </div>
@@ -257,7 +258,7 @@ export function TeamApprovalsTable({ kpis }) {
           </tr>
         </thead>
         <tbody>
-          {kpis.map((kpi) => {
+          <PaginatedRows items={kpis} colSpan={6} emptyMessage="No team submissions to review." renderRow={(kpi) => {
             const valueRow = values[`${kpi.id}-${period.year}-${period.month}`];
             const rag = computeRag(kpi, valueRow, settings);
             // Same fix as the table above: pace for THIS KPI's actual
@@ -303,7 +304,7 @@ export function TeamApprovalsTable({ kpis }) {
                 )}
               </Fragment>
             );
-          })}
+          }} />
         </tbody>
       </table>
     </div>
@@ -347,13 +348,13 @@ export function FeedbackTable({ kpis }) {
               </tr>
             </thead>
             <tbody>
-              {withFeedback.map(({ kpi, valueRow }) => (
+              <PaginatedRows items={withFeedback} colSpan={3} emptyMessage="No return feedback." renderRow={({ kpi, valueRow }) => (
                 <tr key={kpi.id} className="border-b border-line last:border-b-0 align-top">
                   <td className="px-3 py-2.5 font-semibold">{kpi.name}</td>
                   <td className="px-3 py-2.5 text-ink-muted">{ownerName(org, kpi)}</td>
                   <td className="px-3 py-2.5 text-ink-secondary">“{valueRow.return_comment}”</td>
                 </tr>
-              ))}
+              )} />
             </tbody>
           </table>
         </div>

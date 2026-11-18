@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext.jsx';
 import { useConfirm } from '../context/ConfirmContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
+import PaginatedRows from '../components/PaginatedRows.jsx';
 import { yearRange } from '../lib/scope.js';
 
 const STATUS_LABEL = { draft: 'Draft', returned: 'Returned', submitted: 'Submitted', approved: 'Approved' };
@@ -460,10 +461,7 @@ function PlanItemsEditor({ ownerType, ownerId, ownerName, proposals, cycleYear, 
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {proposals.length === 0 && (
-                  <tr><td colSpan="6" className="px-3 py-6 text-center text-ink-muted">No plans yet. Add a plan row to begin.</td></tr>
-                )}
-                {proposals.map((proposal) => {
+                <PaginatedRows items={proposals} colSpan={6} emptyMessage="No plans yet. Add a plan row to begin." renderRow={(proposal) => {
                   const status = planStatus(proposal);
                   const item = itemDraft(proposal);
                   const expanded = expandedId === proposal.id;
@@ -482,7 +480,7 @@ function PlanItemsEditor({ ownerType, ownerId, ownerName, proposals, cycleYear, 
                       onDelete={() => deleteDraft(proposal)}
                     />
                   );
-                })}
+                }} />
               </tbody>
             </table>
           </div>
@@ -622,14 +620,14 @@ function ReadOnlyPlanRows({ proposals }) {
           <tr><th className="px-2.5 py-1.5">Plan</th><th className="px-2.5 py-1.5">Status</th><th className="px-2.5 py-1.5">Budget</th><th className="px-2.5 py-1.5">Targets</th></tr>
         </thead>
         <tbody className="divide-y divide-line">
-          {proposals.map((proposal) => (
+          <PaginatedRows items={proposals} colSpan={4} emptyMessage="No plans entered." renderRow={(proposal) => (
             <tr key={proposal.id}>
               <td className="px-2.5 py-2 font-medium">{proposal.plan_title}</td>
               <td className="px-2.5 py-2"><span className={`chip chip-st-${planStatus(proposal)}`}>{STATUS_LABEL[planStatus(proposal)]}</span></td>
               <td className="px-2.5 py-2 tabular-nums">{fmtMoney(proposal.budget)}</td>
               <td className="px-2.5 py-2 max-w-xs truncate" title={proposal.targets || ''}>{proposal.targets || '—'}</td>
             </tr>
-          ))}
+          )} />
         </tbody>
       </table>
     </div>
@@ -735,10 +733,7 @@ function CpuPlanReviewTable({ proposals, cycleYear, reload }) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-line">
-                  {visible.length === 0 && (
-                    <tr><td colSpan="6" className="px-3 py-7 text-center text-ink-muted">No submitted plans are waiting for review in this cycle.</td></tr>
-                  )}
-                  {visible.map((proposal) => {
+                  <PaginatedRows items={visible} colSpan={6} emptyMessage="No submitted plans are waiting for review in this cycle." renderRow={(proposal) => {
                     const expanded = expandedId === proposal.id;
                     return (
                       <FragmentCpuPlanRow
@@ -753,7 +748,7 @@ function CpuPlanReviewTable({ proposals, cycleYear, reload }) {
                         reload={reload}
                       />
                     );
-                  })}
+                  }} />
                 </tbody>
               </table>
             </div>
@@ -892,36 +887,13 @@ function SubApprovalRow({ s, units }) {
 }
 
 function UniversityPlanCard({ data, cycleYear, reload }) {
-  const toast = useToast();
   const proposal = data.university.proposal;
   const status = planStatus(proposal);
-  const [narrative, setNarrative] = useState(proposal?.narrative || '');
-  const [targets, setTargets] = useState(proposal?.targets || '');
-  const [busy, setBusy] = useState(false);
-  // Locked while awaiting CPU review OR once approved — only a CPU return reopens
-  // it (see routes/plans.js's PUT /university, which now enforces this
-  // same rule server-side).
-  const locked = proposal && proposal.status !== 'draft';
-  useEffect(() => {
-    setNarrative(proposal?.narrative || '');
-    setTargets(proposal?.targets || '');
-  }, [proposal?.narrative, proposal?.targets]);
 
   const allProgrammesSubmitted = data.programmes.length > 0 && data.programmes.every((programme) => {
     const proposals = programme.proposals || (programme.proposal ? [programme.proposal] : []);
     return proposals.length > 0 && proposals.every((item) => item.status === 'submitted' || item.status === 'approved');
   });
-
-  async function saveDraft() {
-    setBusy(true);
-    try { await api('/plans/university', { method: 'PUT', body: { cycleYear, narrative, targets } }); toast('Draft saved.'); await reload(); }
-    catch (err) { toast(err.message, 'err'); } finally { setBusy(false); }
-  }
-  async function submit() {
-    setBusy(true);
-    try { await api('/plans/university/submit', { method: 'POST', body: { cycleYear } }); toast(`University Annual Plan for ${cycleYear} submitted to CPU.`); await reload(); }
-    catch (err) { toast(err.message, 'err'); } finally { setBusy(false); }
-  }
 
   return (
     <div id="plan-university" className="card mt-2 border-2 border-accent-500/20 scroll-mt-4">
@@ -944,15 +916,19 @@ function UniversityPlanCard({ data, cycleYear, reload }) {
         including not-yet-approved submissions: <b>{fmtMoney(data.university.provisionalBudget)}</b>.
         {!allProgrammesSubmitted && <span className="block mt-1 text-warning font-semibold">Not every Programme's plan has been submitted yet.</span>}
       </p>
-      <textarea rows={3} disabled={locked} className="field-input mb-3" placeholder="Compiled university-wide planning narrative for this cycle"
-        value={narrative} onChange={(e) => setNarrative(e.target.value)} />
-      <textarea rows={2} disabled={locked} className="field-input mb-3" placeholder="Measurable university-wide targets / outcomes (optional if lower-tier plan budgets are included)"
-        value={targets} onChange={(e) => setTargets(e.target.value)} />
+      {proposal?.narrative && (
+        <div className="mb-3">
+          <p className="text-[11px] font-semibold text-ink-muted mb-1">University-wide planning narrative</p>
+          <p className="text-[12.5px] text-ink-secondary whitespace-pre-wrap">{proposal.narrative}</p>
+        </div>
+      )}
+      {proposal?.targets && (
+        <div className="mb-3">
+          <p className="text-[11px] font-semibold text-ink-muted mb-1">Targets / outcomes</p>
+          <p className="text-[12.5px] text-ink-secondary whitespace-pre-wrap">{proposal.targets}</p>
+        </div>
+      )}
       <div className="flex gap-2">
-        <button className="btn btn-sm" disabled={locked || busy} onClick={saveDraft}>Save draft</button>
-        <button className="btn btn-sm btn-primary" disabled={locked || busy || !narrative.trim() || (!hasAnyPlanBudget(data) && !targets.trim())} onClick={submit}>
-          Submit to CPU
-        </button>
         <CpuApprovalActions proposal={proposal} endpoint="/plans/university" cycleYear={cycleYear} reload={reload} label="University Annual Plan" />
       </div>
     </div>
@@ -1052,11 +1028,6 @@ function CpuApprovalActions({ proposal, endpoint, cycleYear, reload, label }) {
       )}
     </div>
   );
-}
-
-function hasAnyPlanBudget(data) {
-  return [...data.units, ...data.subs, ...data.programmes].some((owner) =>
-    (owner.proposals || (owner.proposal ? [owner.proposal] : [])).some((proposal) => proposal.budget != null));
 }
 
 function ReadOnlyPanel({ data }) {

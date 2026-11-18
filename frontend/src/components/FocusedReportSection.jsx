@@ -5,6 +5,8 @@ import {
   reachableOrgSlice, availableReportKinds, GLOBAL_REPORT_ROLES, defaultNodeForRole,
 } from '../lib/scope.js';
 import { employeePosition } from '../lib/orgDisplay.js';
+import PaginatedRows from './PaginatedRows.jsx';
+import { csvReportPreamble, downloadCsvFile } from '../lib/csv.js';
 
 const KIND_LABEL = { overall: 'Overall', programme: 'Programme', sub: 'Sub-programme', unit: 'Unit', employee: 'Employee designation' };
 
@@ -120,18 +122,24 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
   }
 
   function downloadCsv() {
-    const rows = [['KPI', 'Owner', 'Owner tier', 'Baseline', 'Target', 'Progress %', 'Pace flag']];
+    const yearMatch = periodLabel.match(/\b\d{4}\b/);
+    const reportYear = yearMatch ? yearMatch[0] : 'Not specified';
+    const reportMonth = yearMatch ? periodLabel.slice(0, yearMatch.index).trim() : periodLabel;
+    const rows = [
+      ...csvReportPreamble(`${KIND_LABEL[kind].toUpperCase()} PERFORMANCE REPORT`, {
+        period: periodLabel,
+        month: reportMonth,
+        year: reportYear,
+        scope: entityName,
+      }),
+      ['Section 1 | KPI Performance Details'],
+      ['KPI', 'Owner', 'Owner tier', 'Baseline', 'Target', 'Progress %', 'Pace flag'],
+    ];
+    if (variance.items.length === 0) rows.push(['No KPI performance data is available for this scope and period.']);
     variance.items.forEach(({ kpi, actualPct, flag }) => {
       rows.push([kpi.name, reportOwnerLabel(org, kpi), ownerKindLabel(kpi), kpi.baseline, kpi.target, actualPct ?? '', flag]);
     });
-    const csv = rows.map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${fileStem()}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadCsvFile(`${fileStem()}.csv`, rows);
   }
 
   async function downloadPdf() {
@@ -276,13 +284,13 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
                   </tr>
                 </thead>
                 <tbody>
-                  {children.map((c) => (
+                  <PaginatedRows items={children} colSpan={3} emptyMessage={`No ${KIND_LABEL[childKind]?.toLowerCase() || 'organisation'} records.`} renderRow={(c) => (
                     <tr key={c.id} className="border-t border-line hover:bg-sunken/30">
                       <td className="px-3 py-2.5 font-medium">{c.name}</td>
                       <td className="px-3 py-2.5 tabular-nums">{c.count}</td>
                       <td className="px-3 py-2.5 tabular-nums">{c.avgPct != null ? `${c.avgPct}%` : '—'}</td>
                     </tr>
-                  ))}
+                  )} />
                 </tbody>
               </table>
             </div>
@@ -299,10 +307,7 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
                 </tr>
               </thead>
               <tbody>
-                {variance.items.length === 0 && (
-                  <tr><td className="px-3 py-3 text-ink-muted" colSpan={4}>No KPIs at this level.</td></tr>
-                )}
-                {variance.items.map(({ kpi, actualPct, rawActualPct, flag }) => (
+                <PaginatedRows items={variance.items} colSpan={4} emptyMessage="No KPIs at this level." renderRow={({ kpi, actualPct, rawActualPct, flag }) => (
                   <tr key={kpi.id} className="border-t border-line hover:bg-sunken/30">
                     <td className="px-3 py-2.5 font-medium">{kpi.name}</td>
                     <td className="px-3 py-2.5 text-ink-secondary">{reportOwnerLabel(org, kpi)} <span className="text-ink-muted">({ownerKindLabel(kpi)})</span></td>
@@ -315,7 +320,7 @@ export default function FocusedReportSection({ org, kpis, perfValues, settings, 
                       {flag === 'none' && <span className="chip chip-rag-none">—</span>}
                     </td>
                   </tr>
-                ))}
+                )} />
               </tbody>
             </table>
           </div>

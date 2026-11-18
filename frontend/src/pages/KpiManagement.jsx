@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
+import PaginatedRows from '../components/PaginatedRows.jsx';
 import { inJurisdiction, byId } from '../lib/scope.js';
 
 // Everything to do with the KPI catalogue itself — creating a new KPI,
@@ -189,6 +190,11 @@ function AddKpiForm({ onClose }) {
   const [measure, setMeasure] = useState('');
   const [baseline, setBaseline] = useState('');
   const [target, setTarget] = useState('');
+  const [measurementDirection, setMeasurementDirection] = useState('higher');
+  const [weight, setWeight] = useState('1');
+  const [achievementRule, setAchievementRule] = useState('ratio');
+  const [reportingMode, setReportingMode] = useState('cumulative');
+  const [periodAggregation, setPeriodAggregation] = useState('latest');
   const [assigneeIds, setAssigneeIds] = useState([]);
   const [busy, setBusy] = useState(false);
 
@@ -212,7 +218,7 @@ function AddKpiForm({ onClose }) {
     try {
       const chosenId = Number(ownerId || options[0]?.id);
       if (ownerType === 'employee') {
-        await api('/kpi-templates', { method: 'POST', body: { unitId: chosenId, name, type, measure, baseline: Number(baseline), target: Number(target) } });
+        await api('/kpi-templates', { method: 'POST', body: { unitId: chosenId, name, type, measure, baseline: Number(baseline), target: Number(target), measurementDirection, weight: Number(weight), achievementRule, reportingMode, periodAggregation } });
         toast('KPI created for staff in this unit — each one can now pick it up as their own from My Data Entry.');
       } else {
         await api('/kpis', {
@@ -220,12 +226,14 @@ function AddKpiForm({ onClose }) {
           body: {
             ownerType, ownerId: chosenId, name, type, measure,
             baseline: Number(baseline), target: Number(target),
+            measurementDirection, weight: Number(weight),
+            achievementRule, reportingMode, periodAggregation,
             assigneeIds: ownerType === 'unit' ? assigneeIds : undefined,
           },
         });
         toast(assigneeIds.length ? `KPI created and assigned to ${assigneeIds.length} custodian(s).` : 'KPI created.');
       }
-      setName(''); setType(''); setMeasure(''); setBaseline(''); setTarget(''); setAssigneeIds([]);
+      setName(''); setType(''); setMeasure(''); setBaseline(''); setTarget(''); setMeasurementDirection('higher'); setWeight('1'); setAchievementRule('ratio'); setReportingMode('cumulative'); setPeriodAggregation('latest'); setAssigneeIds([]);
       await Promise.all([reloadCore(), ownerType === 'employee' ? reloadTemplates() : Promise.resolve()]);
       onClose();
     } catch (err) { toast(err.message, 'err'); }
@@ -240,24 +248,52 @@ function AddKpiForm({ onClose }) {
           <button type="button" className="text-ink-muted hover:text-ink" onClick={onClose} aria-label="Close">✕</button>
         </div>
         <form onSubmit={submit} className="flex flex-col gap-3 p-4 overflow-y-auto">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Field label="Owner type">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 auto-rows-fr gap-3">
+            <Field label="Owner type" uniform>
               <select className="field-input" value={ownerType} onChange={(e) => { setOwnerType(e.target.value); setOwnerId(''); setAssigneeIds([]); }}>
                 <option value="sub">Sub-programme</option>
                 <option value="unit">Unit</option>
                 <option value="employee">Staff (under a unit)</option>
               </select>
             </Field>
-            <Field label={ownerType === 'employee' ? 'Unit their staff fall under' : 'Owner'}>
+            <Field label={ownerType === 'employee' ? 'Unit their staff fall under' : 'Owner'} uniform>
               <select className="field-input" value={ownerId} onChange={(e) => { setOwnerId(e.target.value); setAssigneeIds([]); }}>
                 {options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
               </select>
             </Field>
-            <Field label="Name"><input required className="field-input" value={name} onChange={(e) => setName(e.target.value)} /></Field>
-            <Field label="Type"><input required placeholder="Efficiency / Growth / Compliance…" className="field-input" value={type} onChange={(e) => setType(e.target.value)} /></Field>
-            <Field label="Measure (unit)"><input required placeholder="%, count, days…" className="field-input" value={measure} onChange={(e) => setMeasure(e.target.value)} /></Field>
-            <Field label="Baseline"><input required type="number" step="any" className="field-input" value={baseline} onChange={(e) => setBaseline(e.target.value)} /></Field>
-            <Field label="Target"><input required type="number" step="any" className="field-input" value={target} onChange={(e) => setTarget(e.target.value)} /></Field>
+            <Field label="Name" uniform><input required className="field-input" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+            <Field label="Type" uniform><input required placeholder="Efficiency / Growth / Compliance…" className="field-input" value={type} onChange={(e) => setType(e.target.value)} /></Field>
+            <Field label="Measure (unit)" uniform><input required placeholder="%, count, days…" className="field-input" value={measure} onChange={(e) => setMeasure(e.target.value)} /></Field>
+            <Field label="Baseline" uniform><input required type="number" step="any" className="field-input" value={baseline} onChange={(e) => setBaseline(e.target.value)} /></Field>
+            <Field label="Target" uniform><input required type="number" step="any" className="field-input" value={target} onChange={(e) => setTarget(e.target.value)} /></Field>
+            <Field label="Measurement direction" uniform>
+              <select className="field-input" value={measurementDirection} onChange={(e) => setMeasurementDirection(e.target.value)}>
+                <option value="higher">Higher is better</option>
+                <option value="lower">Lower is better</option>
+              </select>
+            </Field>
+            <Field label="KPI weight" uniform><input required min="0.0001" type="number" step="any" className="field-input" value={weight} onChange={(e) => setWeight(e.target.value)} /></Field>
+            <Field label="Achievement rule" uniform>
+              <select className="field-input" value={achievementRule} onChange={(e) => setAchievementRule(e.target.value)}>
+                <option value="ratio">Positive-target ratio</option>
+                <option value="exact_target">Exact target match</option>
+                <option value="baseline_progress">Approved baseline progress rule</option>
+              </select>
+            </Field>
+            <Field label="Reporting mode" uniform>
+              <select className="field-input" value={reportingMode} onChange={(e) => setReportingMode(e.target.value)}>
+                <option value="cumulative">Cumulative snapshot</option>
+                <option value="period">Period-specific actual</option>
+              </select>
+            </Field>
+            {reportingMode === 'period' && (
+              <Field label="Period aggregation" uniform>
+                <select className="field-input" value={periodAggregation} onChange={(e) => setPeriodAggregation(e.target.value)}>
+                  <option value="latest">Latest approved actual in range</option>
+                  <option value="sum">Sum monthly actuals (additive measures only)</option>
+                </select>
+              </Field>
+            )}
           </div>
           {ownerType === 'employee' && (
             <p className="text-[11.5px] text-ink-muted max-w-[65ch]">
@@ -302,7 +338,7 @@ function AddKpiForm({ onClose }) {
 // same as every other collapsible table in the app. A search filter is
 // available only while the catalogue is open.
 function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDelete }) {
-  const { org, reloadCore } = useApp();
+  const { org, reloadCore, user } = useApp();
   const toast = useToast();
   const confirm = useConfirm();
   const [open, setOpen] = useState(false);
@@ -348,7 +384,11 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
 
   function startEdit(k) {
     setEditingId(k.id);
-    setDraft({ name: k.name || '', type: k.type || '', measure: k.measure || '', baseline: k.baseline ?? '', target: k.target ?? '' });
+    setDraft({
+      name: k.name || '', type: k.type || '', measure: k.measure || '',
+      baseline: k.baseline ?? '', target: k.target ?? '',
+      measurementDirection: k.measurement_direction || 'higher', weight: k.weight ?? 1,
+    });
   }
 
   async function saveEdit(k) {
@@ -357,7 +397,7 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
       await api(`/kpis/${k.id}${canFullEdit ? '' : '/targets'}`, {
         method: canFullEdit ? 'PUT' : 'PATCH',
         body: canFullEdit
-          ? { ...draft, baseline: Number(draft.baseline), target: Number(draft.target) }
+          ? { ...draft, baseline: Number(draft.baseline), target: Number(draft.target), weight: Number(draft.weight) }
           : { baseline: Number(draft.baseline), target: Number(draft.target) },
       });
       setEditingId(null);
@@ -379,6 +419,26 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
     try {
       await api(`/kpis/${k.id}`, { method: 'DELETE' });
       toast(`"${k.name}" deleted.`);
+      await reloadCore();
+    } catch (err) { toast(err.message, 'err'); }
+    finally { setBusyId(null); }
+  }
+
+  async function submitConfiguration(k) {
+    setBusyId(k.id);
+    try {
+      await api(`/kpis/${k.id}/submit-configuration`, { method: 'POST' });
+      toast(`"${k.name}" submitted for approval.`);
+      await reloadCore();
+    } catch (err) { toast(err.message, 'err'); }
+    finally { setBusyId(null); }
+  }
+
+  async function approveConfiguration(k) {
+    setBusyId(k.id);
+    try {
+      await api(`/kpis/${k.id}/approve-configuration`, { method: 'POST' });
+      toast(`"${k.name}" approved and active.`);
       await reloadCore();
     } catch (err) { toast(err.message, 'err'); }
     finally { setBusyId(null); }
@@ -456,11 +516,14 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
                     <th className="px-3 py-2 font-bold whitespace-nowrap">Owner</th>
                     <th className="px-3 py-2 font-bold whitespace-nowrap">Baseline</th>
                     <th className="px-3 py-2 font-bold whitespace-nowrap">Target</th>
+                    <th className="px-3 py-2 font-bold whitespace-nowrap">Direction</th>
+                    <th className="px-3 py-2 font-bold whitespace-nowrap">Weight</th>
+                    <th className="px-3 py-2 font-bold whitespace-nowrap">Status</th>
                     <th className="px-3 py-2 font-bold whitespace-nowrap">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((k) => (
+                  <PaginatedRows items={filtered} colSpan={10} emptyMessage="No KPIs match your search." renderRow={(k) => (
                     <tr key={k.id} className="border-b border-line last:border-b-0 hover:bg-sunken/60">
                       <td className="px-3 py-2.5 font-semibold">{editingId === k.id && canFullEdit ? <input className="field-input min-w-32" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /> : (k.name || '—')}</td>
                       <td className="px-3 py-2.5">{editingId === k.id && canFullEdit ? <input className="field-input min-w-28" value={draft.type} onChange={(e) => setDraft({ ...draft, type: e.target.value })} /> : (k.type || '—')}</td>
@@ -468,6 +531,20 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
                       <td className="px-3 py-2.5">{ownerLabel(k)}</td>
                       <td className="px-3 py-2.5 whitespace-nowrap">{editingId === k.id ? <input type="number" step="any" className="field-input w-24" value={draft.baseline} onChange={(e) => setDraft({ ...draft, baseline: e.target.value })} /> : (k.baseline ?? '—')}</td>
                       <td className="px-3 py-2.5 whitespace-nowrap">{editingId === k.id ? <input type="number" step="any" className="field-input w-24" value={draft.target} onChange={(e) => setDraft({ ...draft, target: e.target.value })} /> : (k.target ?? '—')}</td>
+                      <td className="px-3 py-2.5 whitespace-nowrap">
+                        {editingId === k.id && canFullEdit
+                          ? <select className="field-input" value={draft.measurementDirection} onChange={(e) => setDraft({ ...draft, measurementDirection: e.target.value })}><option value="higher">Higher</option><option value="lower">Lower</option></select>
+                          : k.measurement_direction === 'lower' ? 'Lower is better' : 'Higher is better'}
+                      </td>
+                      <td className="px-3 py-2.5 whitespace-nowrap">
+                        {editingId === k.id && canFullEdit
+                          ? <input min="0.0001" type="number" step="any" className="field-input w-24" value={draft.weight} onChange={(e) => setDraft({ ...draft, weight: e.target.value })} />
+                          : (k.weight ?? 1)}
+                      </td>
+                      <td className="px-3 py-2.5 whitespace-nowrap">
+                        <span className="chip">{k.lifecycle_status || 'active'}</span>
+                        {k.rejection_reason && <div className="text-[10px] text-red-700 max-w-40">{k.rejection_reason}</div>}
+                      </td>
                       <td className="px-3 py-2.5 whitespace-nowrap">
                         {editingId === k.id ? (
                           <span className="flex gap-1">
@@ -477,12 +554,18 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
                         ) : (
                           <span className="flex gap-1">
                             {(canFullEdit || canEditTargets) && <button className="btn btn-sm" onClick={() => startEdit(k)}>Edit</button>}
+                            {canCreate && ['draft', 'rejected'].includes(k.lifecycle_status) && (
+                              <button className="btn btn-sm" disabled={busyId === k.id} onClick={() => submitConfiguration(k)}>Submit</button>
+                            )}
+                            {user?.role === 'cpu' && k.lifecycle_status === 'submitted' && (
+                              <button className="btn btn-sm btn-primary" disabled={busyId === k.id} onClick={() => approveConfiguration(k)}>Approve</button>
+                            )}
                             {canDelete && <button className="btn btn-sm btn-danger" disabled={busyId === k.id} onClick={() => remove(k)}>Delete</button>}
                           </span>
                         )}
                       </td>
                     </tr>
-                  ))}
+                  )} />
                 </tbody>
               </table>
             </div>
@@ -575,6 +658,8 @@ function EditKpiForm({ user, kpis, org, canFullEdit }) {
   const [measure, setMeasure] = useState(k?.measure ?? '');
   const [baseline, setBaseline] = useState(k?.baseline ?? '');
   const [target, setTarget] = useState(k?.target ?? '');
+  const [measurementDirection, setMeasurementDirection] = useState(k?.measurement_direction || 'higher');
+  const [weight, setWeight] = useState(k?.weight ?? 1);
   const [busy, setBusy] = useState(false);
 
   function onSelect(id) {
@@ -582,6 +667,7 @@ function EditKpiForm({ user, kpis, org, canFullEdit }) {
     const found = byId(kpis, Number(id));
     setName(found?.name ?? ''); setType(found?.type ?? ''); setMeasure(found?.measure ?? '');
     setBaseline(found?.baseline ?? ''); setTarget(found?.target ?? '');
+    setMeasurementDirection(found?.measurement_direction || 'higher'); setWeight(found?.weight ?? 1);
   }
 
   async function submit(e) {
@@ -589,7 +675,7 @@ function EditKpiForm({ user, kpis, org, canFullEdit }) {
     setBusy(true);
     try {
       if (canFullEdit) {
-        await api(`/kpis/${kpiId}`, { method: 'PUT', body: { name, type, measure, baseline: Number(baseline), target: Number(target) } });
+        await api(`/kpis/${kpiId}`, { method: 'PUT', body: { name, type, measure, baseline: Number(baseline), target: Number(target), measurementDirection, weight: Number(weight) } });
       } else {
         await api(`/kpis/${kpiId}/targets`, { method: 'PATCH', body: { baseline: Number(baseline), target: Number(target) } });
       }
@@ -644,6 +730,17 @@ function EditKpiForm({ user, kpis, org, canFullEdit }) {
           )}
           <Field label="Baseline"><input required type="number" step="any" className="field-input" value={baseline} onChange={(e) => setBaseline(e.target.value)} /></Field>
           <Field label="Target"><input required type="number" step="any" className="field-input" value={target} onChange={(e) => setTarget(e.target.value)} /></Field>
+          {canFullEdit && (
+            <>
+              <Field label="Measurement direction">
+                <select className="field-input" value={measurementDirection} onChange={(e) => setMeasurementDirection(e.target.value)}>
+                  <option value="higher">Higher is better</option>
+                  <option value="lower">Lower is better</option>
+                </select>
+              </Field>
+              <Field label="KPI weight"><input required min="0.0001" type="number" step="any" className="field-input" value={weight} onChange={(e) => setWeight(e.target.value)} /></Field>
+            </>
+          )}
         </div>
         <div className="flex gap-2">
           <button className="btn btn-primary btn-sm" disabled={busy || !kpiId}>Save changes</button>
@@ -670,15 +767,19 @@ function EditKpiForm({ user, kpis, org, canFullEdit }) {
 // edited by hand. Falls back to an unassociated (but still visually
 // identical) label if a caller ever passes something Field can't safely
 // clone a prop onto, instead of crashing.
-function Field({ label, children }) {
+function Field({ label, children, uniform = false }) {
   const generatedId = useId();
   const only = Children.count(children) === 1 ? Children.only(children) : null;
   const child = only && typeof only === 'object' && only.type ? only : null;
   const inputId = child ? (child.props.id || generatedId) : undefined;
+  const controlClass = child?.props.className || '';
   return (
-    <div className="space-y-1 w-full">
-      <label htmlFor={inputId} className="field-label block">{label}</label>
-      {child ? cloneElement(child, { id: inputId }) : children}
+    <div className={uniform ? 'flex h-full w-full flex-col gap-1' : 'space-y-1 w-full'}>
+      <label htmlFor={inputId} className={`field-label block${uniform ? ' min-h-[2.5rem] leading-5' : ''}`}>{label}</label>
+      {child ? cloneElement(child, {
+        id: inputId,
+        ...(uniform ? { className: `${controlClass} h-11` } : {}),
+      }) : children}
     </div>
   );
 }

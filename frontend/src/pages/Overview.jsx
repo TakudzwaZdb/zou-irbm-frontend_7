@@ -12,6 +12,7 @@ import RagPieChart from '../components/RagPieChart.jsx';
 import VarianceChart from '../components/VarianceChart.jsx';
 import VarianceAlerts from '../components/VarianceAlerts.jsx';
 import PeriodTypePicker from '../components/PeriodTypePicker.jsx';
+import { api } from '../lib/api.js';
 
 const KIND_LABEL = { programme: 'Programme', sub: 'Sub-programme', unit: 'Unit', employee: 'Employee' };
 
@@ -58,6 +59,15 @@ export default function Overview() {
   // defaultNodeForRole and AppContext's selNode/selectNode.
   const forced = defaultNodeForRole(user);
   const effectiveNode = selNode || forced;
+  const overviewEntity = effectiveNode
+    ? effectiveNode.kind === 'programme' ? byId(org.programmes, effectiveNode.id)
+      : effectiveNode.kind === 'sub' ? byId(org.subs, effectiveNode.id)
+        : effectiveNode.kind === 'unit' ? byId(org.units, effectiveNode.id)
+          : byId(org.employees, effectiveNode.id)
+    : null;
+  const overviewScopeName = overviewEntity
+    ? orgNodeLabel(overviewEntity, effectiveNode.kind)
+    : canViewInstitutional ? 'All Programmes' : 'Overview';
 
   // Anything YOU can act on that came back with feedback — a KPI you
   // strictly own, or (for an Employee) your own contribution toward a
@@ -72,10 +82,14 @@ export default function Overview() {
   const totalReturned = myReturned.length + myReturnedContributions.length;
 
   return (
-    <div>
-      <div className="flex justify-between gap-4 flex-wrap items-start mb-5">
+    <div className="overview-page">
+      <header className="sticky top-0 z-30 flex justify-between gap-4 flex-wrap items-start mb-5 rounded-xl border border-accent-500/20 border-l-4 border-l-accent-500 bg-accent-50 px-4 py-3.5 shadow-sm">
         <div>
-          <h1 className="text-xl font-bold mb-0.5">Overview</h1>
+          <p className="text-[10.5px] font-extrabold tracking-[0.12em] text-accent-700 mb-1">OVERVIEW / PROGRESS</p>
+          <h1 className="font-display text-2xl font-extrabold text-accent-700 mb-0.5">Progress</h1>
+          <span aria-live="polite" className="inline-flex rounded-lg border border-accent-500/20 bg-surface px-2.5 py-1 text-[12px] font-bold text-accent-700">
+            {overviewScopeName}
+          </span>
           <p className="text-[13px] text-ink-secondary">{user.title || user.role}</p>
         </div>
         {!isGlobal && !effectiveNode && (
@@ -83,8 +97,7 @@ export default function Overview() {
             {scopeBreadcrumb(org, user)?.join(' › ') || 'Showing KPIs within your reporting scope'}
           </div>
         )}
-      </div>
-
+      </header>
       {refreshError && (
         <p role="alert" className="mb-4 rounded-lg bg-warning-soft text-warning text-[12px] px-3.5 py-2.5">
           Overview could not refresh live results: {refreshError}. It will retry automatically.
@@ -97,11 +110,71 @@ export default function Overview() {
         </div>
       )}
 
+      {hasPerm('view_performance_alerts') && <PerformanceAlertSummary period={period} />}
+
       {effectiveNode
         ? <NodeView node={effectiveNode} onHome={clearSelNode} onSelect={selectNode} />
         : canViewInstitutional
           ? <AllProgrammesView onSelect={selectNode} />
           : <InstitutionalAccessRestricted />}
+    </div>
+  );
+}
+
+function PerformanceAlertSummary({ period }) {
+  const [snapshot, setSnapshot] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    let active = true;
+    const previous = period.month === 1
+      ? { year: period.year - 1, month: 12 }
+      : { year: period.year, month: period.month - 1 };
+    Promise.all([
+      api(`/performance-alerts?year=${period.year}&month=${period.month}`),
+      api(`/performance-alerts?year=${previous.year}&month=${previous.month}`),
+    ]).then(([current, prior]) => {
+      if (active) {
+        setSnapshot({ current, previousCount: prior.alerts.filter((alert) => alert.status !== 'resolved').length });
+        setError(null);
+      }
+    }).catch((err) => {
+      if (active) setError(err.message || 'Performance alerts could not be loaded.');
+    });
+    return () => { active = false; };
+  }, [period.year, period.month]);
+
+  if (error) return <p role="alert" className="mb-4 rounded-lg bg-warning-soft text-warning text-[12px] px-3.5 py-2.5">{error}</p>;
+  if (!snapshot) return null;
+  const active = snapshot.current.alerts.filter((alert) => alert.status !== 'resolved');
+  const summary = snapshot.current.alerts.reduce((counts, alert) => {
+    if (alert.status !== 'resolved') counts[alert.severity] += 1;
+    counts.escalations += alert.escalations.filter((item) => !['resolved', 'closed'].includes(item.status)).length;
+    counts.actions += alert.correctiveActions.filter((action) => !['completed', 'rejected'].includes(action.status)).length;
+    return counts;
+  }, { red: 0, amber: 0, missing: 0, escalations: 0, actions: 0 });
+  const delta = active.length - snapshot.previousCount;
+
+  return (
+    <section aria-label="Performance risk summary" className="mb-5">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <SummaryMetric label="Active performance alerts" value={active.length} accent="border-l-accent-500" />
+        <SummaryMetric label="Critical" value={summary.red} accent="border-l-critical" />
+        <SummaryMetric label="Missing reports" value={summary.missing} accent="border-l-line-strong" />
+        <SummaryMetric label="Escalations" value={summary.escalations} accent="border-l-warning" />
+        <SummaryMetric label="Open action plans" value={summary.actions} accent="border-l-good" />
+      </div>
+      <p className="text-[10.8px] text-ink-muted mt-1.5">
+        Current month · {delta > 0 ? `${delta} more` : delta < 0 ? `${Math.abs(delta)} fewer` : 'No change'} active alerts versus the prior month. Amber: {summary.amber}.
+      </p>
+    </section>
+  );
+}
+
+function SummaryMetric({ label, value, accent }) {
+  return (
+    <div className={`card border-l-4 ${accent} px-3 py-2`}>
+      <div className="text-[9.7px] uppercase tracking-wide text-ink-muted font-bold">{label}</div>
+      <div className="font-display font-extrabold text-[20px] tabular-nums">{value}</div>
     </div>
   );
 }
@@ -171,33 +244,47 @@ function AppraisalCard({ kpiList, heading, rollup, avgOfProgrammes = false }) {
       ownerKind: ownerKindLabel(i.kpi),
       actual: i.actualPct, expected: i.expectedPct, variance: i.variance, flag: i.flag,
     }));
+  const varianceTextColor = variance.avgVariance == null ? 'text-ink-muted'
+    : (variance.avgRawVariance ?? variance.avgVariance) <= VARIANCE_ATTENTION_THRESHOLD ? 'text-critical'
+      : (variance.avgRawVariance ?? variance.avgVariance) < 0 ? 'text-warning'
+        : (variance.avgRawVariance ?? variance.avgVariance) >= 10 ? 'text-good' : 'text-accent-700';
+  const varianceTone = variance.avgVariance == null ? 'border-line bg-sunken/40'
+    : (variance.avgRawVariance ?? variance.avgVariance) <= VARIANCE_ATTENTION_THRESHOLD ? 'border-critical/30 bg-critical-soft/40'
+      : (variance.avgRawVariance ?? variance.avgVariance) < 0 ? 'border-warning/30 bg-warning-soft/40'
+        : (variance.avgRawVariance ?? variance.avgVariance) >= 10 ? 'border-good/30 bg-good-soft/40'
+          : 'border-accent-500/25 bg-accent-50/40';
 
   return (
-    <div className="card mb-6">
-      <div className="flex justify-between gap-4 flex-wrap items-start mb-2">
-        <h2 className="font-display font-bold text-[14.5px]">{heading} — {label}</h2>
+    <div className="card mb-6 border-l-4 border-l-accent-500 p-4 sm:p-5">
+      <div className="flex justify-between gap-4 flex-wrap items-start mb-4">
+        <div>
+          <p className="text-[10.5px] font-extrabold tracking-[0.12em] text-accent-600 mb-1">PERFORMANCE OVERVIEW</p>
+          <h2 className="font-display font-extrabold text-[19px]">{heading} — {label}</h2>
+        </div>
         <div className="no-print"><PeriodTypePicker /></div>
       </div>
-      <div className="flex items-end gap-6 flex-wrap">
-        <div>
-          <div className="text-[11px] uppercase tracking-wide text-ink-muted font-bold mb-0.5">Avg. progress</div>
-          <div className="font-display font-extrabold text-[30px] tabular-nums">{appraisal.avgPct != null ? `${appraisal.avgPct}%` : '—'}</div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+        <div className="min-h-[124px] rounded-xl border border-accent-500/25 bg-accent-50/40 px-4 py-3.5">
+          <div className="text-[11px] uppercase tracking-wide text-accent-700 font-extrabold mb-1">Average KPI score</div>
+          <div className="font-display font-extrabold text-[40px] leading-tight tabular-nums text-accent-700">{appraisal.avgPct != null ? `${appraisal.avgPct}%` : '—'}</div>
+          <p className="text-[11.5px] text-ink-secondary mt-1">Progress from baseline toward target · {appraisal.count} KPIs</p>
         </div>
-        <div>
-          <div className="text-[11px] uppercase tracking-wide text-ink-muted font-bold mb-0.5">Avg. variance vs. pace</div>
-          <div className={`font-display font-extrabold text-[30px] tabular-nums ${variance.avgVariance == null ? '' : (variance.avgRawVariance ?? variance.avgVariance) <= VARIANCE_ATTENTION_THRESHOLD ? 'text-critical' : (variance.avgRawVariance ?? variance.avgVariance) < 0 ? 'text-warning' : (variance.avgRawVariance ?? variance.avgVariance) >= 10 ? 'text-good' : ''}`}>
+        <div className={`min-h-[124px] rounded-xl border px-4 py-3.5 ${varianceTone}`}>
+          <div className="text-[11px] uppercase tracking-wide text-ink-secondary font-extrabold mb-1">Average variance vs. expected pace</div>
+          <div className={`font-display font-extrabold text-[40px] leading-tight tabular-nums ${varianceTextColor}`}>
             {variance.avgVariance == null ? '—' : `${variance.avgVariance > 0 ? '+' : ''}${variance.avgVariance}pts`}
           </div>
+          <p className="text-[11.5px] text-ink-secondary mt-1">Actual progress compared with expected progress for this period</p>
         </div>
-        <div className="flex gap-1.5 flex-wrap pb-1.5">
+      </div>
+      <div className="flex gap-1.5 flex-wrap mb-3">
           <span className="chip chip-rag-green">{appraisal.counts.green} on track</span>
           <span className="chip chip-rag-amber">{appraisal.counts.amber} at risk</span>
           <span className="chip chip-rag-red">{appraisal.counts.red} off track</span>
           {appraisal.counts.none > 0 && <span className="chip chip-rag-none">{appraisal.counts.none} no data</span>}
-          {variance.attentionCount > 0 && <span className="chip bg-critical text-white">⚠ {variance.attentionCount} need attention</span>}
-        </div>
+          {variance.attentionCount > 0 && <span className="chip chip-rag-red">⚠ {variance.attentionCount} need attention</span>}
       </div>
-      <p className="text-[11.3px] text-ink-muted mt-2 mb-4">
+      <p className="text-[12px] leading-relaxed text-ink-muted mb-4">
         {avgOfProgrammes
           ? `Avg. progress and variance above are the average of each of the ${rollup.perProgramme.length} Programmes' own averages — one Programme, one vote — not a flat average across all ${appraisal.count} KPIs, which would let whichever Programme has the most KPIs dominate the figure. `
           : `Automated from ${appraisal.count} KPI${appraisal.count > 1 ? 's' : ''} — `}
@@ -212,12 +299,12 @@ function AppraisalCard({ kpiList, heading, rollup, avgOfProgrammes = false }) {
       {varianceData.length > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-2">
           <div>
-            <h3 className="text-[11.5px] uppercase tracking-wide text-ink-muted font-bold mb-1.5">RAG distribution — {label}</h3>
-            <RagPieChart counts={appraisal.counts} height={220} />
+            <h3 className="font-display text-[15px] text-ink-secondary font-bold mb-2">Performance status distribution — {label}</h3>
+            <RagPieChart counts={appraisal.counts} height={250} />
           </div>
           <div>
-            <h3 className="text-[11.5px] uppercase tracking-wide text-ink-muted font-bold mb-1.5">Actual vs. expected pace — {label}</h3>
-            <VarianceChart data={varianceData} height={220} />
+            <h3 className="font-display text-[15px] text-ink-secondary font-bold mb-2">Variance — actual vs. expected pace · {label}</h3>
+            <VarianceChart data={varianceData} height={250} />
           </div>
         </div>
       )}
@@ -266,7 +353,10 @@ function AllProgrammesView({ onSelect }) {
         <RagBarChart counts={ragCounts} />
       </div>
 
-      <h2 className="font-display font-bold text-[14.5px] mb-2.5">Programmes</h2>
+      <div className="mt-7 mb-3">
+        <h2 className="font-display font-extrabold text-[18px]">Performance across programmes</h2>
+        <p className="text-[12px] text-ink-muted mt-0.5">Compare each programme’s average score and variance against expected pace.</p>
+      </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
         {org.programmes.map((p) => (
           <NodeCard key={p.id} kind="programme" node={p} subtitle={headPosition(p, 'Programme Head')} org={org} kpis={kpis} perfValues={perfValues} settings={settings} onSelect={onSelect} />
@@ -347,7 +437,7 @@ function NodeView({ node, onHome, onSelect }) {
 
       <div className="flex justify-between gap-4 flex-wrap items-start mb-4">
         <div>
-          <h2 className="text-lg font-bold mb-0.5">{orgNodeLabel(entity, kind)}</h2>
+          <h2 className="font-display text-2xl font-extrabold mb-0.5">{orgNodeLabel(entity, kind)}</h2>
           <p className="text-[12.5px] text-ink-secondary">{kindLabel} · {subtitle}</p>
         </div>
       </div>
@@ -485,9 +575,12 @@ function ChildCards({ kind, items, subtitleFn, onSelect }) {
   const heading = kind === 'unit' ? 'Units' : kind === 'employee' ? 'Employees' : 'Sub-programmes';
   return (
     <>
-      <h2 className="font-display font-bold text-[14.5px] mt-6 mb-2.5">
-        {heading} <span className="text-ink-muted font-normal text-[12px]">— shown for context, not summed into the score above</span>
-      </h2>
+      <div className="mt-7 mb-3">
+        <h2 className="font-display font-extrabold text-[18px]">Performance across {heading.toLowerCase()}</h2>
+        <p className="text-[12px] text-ink-muted mt-0.5">
+          Each card shows that tier’s average score and variance against expected pace; figures are for context and are not summed into the parent.
+        </p>
+      </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
         {items.map((item) => (
           <NodeCard key={item.id} kind={kind} node={item} subtitle={subtitleFn(item)} org={org} kpis={kpis} perfValues={perfValues} settings={settings} onSelect={onSelect} />
@@ -498,18 +591,47 @@ function ChildCards({ kind, items, subtitleFn, onSelect }) {
 }
 
 function NodeCard({ kind, node, subtitle, org, kpis, perfValues, settings, onSelect }) {
-  const roll = performanceRollup(nodeOwnKpis(org, kpis, kind, node.id), perfValues, settings);
+  const nodeKpis = nodeOwnKpis(org, kpis, kind, node.id);
+  const roll = performanceRollup(nodeKpis, perfValues, settings);
+  const variance = varianceRollup(nodeKpis, perfValues, settings);
+  const varianceValue = variance.avgRawVariance ?? variance.avgVariance;
+  const varianceTextColor = variance.avgVariance == null ? 'text-ink-muted'
+    : varianceValue <= VARIANCE_ATTENTION_THRESHOLD ? 'text-critical'
+      : varianceValue < 0 ? 'text-warning'
+        : varianceValue >= 10 ? 'text-good' : 'text-accent-700';
+  const varianceTone = variance.avgVariance == null ? 'border-line bg-sunken/40'
+    : varianceValue <= VARIANCE_ATTENTION_THRESHOLD ? 'border-critical/30 bg-critical-soft/40'
+      : varianceValue < 0 ? 'border-warning/30 bg-warning-soft/40'
+        : varianceValue >= 10 ? 'border-good/30 bg-good-soft/40'
+          : 'border-accent-500/25 bg-accent-50/40';
   return (
     <button
       onClick={() => onSelect(kind, node.id)}
-      className="card text-left hover:border-accent-300 transition-colors"
+      className="card text-left hover:border-accent-300 hover:shadow-md transition-all"
     >
       <div className="flex justify-between gap-2 items-start">
         <div className="min-w-0">
-          <div className="font-display font-bold text-[13.5px] truncate">{orgNodeLabel(node, kind)}</div>
+          <div className="font-display font-bold text-[15px] truncate">{orgNodeLabel(node, kind)}</div>
           <div className="text-[11px] text-ink-muted truncate mt-0.5">{subtitle}</div>
         </div>
         <RagChip rollup={roll} settings={settings} />
+      </div>
+      <div className="grid grid-cols-2 gap-2.5 mt-3">
+        <div className="rounded-lg border border-accent-500/25 bg-accent-50/40 px-3 py-2.5">
+          <div className="text-[10px] uppercase tracking-wide text-accent-700 font-extrabold">Score</div>
+          <div className="font-display font-extrabold text-[27px] leading-tight tabular-nums text-accent-700">
+            {roll.avgPct != null ? `${roll.avgPct}%` : '—'}
+          </div>
+          <div className="text-[10px] text-ink-muted">Average progress</div>
+        </div>
+        <div className={`rounded-lg border px-3 py-2.5 ${varianceTone}`}>
+          <div className="text-[10px] uppercase tracking-wide text-ink-secondary font-extrabold">Variance</div>
+          <div className={`font-display font-extrabold text-[27px] leading-tight tabular-nums ${varianceTextColor}`}>
+            {variance.avgVariance == null ? '—' : `${variance.avgVariance > 0 ? '+' : ''}${variance.avgVariance}`}
+            {variance.avgVariance == null ? '' : <span className="text-[13px]"> pts</span>}
+          </div>
+          <div className="text-[10px] text-ink-muted">vs expected pace</div>
+        </div>
       </div>
       <div className="h-1.5 rounded-full bg-sunken overflow-hidden mt-3">
         <div
@@ -517,8 +639,8 @@ function NodeCard({ kind, node, subtitle, org, kpis, perfValues, settings, onSel
           style={{ width: `${Math.max(2, Math.min(100, roll.avgPct || 0))}%` }}
         />
       </div>
-      <div className="text-[11px] text-ink-muted mt-1.5">
-        {roll.avgPct != null ? `${roll.avgPct}% average progress` : 'No data yet'} · {roll.counts.green} green · {roll.counts.amber} amber · {roll.counts.red} red
+      <div className="text-[10.5px] text-ink-muted mt-1.5">
+        {roll.counts.green} on track · {roll.counts.amber} at risk · {roll.counts.red} off track
       </div>
     </button>
   );
@@ -527,7 +649,8 @@ function NodeCard({ kind, node, subtitle, org, kpis, perfValues, settings, onSel
 function RagChip({ rollup, settings }) {
   const pct = rollup.avgRawPct ?? rollup.avgPct;
   const cls = rollup.avgPct == null ? 'chip-rag-none' : pct >= Number(settings.ragGreen ?? 80) ? 'chip-rag-green' : pct >= Number(settings.ragAmber ?? 50) ? 'chip-rag-amber' : 'chip-rag-red';
-  return <span className={`chip ${cls} flex-none`}>{rollup.avgPct != null ? `${rollup.avgPct}%` : '—'}</span>;
+  const label = rollup.avgPct == null ? 'No data' : cls === 'chip-rag-green' ? 'On track' : cls === 'chip-rag-amber' ? 'At risk' : 'Off track';
+  return <span className={`chip ${cls} flex-none`}>{label}</span>;
 }
 
 function Stat({ label, value, className = '' }) {

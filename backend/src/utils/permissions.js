@@ -81,6 +81,10 @@ const PERMISSIONS = [
   // works, rather than it being an automatic consequence of a person's
   // role. See pages/Overview.jsx and components/OrgTree.jsx.
   { key: 'view_institutional_performance', label: 'View Overall Institutional Performance (All Programmes)', group: 'Visibility' },
+  { key: 'view_performance_alerts', label: 'View scoped performance alerts and escalations', group: 'Visibility' },
+  { key: 'manage_performance_alerts', label: 'Acknowledge and manage scoped performance escalations', group: 'Governance' },
+  { key: 'manage_corrective_actions', label: 'Create and manage corrective action plans in scope', group: 'Governance' },
+  { key: 'approve_corrective_actions', label: 'Approve corrective action plans', group: 'Governance' },
 ];
 
 const CPU_PERMISSIONS = [
@@ -100,12 +104,16 @@ const CPU_PERMISSIONS = [
   'view_framework',
   'view_institutional_performance',
   'view_users',
+  'view_performance_alerts',
+  'manage_performance_alerts',
+  'manage_corrective_actions',
+  'approve_corrective_actions',
 ];
 
 // Role -> default permission set, used only at seed time. Permissions live
 // per-user in the database from then on, not hardcoded to role at request time.
 const DEFAULT_PERMS_BY_ROLE = {
-  exec: ['view_reports', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
+  exec: ['view_reports', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance', 'view_performance_alerts', 'manage_performance_alerts', 'manage_corrective_actions', 'approve_corrective_actions'],
   // Vice Chancellor: the university's Executive Owner (see seed.js's own
   // comment and users.is_executive_owner) — a distinct, single-seat role of
   // its own now rather than an ordinary 'exec' account carrying that flag,
@@ -115,7 +123,7 @@ const DEFAULT_PERMS_BY_ROLE = {
   // role: reassignable, removable/restorable, and revocable permission by
   // permission from the Permissions & Roles page, the same as exec/cpu/
   // ictadmin/council.
-  vc: ['view_reports', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance'],
+  vc: ['view_reports', 'view_audit', 'view_overview', 'view_framework', 'view_institutional_performance', 'view_performance_alerts', 'manage_performance_alerts', 'manage_corrective_actions', 'approve_corrective_actions'],
   // view_users: CPU can see the Users directory (who exists, their role,
   // their organisation scope) but holds none of manage_users' actual
   // authority — every edit/remove/role-change/permission-grant action on
@@ -128,13 +136,13 @@ const DEFAULT_PERMS_BY_ROLE = {
   // and overrides. They receive the CPU permissions except approval
   // permissions, plus ICT-specific permission-management authority.
   ictadmin: [
-    ...CPU_PERMISSIONS.filter((key) => key !== 'approve_own_tier' && key !== 'approve_annual_plan'),
+    ...CPU_PERMISSIONS.filter((key) => key !== 'approve_own_tier' && key !== 'approve_annual_plan' && key !== 'approve_corrective_actions'),
     'manage_users',
     'apply_override',
   ],
-  rep: ['data_entry', 'view_overview', 'view_framework'],
-  unithead: ['data_entry', 'view_overview', 'view_framework'],
-  employee: ['data_entry', 'view_overview', 'view_framework'],
+  rep: ['data_entry', 'view_overview', 'view_framework', 'view_performance_alerts', 'manage_performance_alerts', 'manage_corrective_actions'],
+  unithead: ['data_entry', 'view_overview', 'view_framework', 'view_performance_alerts', 'manage_performance_alerts', 'manage_corrective_actions'],
+  employee: ['data_entry', 'view_overview', 'view_framework', 'view_performance_alerts'],
   // A bare, scope-less, read-only account (see routes/org.js's POST
   // /employees) — identical to 'employee' minus 'data_entry', so
   // nothing about it can enter, submit, or edit anything; it can only look.
@@ -157,13 +165,13 @@ const DEFAULT_PERMS_BY_ROLE = {
   // user_permissions and role_permissions (see middleware/auth.js), this
   // takes effect immediately for every existing Programme Head account —
   // no backfill migration needed.
-  programme: ['data_entry', 'view_overview', 'view_framework', 'view_reports'],
+  programme: ['data_entry', 'view_overview', 'view_framework', 'view_reports', 'view_performance_alerts', 'manage_performance_alerts', 'manage_corrective_actions'],
   // Dead/unused key (not in db.js's BUILT_IN_ROLES) — kept in sync for
   // consistency only.
-  programmehead: ['data_entry', 'view_overview', 'view_framework', 'view_reports'],
+  programmehead: ['data_entry', 'view_overview', 'view_framework', 'view_reports', 'view_performance_alerts', 'manage_performance_alerts', 'manage_corrective_actions'],
   // University Council: read-only oversight of the annual plan and institutional
   // reports. CPU alone approves and returns plan proposals at every tier.
-  council: ['view_reports', 'view_overview', 'view_framework', 'view_institutional_performance']
+  council: ['view_reports', 'view_overview', 'view_framework', 'view_institutional_performance', 'view_performance_alerts']
 };
 
 function defaultPermsForRole(role) {

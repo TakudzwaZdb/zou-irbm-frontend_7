@@ -29,7 +29,7 @@ export const NAV_ITEMS = {
   // of them can actually do — see OrganisationBuilder.jsx).
   orgBuilder: { label: 'Organisation Setup', icon: '🏗', perm: ['manage_org_units', 'create_org_units', 'edit_org_units', 'add_employee'] },
   planning: { label: 'Annual Plan & Budget', icon: '🧾' },
-  compliance: { label: 'Compliance & Escalations', icon: '⏱' },
+  compliance: { label: 'Compliance & Escalations', icon: '⏱', perm: 'view_performance_alerts' },
   reports: { label: 'Reports', icon: '▤', perm: 'view_reports' },
   audit: { label: 'Audit Log', icon: '≣', perm: 'view_audit' },
   settings: { label: 'Settings', icon: '⚙', perm: 'manage_settings' },
@@ -50,11 +50,10 @@ export const NAV_ITEMS = {
 // sub-programmes / units / employees tree read-only (it's the org chart
 // they're part of), even if they hold none of the permissions that would
 // let them add a unit, create a KPI, or edit targets from that same page.
-// Compliance & Escalations is the org-wide oversight view (late-submission
-// compliance and Red-KPI performance escalation, both surfaced from real
-// data — see pages/Compliance.jsx) — visible to global oversight roles that
-// review or administer the escalation process. It isn't a per-tier
-// data-entry concern, so Reps/Unit Heads/Employees don't need it in their nav.
+// Compliance & Escalations includes durable alerts and corrective-action
+// workflows scoped to the user's authorised branch, alongside the existing
+// live compliance view. Management roles at Programme, Sub-programme, and
+// Unit tiers need the same workflow access as institutional reviewers.
 // Overview and Framework are visible to every role by default (every seeded
 // account holds view_overview/view_framework — see utils/permissions.js on
 // the backend) but, like Reports/Audit/Settings/Users below, that's now a
@@ -96,8 +95,8 @@ export const ROLE_NAV_KEYS = {
   // instead of an 'exec' account carrying the Executive Owner flag.
   vc: ['overview', 'framework', 'planning', 'compliance', 'reports'],
   employee: ['entry', 'overview', 'framework'],
-  unithead: ['entry', 'overview', 'framework', 'orgBuilder', 'planning'],
-  rep: ['entry', 'overview', 'framework', 'orgBuilder', 'planning'],
+  unithead: ['entry', 'overview', 'framework', 'orgBuilder', 'planning', 'compliance'],
+  rep: ['entry', 'overview', 'framework', 'orgBuilder', 'planning', 'compliance'],
   // 'users' added explicitly (not left to the granted-permission fallback
   // in currentNav below) so it lands in this deliberate position rather
   // than tacked on at the very end — CPU holds view_users by default (see
@@ -114,10 +113,30 @@ export const ROLE_NAV_KEYS = {
   // routes/kpis.js) — CPU has no role in this cascade — so Programme Head
   // needs a real Approvals Queue of their own now, not just read-only
   // oversight.
-  programme: ['overview', 'framework', 'planning', 'reports'],
+  programme: ['overview', 'framework', 'planning', 'reports', 'compliance'],
   // University Council: read-only oversight of the annual plan and reports.
   council: ['overview', 'planning', 'framework', 'reports'],
 };
+
+export const NAV_CHILDREN = {
+  overview: [
+    { route: 'overviewPerformance', label: 'Performance' },
+    { route: 'overview', label: 'Progress' },
+  ],
+  reports: [
+    { route: 'reportsPerformance', label: 'Performance' },
+    { route: 'reports', label: 'Progress' },
+  ],
+};
+
+const ROUTE_PARENTS = {
+  overviewPerformance: 'overview',
+  reportsPerformance: 'reports',
+};
+
+export function isRouteAvailable(route, nav) {
+  return nav.includes(route) || (ROUTE_PARENTS[route] != null && nav.includes(ROUTE_PARENTS[route]));
+}
 
 export function currentNav(user, hasPerm) {
   const roleKeys = ROLE_NAV_KEYS[user.role] || ['overview'];

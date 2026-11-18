@@ -342,7 +342,11 @@ export function computeRag(kpi, valueRow, settings) {
   const v = effectiveKpiValue(valueRow);
   if (v == null) return { cls: 'chip-rag-none', label: 'No data', pct: null, rawPct: null };
   const base = Number(kpi.baseline), tgt = Number(kpi.target);
-  const rawPct = tgt === base ? (v >= tgt ? 100 : 0) : ((v - base) / (tgt - base)) * 100;
+  const targetReached = kpi.measurement_direction === 'lower' ? v <= tgt : v >= tgt;
+  const rawPct = tgt === base
+    ? targetReached ? 100 : null
+    : ((v - base) / (tgt - base)) * 100;
+  if (!Number.isFinite(rawPct)) return { cls: 'chip-rag-none', label: 'No data', pct: null, rawPct: null };
   const pct = roundMeasure(rawPct);
   const green = Number(settings.ragGreen ?? 80);
   const amber = Number(settings.ragAmber ?? 50);

@@ -90,6 +90,8 @@ const txn = db.transaction(async () => {
   await insertSetting.run('escalateVC', '11');
   await insertSetting.run('redEscalateProgramme', '2');
   await insertSetting.run('redEscalateVC', '4');
+  await insertSetting.run('alertWarningGap', '10');
+  await insertSetting.run('alertCriticalGap', '25');
   await insertSetting.run('submissionOpenDay', '25');
   await insertSetting.run('submissionCloseDay', '3');
 
@@ -297,7 +299,7 @@ for (const name of CPU_MEMBERS) {
 
   console.log('Seeding KPIs...');
   const insertKpi = db.prepare(
-    'INSERT INTO kpis (owner_type, owner_id, name, type, measure, baseline, target, is_automated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO kpis (owner_type, owner_id, name, type, measure, baseline, target, is_automated, lifecycle_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'active\')'
   );
   const KPIS_SEED = [
     ['sub', 's1', 'Student Records Digitised', 'Output', '%', 55, 90],

@@ -8,23 +8,27 @@ const KIND_STYLE = {
   returned: 'bg-warning-soft text-warning',
   pending: 'bg-accent-50 text-accent-600',
   offtrack: 'bg-critical-soft text-critical',
+  performance: 'bg-warning-soft text-warning',
 };
 
-const KIND_LABEL = { 
+const KIND_LABEL = {
   returned: 'Returned', 
   pending: 'Pending review', 
-  offtrack: 'Off track' 
+  offtrack: 'Off track',
+  performance: 'Performance workflow',
 };
 
 const getAlertSignature = (alert) => `${alert.id}|${alert.message}`;
 
 export default function AlertsBell({ setRoute }) {
-  const { org, kpis, values, settings, user, period, assignments, contributions } = useApp();
+  const { org, kpis, values, settings, user, period, assignments, contributions, hasPerm } = useApp();
   const [open, setOpen] = useState(false);
   const [seen, setSeen] = useState(() => readSeen(user.id));
   const [fadingAlertId, setFadingAlertId] = useState(null);
   const [pendingPlans, setPendingPlans] = useState([]);
-  const [planAlertError, setPlanAlertError] = useState(null);
+  const [performanceNotifications, setPerformanceNotifications] = useState([]);
+  const [pendingPlanError, setPendingPlanError] = useState(null);
+  const [notificationError, setNotificationError] = useState(null);
   
   // Shake Animation and Toast references
   const [isShaking, setIsShaking] = useState(false);
@@ -32,11 +36,44 @@ export default function AlertsBell({ setRoute }) {
   const previousSeenSnapshot = useRef(null);
   const toastTimeoutRef = useRef(null);
   const previousCountRef = useRef(0);
+  const previousNotificationIdsRef = useRef([]);
+
+  useEffect(() => {
+    if (!hasPerm('view_performance_alerts')) {
+      setPerformanceNotifications([]);
+      setNotificationError(null);
+      return undefined;
+    }
+
+    let active = true;
+    async function refreshPerformanceNotifications() {
+      try {
+        const result = await api('/performance-alerts/notifications');
+        if (active) {
+          setPerformanceNotifications(result.notifications);
+          setNotificationError(null);
+        }
+      } catch (err) {
+        if (active) setNotificationError(err.message || 'Could not load performance notifications.');
+      }
+    }
+
+    refreshPerformanceNotifications();
+    const timer = setInterval(refreshPerformanceNotifications, 30_000);
+    window.addEventListener('focus', refreshPerformanceNotifications);
+    window.addEventListener('zou:performance-notifications-updated', refreshPerformanceNotifications);
+    return () => {
+      active = false;
+      clearInterval(timer);
+      window.removeEventListener('focus', refreshPerformanceNotifications);
+      window.removeEventListener('zou:performance-notifications-updated', refreshPerformanceNotifications);
+    };
+  }, [hasPerm]);
 
   useEffect(() => {
     if (user.role !== 'cpu') {
       setPendingPlans([]);
-      setPlanAlertError(null);
+      setPendingPlanError(null);
       return undefined;
     }
 
@@ -46,10 +83,10 @@ export default function AlertsBell({ setRoute }) {
         const result = await api('/plans/pending');
         if (active) {
           setPendingPlans(result.proposals);
-          setPlanAlertError(null);
+          setPendingPlanError(null);
         }
       } catch (err) {
-        if (active) setPlanAlertError(err.message);
+        if (active) setPendingPlanError(err.message || 'Could not load plans awaiting approval.');
       }
     }
 
@@ -70,24 +107,32 @@ export default function AlertsBell({ setRoute }) {
         route: 'planning',
         message: `${proposal.plan_title} — ${proposal.owner_name}, ${proposal.cycle_year} cycle — is waiting for CPU approval.`,
       })),
+      ...performanceNotifications.map((notification) => ({
+        id: `performance-notification-${notification.id}`,
+        notificationId: notification.id,
+        read_at: notification.read_at,
+        kind: 'performance',
+        route: 'compliance',
+        message: `${notification.subject} — ${notification.body}`,
+      })),
     ],
-    [org, kpis, values, settings, user, period, assignments, contributions, pendingPlans],
+    [org, kpis, values, settings, user, period, assignments, contributions, pendingPlans, performanceNotifications],
   );
 
   const activeAlerts = useMemo(() => {
-    return allAlerts.filter((a) => !seen.has(getAlertSignature(a)));
+    return allAlerts.filter((a) => a.notificationId ? !a.read_at : !seen.has(getAlertSignature(a)));
   }, [allAlerts, seen]);
 
   const unseenCount = activeAlerts.length;
 
-  // Real-time alert listener for shake effect
   useEffect(() => {
-    if (unseenCount > previousCountRef.current) {
+    const previousCount = previousCountRef.current;
+    previousCountRef.current = unseenCount;
+    if (unseenCount > previousCount) {
       setIsShaking(true);
       const timer = setTimeout(() => setIsShaking(false), 600);
       return () => clearTimeout(timer);
     }
-    previousCountRef.current = unseenCount;
   }, [unseenCount]);
 
   useEffect(() => {
@@ -105,20 +150,45 @@ export default function AlertsBell({ setRoute }) {
     setOpen((v) => !v);
   }
 
-  function markSeen(alert) {
+  async function markSeen(alert) {
+    if (alert.notificationId) {
+      await api(`/performance-alerts/notifications/${alert.notificationId}/read`, { method: 'PATCH' });
+      setPerformanceNotifications((items) => items.map((item) => item.id === alert.notificationId
+        ? { ...item, read_at: new Date().toISOString() }
+        : item));
+      window.dispatchEvent(new Event('zou:performance-notifications-updated'));
+      return;
+    }
     const merged = new Set(seen);
     merged.add(getAlertSignature(alert));
     setSeen(merged);
     writeSeen(user.id, Array.from(merged));
   }
 
-  function markAllAsRead() {
+  async function markAllAsRead() {
     previousSeenSnapshot.current = new Set(seen);
+    const notificationIds = activeAlerts.filter((alert) => alert.notificationId).map((alert) => alert.notificationId);
+    previousNotificationIdsRef.current = notificationIds;
+    try {
+      if (notificationIds.length) {
+        await api('/performance-alerts/notifications/read-all', {
+          method: 'PATCH',
+          body: { ids: notificationIds },
+        });
+      }
+    } catch (err) {
+      setNotificationError(err.message || 'Could not mark notifications as read.');
+      return;
+    }
     const merged = new Set(seen);
     allAlerts.forEach((a) => merged.add(getAlertSignature(a)));
     
     setSeen(merged);
+    setPerformanceNotifications((items) => items.map((item) => notificationIds.includes(item.id)
+      ? { ...item, read_at: new Date().toISOString() }
+      : item));
     writeSeen(user.id, Array.from(merged));
+    window.dispatchEvent(new Event('zou:performance-notifications-updated'));
     setOpen(false);
     setShowToast(true);
 
@@ -130,34 +200,56 @@ export default function AlertsBell({ setRoute }) {
     }, 5000);
   }
 
-  function handleUndo() {
+  async function handleUndo() {
     if (previousSeenSnapshot.current) {
+      try {
+        await Promise.all(previousNotificationIdsRef.current.map((id) => api(`/performance-alerts/notifications/${id}/read`, {
+          method: 'PATCH',
+          body: { read: false },
+        })));
+        setPerformanceNotifications((items) => items.map((item) => previousNotificationIdsRef.current.includes(item.id)
+          ? { ...item, read_at: null }
+          : item));
+      } catch (err) {
+        setNotificationError(err.message || 'Could not undo notification read state.');
+        return;
+      }
       setSeen(previousSeenSnapshot.current);
       writeSeen(user.id, Array.from(previousSeenSnapshot.current));
       previousSeenSnapshot.current = null;
+      window.dispatchEvent(new Event('zou:performance-notifications-updated'));
     }
     setShowToast(false);
+    previousNotificationIdsRef.current = [];
     setOpen(true);
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
   }
 
-  function handleAlertClick(alert) {
+  async function handleAlertClick(alert) {
     setFadingAlertId(alert.id);
-    setTimeout(() => {
-      markSeen(alert);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    try {
+      await markSeen(alert);
       setRoute(alert.route);
       setOpen(false);
+    } catch (err) {
+      setNotificationError(err.message || 'Could not mark the alert as read.');
+    } finally {
       setFadingAlertId(null);
-    }, 200);
+    }
   }
 
-  function handleDismissSingle(e, alert) {
-    e.stopPropagation(); // Stop click from triggering parent routing button
+  async function handleDismissSingle(e, alert) {
+    e.stopPropagation();
     setFadingAlertId(alert.id);
-    setTimeout(() => {
-      markSeen(alert);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    try {
+      await markSeen(alert);
+    } catch (err) {
+      setNotificationError(err.message || 'Could not dismiss the alert.');
+    } finally {
       setFadingAlertId(null);
-    }, 200);
+    }
   }
 
   return (
@@ -209,12 +301,17 @@ export default function AlertsBell({ setRoute }) {
               )}
             </div>
 
-            {planAlertError && (
+            {pendingPlanError && (
               <div role="alert" className="px-3.5 py-3 text-[12px] text-critical">
-                Could not check pending plans: {planAlertError}
+                Pending plans could not be refreshed: {pendingPlanError}
               </div>
             )}
-            {activeAlerts.length === 0 && !planAlertError ? (
+            {notificationError && (
+              <div role="alert" className="px-3.5 py-3 text-[12px] text-critical">
+                Notifications need attention: {notificationError}
+              </div>
+            )}
+            {activeAlerts.length === 0 && !pendingPlanError && !notificationError ? (
               <div className="px-3.5 py-6 text-center text-[12.5px] text-ink-muted">Nothing needs your attention.</div>
             ) : activeAlerts.length > 0 && (
               activeAlerts.map((a) => {

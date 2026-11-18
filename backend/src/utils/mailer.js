@@ -1,21 +1,14 @@
-// Thin, optional wrapper around nodemailer for the ONE thing this app
-// currently sends real email for: handing a freshly admin-reset password
-// straight to the account holder instead of relying on ICT admin to relay
-// it by phone/in person. Deliberately narrow in scope — this is not a
-// general notification system; routes/messages.js's internal inbox is
-// still how every other kind of message moves between accounts, and stays
-// that way (see its own header comment).
+// Thin, optional wrapper around nodemailer for password-reset delivery and
+// performance-alert notifications. SMTP is never required: in-system
+// performance notifications remain available when email is unconfigured.
 //
 // Deliberately lazy/optional, same shape as utils/azureAuth.js: a
 // deployment that hasn't configured a real SMTP relay yet (or doesn't want
 // this feature at all) just never gets emails sent — routes/users.js's
 // POST /:id/reset-password keeps working exactly as before, returning the
 // new password once in the response for ICT admin to relay by hand.
-// isEmailConfigured() lets that route decide whether to also attempt
-// delivery, and sendPasswordResetEmail() never throws past this module —
-// a delivery failure (bad credentials, relay down, network blip) is
-// logged and reported back to the caller as { ok: false }, never allowed
-// to turn a successful password reset into a failed API call.
+// Both send methods return { ok: false, reason } rather than throwing, so
+// optional email delivery never rolls back a successfully persisted action.
 const nodemailer = require('nodemailer');
 
 const SMTP_HOST = process.env.SMTP_HOST;
@@ -85,4 +78,20 @@ async function sendPasswordResetEmail({ to, name, password }) {
   }
 }
 
-module.exports = { isEmailConfigured, sendPasswordResetEmail };
+async function sendPerformanceAlertEmail({ to, name, subject, body }) {
+  if (!isEmailConfigured()) return { ok: false, reason: 'not_configured' };
+  try {
+    await client().sendMail({
+      from: SMTP_FROM,
+      to,
+      subject,
+      text: `Hello ${name},\n\n${body}\n\nSign in to the ZOU IRBM Strategic Plan Monitor to review this alert.`,
+    });
+    return { ok: true };
+  } catch (err) {
+    console.error('sendPerformanceAlertEmail failed:', err.message);
+    return { ok: false, reason: err.message };
+  }
+}
+
+module.exports = { isEmailConfigured, sendPasswordResetEmail, sendPerformanceAlertEmail };

@@ -135,8 +135,9 @@ means for setup today.)
 - **Alerts**: a bell icon in the header surfaces, in one place, anything
   that needs your attention right now — a submission of yours that was
   returned with a comment, a submission waiting on your approval, or a
-  KPI in your scope that's currently off track — computed live from the
-  real data, not a separate notification system to keep in sync.
+  KPI in your scope that's currently off track. Performance notices are
+  persisted per recipient and remain available after refresh; existing
+  submission and approval alerts continue to be computed from the real data.
 - **Timestamps**: submitted/approved timestamps are shown directly on
   each KPI card once they exist, in addition to the full audit log.
 - **A smooth submission → approval → return → feedback → reports flow**:
@@ -152,18 +153,20 @@ means for setup today.)
   "Recent activity" feed of the latest submissions, approvals, and
   returns — so performance (RAG) and process (is the data even in yet)
   are visible side by side, for anyone holding `view_audit`.
-- **Compliance & Escalations** (CPU and Executives): two distinct concerns,
-  computed live from real timestamps and real values, exactly like the
-  rest of the app — nothing pre-baked. Late-submission compliance checks,
-  for each Sub-programme's own KPIs, whether this period's submission came
-  in within the cut-off days set in Settings, and escalates (Programme
-  Head, then VC/Council) once it's late enough. Red-KPI performance
-  escalation is separate: it counts how many reporting periods in a row a
-  KPI has been Red — a KPI can be submitted perfectly on time and still
-  escalate this way. Both trigger thresholds live in Settings. As the page
-  itself says, there's no email/notification engine behind either — it's a
-  live view for a person to act on, the same honest scope as the alerts
-  bell.
+- **Compliance & Escalations**: authorized management users see the existing
+  late-submission and consecutive-red compliance views alongside durable,
+  period-specific performance alerts. A single monitoring worker evaluates
+  approved actuals against expected baseline progress, records missing
+  submissions after the configured deadline, and creates duplicate-safe
+  escalation records when the configured triggers are crossed. Alert
+  severity uses the warning/critical gap settings; target achievement
+  percentages are stored and displayed separately from baseline progress.
+  Authorized users can acknowledge/resolve alerts, assign and track
+  escalations, and manage corrective action plans through draft, review,
+  approval, in-progress, and completed states. Updates are written to the
+  existing audit log. Scope checks apply to alert reads, assignees, and
+  actions. In-app notifications are persisted; optional email delivery uses
+  the configured SMTP relay.
 - **Structural-change proposals** (CPU by default, via `manage_framework`):
   a durable, real log — not a mock list — for recording a proposed
   Programme/Sub-programme change (e.g. "split this Sub-programme in two")
@@ -194,6 +197,32 @@ means for setup today.)
   Overview and Reports now also carries a real RAG-distribution pie chart
   and a variance bar chart, both driven by the same period-type picker —
   switch Monthly/Quarterly/Bi-annual/Annual and both recompute live.
+- **Separate progress and performance pages**: Overview and Reports each
+  have nested Progress and Performance pages. Progress retains baseline-based
+  appraisal, RAG, variance, submission-flow, and workflow reporting.
+  Performance provides the corresponding target-based summaries, filters,
+  tier comparison, organisational drill-down, target RAG distribution,
+  KPI-level detail, actual-versus-expected target pace, and CSV/PDF/print
+  reports.
+- **Organisational performance against target**: Overview's Performance page
+  has an institutional and hierarchy-wide target scorecard. It compares the latest
+  CPU-approved actual in the selected reporting period directly with each
+  KPI's target; it never uses the baseline or changes the existing
+  baseline-to-target progress appraisal. Higher-is-better KPIs use
+  `actual / target × 100`; lower-is-better KPIs use `target / actual × 100`
+  for positive values, with finite threshold handling for zero or
+  non-positive targets. Missing actuals remain missing and are excluded from
+  averages. Institution, tier, and organisational-unit summaries aggregate
+  unique KPI records using their positive weights, so parent/child rollups
+  do not double-count. The section filters by annual plan cycle and monthly,
+  quarterly, bi-annual, or annual reporting period, and allows tier and unit
+  drill-down within the signed-in user's existing scope. Expected pace
+  compares target attainment with the year-to-date target share for each
+  KPI's latest approved actual month in the selected period; it does not use
+  the baseline. KPI direction and weight are configured
+  through KPI Management; existing KPIs migrate to
+  higher-is-better with weight 1. `GET /api/kpis/performance-target` is the
+  server-authoritative, permission-scoped aggregation endpoint.
 - **A genuine variance-vs-pace tool, with attention alerts**: variance here
   means the honest M&E sense — not "how close to the target", but whether a
   KPI is running ahead of, on, or behind the pace it would need to be at
@@ -330,9 +359,9 @@ means for setup today.)
   system directly (an Employee can message the Vice Chancellor, not just
   their own chain of command), with a real Inbox/Sent split and read/unread
   state that persists (`messages`/`message_recipients` tables, not
-  component state that resets on refresh). There's no outbound SMTP/email
-  delivery configured for this reference deployment — same honest scope as
-  the admin-assisted password reset — so this is the genuine, working
+  component state that resets on refresh). General user-to-user messages
+  remain in-app; optional email delivery is limited to configured password
+  reset and performance-alert notifications. This is the genuine, working
   answer: an in-app inbox addressed by each account's real `@zou.ac.zw`
   email, with an unread-count badge on the nav item. Sent messages carry a
   real WhatsApp-style double-tick delivery/read marker — gray once
@@ -1313,9 +1342,18 @@ simulated detail from the earlier prototype. The following were kept
 deliberately simple so the project stays reviewable and correct rather than
 sprawling:
 
-- RAG (red/amber/green) status is a straightforward percentage-of-target
-  calculation against configurable thresholds, not the prototype's
-  pace-adjusted milestone math.
+- KPI achievement is direction-aware: higher-is-better uses
+  `actual / target × 100`; lower-is-better uses `target / actual × 100`.
+  Baseline progress is a separate calculation:
+  `(actual - baseline) / (target - baseline) × 100` for higher-is-better,
+  reversed for lower-is-better. Expected milestone progress uses that same
+  baseline-to-target scale. Missing, invalid, or mathematically undefined
+  inputs are reported as statuses rather than converted to zero.
+- Scope summaries use the weighted mean of scorable KPI achievement
+  percentages (`Σ(score × KPI weight) / Σ(scored KPI weights)`) and report
+  submission and weight coverage separately. Results remain provisional:
+  approved organizational allocations, due-date applicability, the rating
+  matrix, and budget scoring are not configured as institutional policy.
 - There's no cross-cutting KPI linking (one KPI counted toward two
   Programmes at once).
 - ~~Automated cumulative performance doesn't cascade retroactively~~ — this
@@ -1703,9 +1741,10 @@ Still genuinely open — outside what changes to this codebase alone can fix
 - Have ZOU's IT/security team review authentication, data-retention, and
   access-control requirements before go-live — including whether MFA
   (available now, opt-in) should be mandated for some or all roles.
-- **SMTP/email delivery for password resets is now wired up, just not
-  configured.** `POST /api/users/:id/reset-password` (`backend/src/
-  utils/mailer.js`) emails the new one-time password directly to the
+- **SMTP/email delivery is optional and not configured by default.**
+  Password resets and performance-alert notices use the same configured
+  relay (`backend/src/utils/mailer.js`). `POST /api/users/:id/reset-password`
+  emails the new one-time password directly to the
   account holder when `SMTP_HOST`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`
   are all set (see `.env.example`) — real, external SMTP relay credentials
   (or a service like SendGrid/SES's SMTP endpoint) that can't be

@@ -1,21 +1,12 @@
-import { Children, cloneElement, useEffect, useId, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
-import { useToast } from '../context/ToastContext.jsx';
-import { api } from '../lib/api.js';
 import { employeePosition, headPosition } from '../lib/orgDisplay.js';
 
-// Read-only org chart + the structural-change proposal log. Every
-// creation/edit/deletion action that used to live here — KPIs, Programmes/
-// Sub-programmes/Units, and Employees/roles — now has its own dedicated
-// admin page (see KpiManagement.jsx, OrgStructure.jsx),
-// reached from the sidebar for whoever holds the relevant permission. This
-// page stays what its own nav entry has always promised everyone: the org
-// chart they're part of, visible to every signed-in account regardless of
-// role or permissions to manage anything in it.
+// Read-only org chart. KPI and organisational-structure changes are managed
+// from their dedicated pages, while this page remains visible to every
+// signed-in account regardless of role or management permissions.
 export default function Framework() {
   const { org, hasPerm } = useApp();
   const canManageAnything = hasPerm('create_kpi') || hasPerm('edit_targets') || hasPerm('manage_org_units') || hasPerm('add_employee');
-  const canPropose = hasPerm('manage_framework');
 
   return (
     <div>
@@ -32,79 +23,9 @@ export default function Framework() {
       )}
 
       <OrgTree org={org} />
-      <ProposalsSection canPropose={canPropose} />
     </div>
   );
 }
-
-// A real, persisted queue of structural-change proposals — distinct from
-// the direct unit/KPI creation on the dedicated admin pages, which takes
-// effect immediately. Nothing currently auto-actions an entry here (no
-// approval workflow is wired to it); it's a durable record for CPU/exec to
-// review, e.g. "split this Sub-programme into two" ahead of a planning
-// checkpoint.
-function ProposalsSection({ canPropose }) {
-  const toast = useToast();
-  const [proposals, setProposals] = useState(null);
-  const [scope, setScope] = useState('sub');
-  const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  async function load() {
-    try { const r = await api('/org/proposals'); setProposals(r.proposals); } catch (_) { setProposals([]); }
-  }
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function submit(e) {
-    e.preventDefault();
-    if (!text.trim()) return;
-    setBusy(true);
-    try {
-      await api('/org/proposals', { method: 'POST', body: { scope, text: text.trim() } });
-      toast('Proposal recorded.');
-      setText('');
-      await load();
-    } catch (err) { toast(err.message, 'err'); }
-    finally { setBusy(false); }
-  }
-
-  return (
-    <div className="mt-6">
-      <h2 className="font-display font-bold text-[14.5px] mb-2.5">Propose a structural change</h2>
-      {canPropose ? (
-        <form onSubmit={submit} className="rounded-xl bg-sunken border border-line p-4 mb-3 space-y-3">
-          <Field label="Scope">
-            <select className="field-input" value={scope} onChange={(e) => setScope(e.target.value)}>
-              <option value="sub">Sub-programme / Unit-level (ZOU's own checkpoint)</option>
-              <option value="programme">Programme-level (needs Ministry / PM&amp;E sign-off)</option>
-            </select>
-          </Field>
-          <Field label="Proposal">
-            <textarea rows={2} required className="field-input" placeholder="e.g. Split Innovation & Enterprises into two Sub-programmes"
-              value={text} onChange={(e) => setText(e.target.value)} />
-          </Field>
-          <button className="btn btn-primary btn-sm" disabled={busy}>Record proposal</button>
-        </form>
-      ) : (
-        <div className="card text-[12.5px] text-ink-muted mb-3">Only users granted the "Propose structural changes" permission can submit a proposal here.</div>
-      )}
-      {proposals?.length > 0 && (
-        <div className="space-y-2">
-          {proposals.map((p) => (
-            <div key={p.id} className="card flex items-start gap-2.5 flex-wrap">
-              <span className={`chip ${p.scope === 'programme' ? 'chip-rag-red' : 'chip-rag-green'}`}>
-                {p.scope === 'programme' ? 'Programme-level — routed to Ministry/PM&E' : 'Sub-programme/Unit-level — ZOU checkpoint'}
-              </span>
-              <span className="flex-1 text-[12.6px]">{p.text}</span>
-              <span className="text-[11px] text-ink-muted whitespace-nowrap">{p.created_at}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function OrgTree({ org }) {
   return (
     <div className="space-y-3 mb-3">
@@ -137,26 +58,6 @@ function OrgTree({ org }) {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-// Every call site below wraps exactly one real select/textarea, so this
-// can generate one stable id per Field instance (useId) and wire it onto
-// both the <label>'s htmlFor and the child's id automatically, rather
-// than needing every call site edited by hand. Falls back to an
-// unassociated (but still visually identical) label if a caller ever
-// passes something Field can't safely clone a prop onto, instead of
-// crashing.
-function Field({ label, children }) {
-  const generatedId = useId();
-  const only = Children.count(children) === 1 ? Children.only(children) : null;
-  const child = only && typeof only === 'object' && only.type ? only : null;
-  const inputId = child ? (child.props.id || generatedId) : undefined;
-  return (
-    <div className="space-y-1 min-w-[160px] flex-1">
-      <label htmlFor={inputId} className="field-label">{label}</label>
-      {child ? cloneElement(child, { id: inputId }) : children}
     </div>
   );
 }

@@ -4,14 +4,14 @@ import { Bar, BarChart, CartesianGrid, Cell, Tooltip, XAxis, YAxis, ResponsiveCo
 // everywhere else in the app (see index.css) — never repurposed as a
 // generic categorical palette.
 const STATUS = [
-  { key: 'green', label: 'On track', color: '#0ca30c' },
-  { key: 'amber', label: 'At risk', color: '#c98500' },
-  { key: 'red', label: 'Off track', color: '#d03b3b' },
-  { key: 'none', label: 'No data', color: '#c7c4b8' },
+  { key: 'green', label: 'On track', color: 'var(--color-good)' },
+  { key: 'amber', label: 'At risk', color: 'var(--color-warning)' },
+  { key: 'red', label: 'Off track', color: 'var(--color-critical)' },
+  { key: 'none', label: 'No data', color: 'var(--color-ink-muted)' },
 ];
 
-export default function RagBarChart({ counts, height = 200 }) {
-  const data = STATUS.map((s) => ({ name: s.label, value: counts[s.key] || 0, color: s.color }));
+export default function RagBarChart({ counts, height = 200, labels = {} }) {
+  const data = STATUS.map((s) => ({ name: labels[s.key] || s.label, value: counts[s.key] || 0, color: s.color }));
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} margin={{ top: 4, right: 8, left: -20, bottom: 0 }} barCategoryGap="28%">

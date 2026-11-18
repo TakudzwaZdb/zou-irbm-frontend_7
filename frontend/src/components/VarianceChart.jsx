@@ -5,7 +5,13 @@ import { Bar, BarChart, CartesianGrid, Cell, Legend, ReferenceLine, Tooltip, XAx
 // meaning: on/ahead of pace reads good, behind pace reads critical) — the
 // "Expected pace" bar stays a single neutral ink-muted tone throughout,
 // since it's a reference line, not a status.
-const FLAG_COLOR = { attention: '#d03b3b', behind: '#d08a16', ahead: '#0ca30c', 'on-pace': '#2f6fed', none: '#c7c4b8' };
+const FLAG_COLOR = {
+  attention: 'var(--color-critical)',
+  behind: 'var(--color-warning)',
+  ahead: 'var(--color-good)',
+  'on-pace': 'var(--color-accent-500)',
+  none: 'var(--color-ink-muted)',
+};
 
 // A tick with two lines instead of one: the KPI's own (truncated) name on
 // top, who owns it underneath in a smaller, muted line — so a bar reads
@@ -62,7 +68,7 @@ function makeOwnerTick(chartData) {
 // the available width when there's room to spare, exactly as before, so a
 // short list still looks exactly like it always did.
 const MIN_SLOT_WIDTH = 112;
-export default function VarianceChart({ data, height = 280 }) {
+export default function VarianceChart({ data, height = 280, maxValue = 100 }) {
   // `_uid` — a per-row value that is ALWAYS unique, even when two (or more)
   // KPIs share the exact same name (a real scenario: e.g. an "Employee"
   // duty-KPI template like "Vacuuming" or "Bin collection" assigned to
@@ -217,7 +223,7 @@ export default function VarianceChart({ data, height = 280 }) {
             <BarChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }} barGap={2} barCategoryGap="28%">
               <CartesianGrid vertical={false} stroke="var(--color-line)" />
               <XAxis dataKey="_uid" tick={OwnerTick} axisLine={{ stroke: 'var(--color-line)' }} tickLine={false} interval={0} height={54} />
-              <YAxis allowDecimals={false} domain={[0, 100]} tick={{ fontSize: 11, fill: 'var(--color-ink-muted)' }} axisLine={false} tickLine={false} width={30} unit="%" />
+              <YAxis allowDecimals={false} domain={[0, maxValue]} tick={{ fontSize: 11, fill: 'var(--color-ink-muted)' }} axisLine={false} tickLine={false} width={30} unit="%" />
               <ReferenceLine y={100} stroke="var(--color-line-strong)" strokeDasharray="3 3" />
               <Tooltip
                 cursor={{ fill: 'var(--color-sunken)' }}
@@ -240,7 +246,7 @@ export default function VarianceChart({ data, height = 280 }) {
                   return [`${v}%`, 'Expected pace'];
                 }}
               />
-              <Legend wrapperStyle={{ fontSize: 11.5, paddingTop: 8 }} iconType="circle" iconSize={8} />
+              <Legend wrapperStyle={{ fontSize: 11.5, paddingTop: 8, color: 'var(--color-ink-secondary)' }} iconType="circle" iconSize={8} />
               <Bar dataKey="expected" name="Expected pace" fill="var(--color-ink-muted)" opacity={0.35} radius={[4, 4, 0, 0]} maxBarSize={26} />
               <Bar dataKey="actual" name="Actual" radius={[4, 4, 0, 0]} maxBarSize={26}>
                 {chartData.map((d) => <Cell key={d._uid} fill={FLAG_COLOR[d.flag] || FLAG_COLOR.none} />)}

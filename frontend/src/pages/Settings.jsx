@@ -27,6 +27,28 @@ const SECTIONS = [
     ],
   },
   {
+    id: 'performance-alerts',
+    title: 'Performance alerts',
+    shortTitle: 'Performance alerts',
+    hint: 'Set how far actual progress may fall behind expected baseline progress before an alert is raised.',
+    fields: [
+      {
+        key: 'alertWarningGap',
+        label: 'Warning gap',
+        description: 'Raise an amber alert when baseline progress trails expected pace by this many percentage points.',
+        unit: 'percentage points',
+        fallback: 10,
+      },
+      {
+        key: 'alertCriticalGap',
+        label: 'Critical gap',
+        description: 'Raise a red alert when baseline progress trails expected pace by this many percentage points.',
+        unit: 'percentage points',
+        fallback: 25,
+      },
+    ],
+  },
+  {
     id: 'submission-deadlines',
     title: 'Submission deadlines',
     shortTitle: 'Deadlines',

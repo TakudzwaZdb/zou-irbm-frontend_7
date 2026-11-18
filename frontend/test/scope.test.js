@@ -22,6 +22,12 @@ test('RAG thresholds use unrounded progress', () => {
   assert.equal(result.cls, 'chip-rag-amber');
 });
 
+test('equal baseline and target do not invent progress when unmet and respect lower direction', () => {
+  assert.equal(computeRag({ baseline: 5, target: 5 }, { value: 4 }, settings).rawPct, null);
+  assert.equal(computeRag({ baseline: 5, target: 5, measurement_direction: 'lower' }, { value: 5 }, settings).rawPct, 100);
+  assert.equal(computeRag({ baseline: 5, target: 5, measurement_direction: 'lower' }, { value: 6 }, settings).rawPct, null);
+});
+
 test('fractional shortfalls are behind pace and retain full-precision variance', () => {
   const result = computeVariance(kpi, { value: 49.6, month: 6 }, settings);
 

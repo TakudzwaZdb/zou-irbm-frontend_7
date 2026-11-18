@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
-import { currentNav, NAV_ITEMS } from '../lib/nav.js';
+import { currentNav, NAV_CHILDREN, NAV_ITEMS } from '../lib/nav.js';
 import { avatarClass, initialsOf, ROLE_LABEL } from '../lib/scope.js';
 import AlertsBell from './AlertsBell.jsx';
 import LiveIndicator from './LiveIndicator.jsx';
@@ -44,7 +44,7 @@ export default function Layout({ route, setRoute, children }) {
   // they can look anywhere) but, for a scoped role, only while they're on
   // Overview — it's a way of drilling into *their own* structure to see
   // it, not a general-purpose nav item competing with My Data Entry etc.
-  const showTree = !SCOPED_ROLES.includes(user.role) || route === 'overview';
+  const showTree = !SCOPED_ROLES.includes(user.role) || ['overview', 'overviewPerformance'].includes(route);
 
   // Belt-and-braces for mobile: with the shell now locked to h-dvh (see
   // below) the document itself shouldn't scroll at all, but iOS Safari in
@@ -164,18 +164,36 @@ export default function Layout({ route, setRoute, children }) {
             </button>
             {nav.map((k) => {
               const item = NAV_ITEMS[k];
-              const active = route === k;
+              const children = NAV_CHILDREN[k] || [];
+              const active = route === k || children.some((child) => child.route === route);
               return (
-                <button
-                  key={k}
-                  onClick={() => { setRoute(k); setSidebarOpen(false); }}
-                  aria-current={active ? 'page' : undefined}
-                  className={`flex items-center gap-2.5 px-2.5 py-2.5 border-l-2 rounded-lg text-[14px] font-semibold text-left
-                    ${active ? 'border-accent-500 bg-accent-50 text-accent-700 shadow-sm' : 'border-transparent text-ink-secondary hover:bg-sunken'}`}
-                >
-                  <span className="w-4 text-center flex-none" aria-hidden="true">{item.icon}</span>
-                  {item.label}
-                </button>
+                <div key={k}>
+                  <button
+                    onClick={() => { setRoute(k); setSidebarOpen(false); }}
+                    aria-current={route === k ? 'page' : undefined}
+                    aria-expanded={children.length ? active : undefined}
+                    className={`flex w-full items-center gap-2.5 px-2.5 py-2.5 border-l-2 rounded-lg text-[14px] font-semibold text-left
+                      ${active ? 'border-accent-500 bg-accent-50 text-accent-700 shadow-sm' : 'border-transparent text-ink-secondary hover:bg-sunken'}`}
+                  >
+                    <span className="w-4 text-center flex-none" aria-hidden="true">{item.icon}</span>
+                    {item.label}
+                  </button>
+                  {children.length > 0 && active && (
+                    <div className="ml-6 mt-0.5 mb-1 flex flex-col gap-0.5 border-l border-line pl-2">
+                      {children.map((child) => (
+                        <button
+                          key={child.route}
+                          onClick={() => { setRoute(child.route); setSidebarOpen(false); }}
+                          aria-current={route === child.route ? 'page' : undefined}
+                          className={`rounded-md px-2.5 py-1.5 text-left text-[12.5px] font-semibold
+                            ${route === child.route ? 'bg-accent-50 text-accent-700' : 'text-ink-muted hover:bg-sunken hover:text-ink-secondary'}`}
+                        >
+                          {child.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>

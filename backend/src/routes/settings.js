@@ -21,7 +21,7 @@ router.get('/', async (req, res) => {
 const KNOWN_SETTING_KEYS = new Set([
   'ragGreen', 'ragAmber', 'lateCutoffEmployee', 'lateCutoffUnit', 'lateCutoffSub',
   'escalateProgramme', 'escalateVC', 'redEscalateProgramme', 'redEscalateVC',
-  'submissionOpenDay', 'submissionCloseDay',
+  'submissionOpenDay', 'submissionCloseDay', 'alertWarningGap', 'alertCriticalGap',
 ]);
 
 // The submission-window pair (see utils/submissionWindow.js) is a day-of-
@@ -29,6 +29,7 @@ const KNOWN_SETTING_KEYS = new Set([
 // an out-of-range value here wouldn't just be a bad number, it would make
 // the window computation land on the wrong calendar month entirely.
 const DAY_OF_MONTH_KEYS = new Set(['submissionOpenDay', 'submissionCloseDay']);
+const ALERT_GAP_KEYS = new Set(['alertWarningGap', 'alertCriticalGap']);
 
 router.patch('/', requirePerm('manage_settings'), async (req, res) => {
   const body = req.body || {};
@@ -39,6 +40,22 @@ router.patch('/', requirePerm('manage_settings'), async (req, res) => {
     const n = Number(body[k]);
     if (!Number.isInteger(n) || n < 1 || n > 31) {
       return res.status(400).json({ error: `${k} must be a whole number between 1 and 31.` });
+    }
+  }
+  for (const key of Object.keys(body)) {
+    if (!ALERT_GAP_KEYS.has(key)) continue;
+    const n = Number(body[key]);
+    if (!Number.isFinite(n) || n < 0 || n > 100) {
+      return res.status(400).json({ error: `${key} must be a number between 0 and 100.` });
+    }
+  }
+  if (Object.keys(body).some((key) => ALERT_GAP_KEYS.has(key))) {
+    const currentRows = await db.prepare('SELECT key, value FROM settings WHERE key IN (?, ?)').all('alertWarningGap', 'alertCriticalGap');
+    const current = Object.fromEntries(currentRows.map((row) => [row.key, Number(row.value)]));
+    const warning = Number(body.alertWarningGap ?? current.alertWarningGap ?? 10);
+    const critical = Number(body.alertCriticalGap ?? current.alertCriticalGap ?? 25);
+    if (critical <= warning) {
+      return res.status(400).json({ error: 'The critical performance gap must be greater than the warning gap.' });
     }
   }
   const upsert = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');

@@ -7,6 +7,7 @@ import {
 } from '../lib/scope.js';
 import { readDraft, writeDraft, clearDraft, draftDiffersFrom, debounce } from '../lib/autosave.js';
 import { AssignmentManager } from './KpiCard.jsx';
+import PaginatedRows from './PaginatedRows.jsx';
 
 const STATUS_LABEL = {
   none: 'Not started', draft: 'Draft', returned: 'Returned', submitted: 'Submitted', approved: 'Approved',
@@ -263,7 +264,7 @@ export default function DataEntryTable({ kpis, interactive = true }) {
             </tr>
           </thead>
           <tbody>
-            {kpis.map((kpi) => {
+            <PaginatedRows items={kpis} colSpan={interactive ? 10 : 9} emptyMessage="No KPIs in this reporting scope." renderRow={(kpi) => {
               const r = rowFor(kpi);
               const rowInteractive = interactive && !r.locked;
               const teamOpen = expandedTeamId === kpi.id;
@@ -375,7 +376,7 @@ export default function DataEntryTable({ kpis, interactive = true }) {
                 )}
                 </Fragment>
               );
-            })}
+            }} />
           </tbody>
         </table>
       </div>

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { api } from '../lib/api.js';
 import { nodeOwnKpis, institutionalRollup, performanceRollup, varianceRollup, ownerName, employeesOfUnit, VARIANCE_ATTENTION_THRESHOLD, VARIANCE_AHEAD_THRESHOLD, valueStatus, MONTHS } from '../lib/scope.js';
@@ -9,12 +9,15 @@ import RagPieChart from '../components/RagPieChart.jsx';
 import VarianceChart from '../components/VarianceChart.jsx';
 import VarianceAlerts from '../components/VarianceAlerts.jsx';
 import PeriodTypePicker from '../components/PeriodTypePicker.jsx';
+import PageSectionTabs from '../components/PageSectionTabs.jsx';
 import FocusedReportSection from '../components/FocusedReportSection.jsx';
+import PaginatedRows from '../components/PaginatedRows.jsx';
+import { csvReportPreamble, downloadCsvFile } from '../lib/csv.js';
 
 const FLOW_ACTIONS = { submit: 'Submitted', approve: 'Approved', return: 'Returned' };
 const FLOW_STYLE = { submit: 'bg-accent-50 text-accent-600', approve: 'bg-good-soft text-good', return: 'bg-warning-soft text-warning' };
 
-export default function Reports() {
+export default function Reports({ setRoute }) {
   const { org, kpis, values, period, settings, perfPeriod, perfValues, hasPerm, user } = useApp();
   // Individual performance reports are oversight-only by deliberate policy
   // (see FocusedReportSection's own header note) — a plain Employee account
@@ -23,6 +26,8 @@ export default function Reports() {
   const canSeeStaffRows = user.role !== 'employee';
   const [showStaff, setShowStaff] = useState(false);
   const [designationFilter, setDesignationFilter] = useState('');
+  const [alertReport, setAlertReport] = useState(null);
+  const [alertReportError, setAlertReportError] = useState(null);
   // jsPDF + jspdf-autotable are a genuinely heavy pair (see the "before"
   // bundle stats in README) that only this button ever needs — every other
   // role/page was paying for them in the main bundle on every load whether
@@ -30,6 +35,16 @@ export default function Reports() {
   // own chunk that only downloads the first time someone actually clicks
   // Download PDF, so the busy state below just covers that one-time fetch.
   const [pdfBusy, setPdfBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setAlertReport(null);
+    setAlertReportError(null);
+    api(`/performance-alerts/report/summary?year=${period.year}&month=${period.month}`)
+      .then((result) => { if (active) setAlertReport(result); })
+      .catch((err) => { if (active) setAlertReportError(err.message || 'Alert reporting could not be loaded.'); });
+    return () => { active = false; };
+  }, [period.year, period.month]);
 
   // An automated appraisal result at every institutional tier — Unit/
   // Department/Faculty/Region, Sub-programme, and Programme — computed live
@@ -68,6 +83,25 @@ export default function Reports() {
   // just a reshape rather than a second, separately-scoped computation that
   // could quietly drift from the table.
   const chartRows = programmeRows.map((r) => ({ p: r.p, count: r.count, counts: r.counts }));
+  const reportRows = programmeRows.flatMap((programme) => [
+    { key: `p${programme.p.id}`, name: programme.p.name, level: 0, ...programme },
+    ...programme.subs.flatMap((sub) => [
+      { key: `s${sub.sub.id}`, name: sub.sub.name, level: 1, ...sub },
+      ...sub.units.flatMap((unit) => [
+        { key: `u${unit.unit.id}`, name: unit.unit.name, level: 2, ...unit },
+        ...(showStaff && canSeeStaffRows
+          ? unit.employees
+            .filter((employee) => !designationFilter || employeePosition(employee.employee) === designationFilter)
+            .map((employee) => ({
+              key: `e${employee.employee.id}`,
+              name: employeePosition(employee.employee),
+              level: 3,
+              ...employee,
+            }))
+          : []),
+      ]),
+    ]),
+  ]);
 
   const periodLabel = labelFor(perfPeriod.type, perfPeriod.year, perfPeriod.idx, MONTHS);
 
@@ -104,7 +138,21 @@ export default function Reports() {
   // downloadable artifact for the selected cadence, not a separately typed-up
   // document that could drift from the numbers on screen.
   function downloadCsv() {
-    const rows = [['Tier', 'Organisation / designation', 'KPIs', 'Avg. progress %', 'On track', 'At risk', 'Off track', 'No data']];
+    const reportMonth = perfPeriod.type === 'monthly'
+      ? new Date(Date.UTC(perfPeriod.year, perfPeriod.idx - 1, 1)).toLocaleString('en', { month: 'long', timeZone: 'UTC' })
+      : `Not applicable (${perfPeriod.type} reporting)`;
+    const rows = [
+      ...csvReportPreamble('ORGANISATIONAL PERFORMANCE REPORT', {
+        period: periodLabel,
+        month: reportMonth,
+        year: perfPeriod.year,
+      }),
+      ['Submission and alerts month', `${MONTHS[period.month]} ${period.year}`],
+      [],
+      ['Section 1 | Organisational Performance Summary'],
+      ['Tier', 'Organisation / designation', 'KPIs', 'Avg. progress %', 'On track', 'At risk', 'Off track', 'No data'],
+    ];
+    if (programmeRows.length === 0) rows.push(['', 'No organisational performance data is available for this period.']);
     programmeRows.forEach((r) => {
       rows.push(['Programme', r.p.name, r.count, r.avgPct ?? '', r.counts.green, r.counts.amber, r.counts.red, r.counts.none]);
       r.subs.forEach((sr) => {
@@ -121,14 +169,30 @@ export default function Reports() {
         });
       });
     });
-    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `zou-performance-report-${periodLabel.replace(/\s+/g, '-')}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    if (alertReport) {
+      rows.push([]);
+      rows.push(['Section 2 | Performance Alerts and Escalations']);
+      rows.push(['Reporting month', `${MONTHS[period.month]} ${period.year}`]);
+      rows.push(['Category', 'Status / severity', 'Count']);
+      rows.push(['Alerts', 'Total', alertReport.totalAlerts]);
+      rows.push(['Alerts', 'Critical', alertReport.bySeverity.red]);
+      rows.push(['Alerts', 'Warning', alertReport.bySeverity.amber]);
+      rows.push(['Alerts', 'Missing', alertReport.bySeverity.missing]);
+      rows.push(['Escalations', 'Open', alertReport.byEscalationStatus.open]);
+      rows.push(['Escalations', 'Acknowledged', alertReport.byEscalationStatus.acknowledged]);
+      rows.push(['Escalations', 'In progress', alertReport.byEscalationStatus.in_progress]);
+      rows.push(['Escalations', 'Resolved', alertReport.byEscalationStatus.resolved]);
+      rows.push(['Corrective actions', 'Open', alertReport.byActionStatus.submitted + alertReport.byActionStatus.approved + alertReport.byActionStatus.in_progress]);
+      rows.push(['Corrective actions', 'Completed', alertReport.byActionStatus.completed]);
+      rows.push(['Corrective actions', 'Overdue', alertReport.byActionStatus.overdue]);
+      rows.push([]);
+      rows.push(['Section 3 | Monthly Alert Trend']);
+      rows.push(['Month', 'Active alerts', 'Critical', 'Warning', 'Missing']);
+      alertReport.trends.forEach((point) => rows.push([
+        `${MONTHS[point.month]} ${point.year}`, point.active, point.red, point.amber, point.missing,
+      ]));
+    }
+    downloadCsvFile(`zou-performance-report-${periodLabel.replace(/\s+/g, '-')}.csv`, rows);
   }
 
   // A genuine document — a real PDF file, generated client-side from the
@@ -258,6 +322,34 @@ export default function Reports() {
       `On track: ${orgRagCounts.green}      At risk: ${orgRagCounts.amber}      Off track: ${orgRagCounts.red}      No data: ${orgRagCounts.none}`,
       marginX, y
     );
+    y += 28;
+    if (alertReport && y > pageBottom - 130) { doc.addPage(); y = 46; }
+    if (alertReport) {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(12);
+      doc.text(`Alerts, escalations & corrective actions · ${MONTHS[period.month]} ${period.year}`, marginX, y);
+      y += 10;
+      autoTable(doc, {
+        startY: y + 6,
+        margin: { left: marginX, right: marginX },
+        head: [['Category', 'Count', 'Category', 'Count']],
+        body: [
+          ['Critical alerts', alertReport.bySeverity.red, 'Warning alerts', alertReport.bySeverity.amber],
+          ['Missing reports', alertReport.bySeverity.missing, 'Total alerts', alertReport.totalAlerts],
+          ['Open escalations', alertReport.byEscalationStatus.open, 'Resolved escalations', alertReport.byEscalationStatus.resolved],
+          ['In-progress actions', alertReport.byActionStatus.in_progress, 'Overdue actions', alertReport.byActionStatus.overdue],
+        ],
+        styles: { fontSize: 9, cellPadding: 5, lineColor: [218, 223, 230], lineWidth: 0.35 },
+        headStyles: { fillColor: [25, 34, 48], textColor: 255 },
+      });
+      y = doc.lastAutoTable.finalY + 18;
+      doc.setFont('helvetica', 'bold');
+      doc.text('12-month active alert trend', marginX, y);
+      y += 14;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.text(alertReport.trends.map((point) => `${MONTHS[point.month].slice(0, 3)} ${String(point.year).slice(-2)}: ${point.active}`).join('   '), marginX, y, { maxWidth: contentWidth });
+    }
 
     const pageCount = doc.internal.getNumberOfPages();
     for (let i = 1; i <= pageCount; i++) {
@@ -278,7 +370,7 @@ export default function Reports() {
         <div className="flex justify-between gap-4 flex-wrap items-start">
           <div>
             <div className="flex flex-wrap items-center gap-2 mb-1">
-              <h1 className="text-xl font-bold">Performance reports</h1>
+              <h1 className="text-xl font-bold">Progress reports</h1>
               <span className="chip bg-accent-50 text-accent-600">{periodLabel}</span>
             </div>
             <p className="text-[13px] text-ink-secondary">
@@ -293,6 +385,7 @@ export default function Reports() {
           </div>
         </div>
       </div>
+      <PageSectionTabs parent="reports" currentRoute="reports" onNavigate={setRoute} />
 
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 mb-5">
         <ReportMetric label="KPIs in scope" value={overallRollup.count} accent="border-l-line" />
@@ -301,6 +394,10 @@ export default function Reports() {
         <ReportMetric label="At risk" value={overallRollup.counts.amber} accent="border-l-warning" />
         <ReportMetric label="Off track" value={overallRollup.counts.red} accent="border-l-critical" />
       </div>
+
+      {alertReportError
+        ? <p role="alert" className="card mb-5 border-l-4 border-l-critical text-[12px] text-critical">{alertReportError}</p>
+        : alertReport && <AlertOperationsReport data={alertReport} />}
 
       <FocusedReportSection org={org} kpis={kpis} perfValues={perfValues} settings={settings} user={user} periodLabel={periodLabel} />
 
@@ -342,58 +439,22 @@ export default function Reports() {
             </tr>
           </thead>
           <tbody>
-            {programmeRows.map((r) => (
-              <Fragment key={`p${r.p.id}`}>
-                <tr className="border-t border-line bg-sunken/75">
-                  <Td className="font-bold">{r.p.name}</Td>
-                  <Td className="tabular-nums font-semibold">{r.count}</Td>
-                  <Td className="tabular-nums font-semibold">{r.avgPct != null ? `${r.avgPct}%` : '—'}</Td>
-                  <Td><span className="chip chip-rag-green">{r.counts.green}</span></Td>
-                  <Td><span className="chip chip-rag-amber">{r.counts.amber}</span></Td>
-                  <Td><span className="chip chip-rag-red">{r.counts.red}</span></Td>
-                  <Td><span className="chip chip-rag-none">{r.counts.none}</span></Td>
-                </tr>
-                {r.subs.map((sr) => (
-                  <Fragment key={`s${sr.sub.id}`}>
-                    <tr className="border-t border-line bg-sunken/45">
-                      <Td className="pl-7 text-ink-secondary font-semibold">↳ {sr.sub.name}</Td>
-                      <Td className="tabular-nums">{sr.count}</Td>
-                      <Td className="tabular-nums">{sr.avgPct != null ? `${sr.avgPct}%` : '—'}</Td>
-                      <Td><span className="chip chip-rag-green">{sr.counts.green}</span></Td>
-                      <Td><span className="chip chip-rag-amber">{sr.counts.amber}</span></Td>
-                      <Td><span className="chip chip-rag-red">{sr.counts.red}</span></Td>
-                      <Td><span className="chip chip-rag-none">{sr.counts.none}</span></Td>
-                    </tr>
-                    {sr.units.map((ur) => (
-                      <Fragment key={`u${ur.unit.id}`}>
-                        <tr className="border-t border-line hover:bg-sunken/30">
-                          <Td className="pl-12 text-ink-secondary">↳ {ur.unit.name}</Td>
-                          <Td className="tabular-nums">{ur.count}</Td>
-                          <Td className="tabular-nums">{ur.avgPct != null ? `${ur.avgPct}%` : '—'}</Td>
-                          <Td><span className="chip chip-rag-green">{ur.counts.green}</span></Td>
-                          <Td><span className="chip chip-rag-amber">{ur.counts.amber}</span></Td>
-                          <Td><span className="chip chip-rag-red">{ur.counts.red}</span></Td>
-                          <Td><span className="chip chip-rag-none">{ur.counts.none}</span></Td>
-                        </tr>
-                        {showStaff && canSeeStaffRows && ur.employees
-                          .filter((er) => !designationFilter || employeePosition(er.employee) === designationFilter)
-                          .map((er) => (
-                          <tr key={`e${er.employee.id}`} className="border-t border-line/60 hover:bg-sunken/30">
-                            <Td className="pl-16 text-ink-muted text-[12px]">↳ {employeePosition(er.employee)}</Td>
-                            <Td className="tabular-nums text-[12px]">{er.count}</Td>
-                            <Td className="tabular-nums text-[12px]">{er.avgPct != null ? `${er.avgPct}%` : '—'}</Td>
-                            <Td><span className="chip chip-rag-green">{er.counts.green}</span></Td>
-                            <Td><span className="chip chip-rag-amber">{er.counts.amber}</span></Td>
-                            <Td><span className="chip chip-rag-red">{er.counts.red}</span></Td>
-                            <Td><span className="chip chip-rag-none">{er.counts.none}</span></Td>
-                          </tr>
-                        ))}
-                      </Fragment>
-                    ))}
-                  </Fragment>
-                ))}
-              </Fragment>
-            ))}
+            <PaginatedRows items={reportRows} colSpan={7} emptyMessage="No organisational performance records to display." renderRow={(row) => (
+              <tr
+                key={row.key}
+                className={`border-t border-line ${row.level === 0 ? 'bg-sunken/75' : row.level === 1 ? 'bg-sunken/45' : 'hover:bg-sunken/30'}`}
+              >
+                <Td className={`${row.level === 0 ? 'font-bold' : row.level === 1 ? 'text-ink-secondary font-semibold' : row.level === 2 ? 'text-ink-secondary' : 'text-ink-muted text-[12px]'} ${row.level === 1 ? 'pl-7' : row.level === 2 ? 'pl-12' : row.level === 3 ? 'pl-16' : ''}`}>
+                  {row.level > 0 ? '↳ ' : ''}{row.name}
+                </Td>
+                <Td className={`tabular-nums ${row.level === 0 ? 'font-semibold' : ''}`}>{row.count}</Td>
+                <Td className={`tabular-nums ${row.level === 0 ? 'font-semibold' : ''}`}>{row.avgPct != null ? `${row.avgPct}%` : '—'}</Td>
+                <Td><span className="chip chip-rag-green">{row.counts.green}</span></Td>
+                <Td><span className="chip chip-rag-amber">{row.counts.amber}</span></Td>
+                <Td><span className="chip chip-rag-red">{row.counts.red}</span></Td>
+                <Td><span className="chip chip-rag-none">{row.counts.none}</span></Td>
+              </tr>
+            )} />
           </tbody>
         </table>
       </div>
@@ -471,6 +532,45 @@ function FlowStat({ label, value, className }) {
       <div className="text-[10.5px] uppercase tracking-wide font-bold opacity-80">{label}</div>
       <div className="font-display font-extrabold text-[22px] tabular-nums">{value}</div>
     </div>
+  );
+}
+
+function AlertOperationsReport({ data }) {
+  const maxActive = Math.max(1, ...data.trends.map((point) => point.active));
+  const openActions = data.byActionStatus.submitted + data.byActionStatus.approved + data.byActionStatus.in_progress;
+  return (
+    <section className="card mb-5" aria-labelledby="alert-operations-report">
+      <div className="flex flex-wrap items-end justify-between gap-3 mb-4">
+        <div>
+          <h2 id="alert-operations-report" className="font-display font-bold text-[14.5px]">Alerts, escalations &amp; corrective actions</h2>
+          <p className="text-[11.5px] text-ink-muted">Current reporting month · {MONTHS[data.period.month]} {data.period.year}</p>
+        </div>
+        <span className="text-[11px] text-ink-muted">The 12-month trend counts unresolved alerts in the authorised reporting scope.</span>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+        <ReportMetric label="Critical alerts" value={data.bySeverity.red} accent="border-l-critical" />
+        <ReportMetric label="Warning alerts" value={data.bySeverity.amber} accent="border-l-warning" />
+        <ReportMetric label="Missing reports" value={data.bySeverity.missing} accent="border-l-line-strong" />
+        <ReportMetric label="Open / active actions" value={`${openActions} · ${data.byActionStatus.overdue} overdue`} accent="border-l-good" />
+      </div>
+      <h3 className="text-[10.8px] uppercase tracking-wide text-ink-muted font-bold mb-2">Active alert trend</h3>
+      <div className="space-y-1.5">
+        {data.trends.map((point) => (
+          <div key={`${point.year}-${point.month}`} className="grid grid-cols-[78px_1fr_34px] items-center gap-2 text-[10.5px]">
+            <span className="text-ink-muted">{MONTHS[point.month].slice(0, 3)} {point.year}</span>
+            <div className="h-2 rounded-full bg-sunken overflow-hidden" aria-label={`${point.active} active alerts`}>
+              <div className="h-full bg-critical" style={{ width: `${(point.active / maxActive) * 100}%` }} />
+            </div>
+            <span className="text-right tabular-nums text-ink-secondary">{point.active}</span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2 text-[10.5px]">
+        <span className="chip bg-sunken text-ink-secondary">Escalations: {Object.values(data.byEscalationStatus).reduce((sum, count) => sum + count, 0)}</span>
+        <span className="chip bg-sunken text-ink-secondary">Resolved actions: {data.byActionStatus.completed}</span>
+        <span className="chip bg-sunken text-ink-secondary">Rejected actions: {data.byActionStatus.rejected}</span>
+      </div>
+    </section>
   );
 }
 

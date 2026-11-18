@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import PaginatedRows from '../components/PaginatedRows.jsx';
 
 const PAGE_SIZE = 200;
 
@@ -94,7 +95,7 @@ export default function Audit() {
                 </tr>
               </thead>
               <tbody>
-                {filteredEntries.map((e) => (
+                <PaginatedRows items={filteredEntries} colSpan={5} emptyMessage={entries ? `No matching log actions found${filter ? ` for "${filter}"` : ''}.` : 'Loading audit entries…'} renderRow={(e) => (
                   <tr key={e.id} className="border-t border-line align-top">
                     <Td className="text-ink-muted whitespace-nowrap">{e.ts}</Td>
                     <Td>{e.user_name || 'System'}</Td>
@@ -102,14 +103,7 @@ export default function Audit() {
                     <Td>{e.entity}{e.entity_id ? ` #${e.entity_id}` : ''}</Td>
                     <Td>{e.detail || ''}</Td>
                   </tr>
-                ))}
-                {filteredEntries.length === 0 && entries && (
-                  <tr>
-                    <Td colSpan={5} className="text-center text-ink-muted py-6">
-                      No matching log actions found for option: {filter}
-                    </Td>
-                  </tr>
-                )}
+                )} />
               </tbody>
             </table>
           </div>

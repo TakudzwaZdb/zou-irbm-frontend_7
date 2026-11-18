@@ -5,6 +5,7 @@ import { useApp } from '../context/AppContext.jsx';
 import { api } from '../lib/api.js';
 import { avatarClass, initialsOf, scopeBreadcrumb } from '../lib/scope.js';
 import PhotoLightbox from '../components/PhotoLightbox.jsx';
+import PaginatedRows from '../components/PaginatedRows.jsx';
 
 // Exported so every other page that needs to show or pick a role — right
 // now just Permissions.jsx's role/scope-assignment popup (see its own
@@ -301,7 +302,7 @@ export default function Users() {
               </tr>
             </thead>
             <tbody>
-      {(filtered || []).map((u) => {
+      <PaginatedRows items={filtered || []} colSpan={6} emptyMessage="No accounts to display." renderRow={(u) => {
         const isSelf = u.id === me.id;
         const breadcrumb = scopeBreadcrumb(org, u);
         // Named per-row so the intent reads at the call site (onClick={handleRowActivate}
@@ -356,7 +357,7 @@ export default function Users() {
             <td className="px-3 py-2.5 text-accent-600 font-semibold text-[11px] whitespace-nowrap">{canEdit ? 'Click to manage ›' : 'Click to view ›'}</td>
           </tr>
         );
-      })}
+      }} />
             </tbody>
           </table>
           </div>

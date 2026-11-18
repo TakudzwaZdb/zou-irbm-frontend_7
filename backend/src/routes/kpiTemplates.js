@@ -60,18 +60,43 @@ router.get('/removed', requireAnyPerm('create_kpi', 'delete_kpi'), async (req, r
 // it up below.
 router.post('/', requirePerm('create_kpi'), async (req, res) => {
   const { unitId, name, type, measure, baseline, target } = req.body || {};
+  const measurementDirection = req.body?.measurementDirection || 'higher';
+  const weight = req.body?.weight == null ? 1 : Number(req.body.weight);
+  const achievementRule = req.body?.achievementRule || 'ratio';
+  const reportingMode = req.body?.reportingMode || 'cumulative';
+  const periodAggregation = req.body?.periodAggregation || 'latest';
+  const reportingPeriods = req.body?.reportingPeriods || [];
   if (!unitId || !name || !type || !measure || baseline == null || target == null) {
     return res.status(400).json({ error: 'unitId, name, type, measure, baseline, and target are all required.' });
+  }
+  if (!['higher', 'lower'].includes(measurementDirection)) return res.status(400).json({ error: 'measurementDirection must be higher or lower.' });
+  if (!Number.isFinite(weight) || weight <= 0) return res.status(400).json({ error: 'weight must be a positive number.' });
+  if (!['ratio', 'exact_target', 'baseline_progress'].includes(achievementRule)) {
+    return res.status(400).json({ error: 'achievementRule must be ratio, exact_target, or baseline_progress.' });
+  }
+  if (!['cumulative', 'period'].includes(reportingMode)) {
+    return res.status(400).json({ error: 'reportingMode must be cumulative or period.' });
+  }
+  if (!['sum', 'latest'].includes(periodAggregation)) {
+    return res.status(400).json({ error: 'periodAggregation must be sum or latest.' });
+  }
+  if (!Array.isArray(reportingPeriods) || reportingPeriods.some((milestone) =>
+    !milestone || typeof milestone !== 'object'
+      || typeof milestone.periodType !== 'string'
+      || milestone.periodIndex == null || !Number.isInteger(Number(milestone.periodIndex)) || Number(milestone.periodIndex) < 1
+      || milestone.expectedValue == null || !Number.isFinite(Number(milestone.expectedValue))
+  )) {
+    return res.status(400).json({ error: 'reportingPeriods must contain milestones with periodType, periodIndex, and numeric expectedValue.' });
   }
   const unit = await unitOr404(unitId, res); if (!unit) return;
 
   const { lastInsertRowid: id } = await db
-    .prepare('INSERT INTO kpi_templates (unit_id, name, type, measure, baseline, target, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(Number(unitId), name, type, measure, Number(baseline), Number(target), req.user.id);
+    .prepare('INSERT INTO kpi_templates (unit_id, name, type, measure, baseline, target, measurement_direction, weight, reporting_mode, period_aggregation, reporting_periods, achievement_rule, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(Number(unitId), name, type, measure, Number(baseline), Number(target), measurementDirection, weight, reportingMode, periodAggregation, JSON.stringify(reportingPeriods), achievementRule, req.user.id);
 
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'create_kpi_template', 'kpi_template', id,
-    `KPI template "${name}" created for employees in ${unit.name} (baseline ${baseline}, target ${target}).`
+    `KPI template "${name}" created for employees in ${unit.name} (baseline ${baseline}, target ${target}, ${measurementDirection}-is-better, weight ${weight}).`
   );
   res.status(201).json({ template: await db.prepare('SELECT * FROM kpi_templates WHERE id = ?').get(id) });
 });
@@ -127,8 +152,8 @@ router.post('/:id/pick', requirePerm('data_entry'), async (req, res) => {
 
   const pickTxn = db.transaction(async () => {
     const { lastInsertRowid: id } = await db
-      .prepare('INSERT INTO kpis (owner_type, owner_id, name, type, measure, baseline, target, template_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run('employee', employee.id, template.name, template.type, template.measure, template.baseline, template.target, template.id);
+      .prepare('INSERT INTO kpis (owner_type, owner_id, name, type, measure, baseline, target, measurement_direction, weight, reporting_mode, period_aggregation, reporting_periods, achievement_rule, lifecycle_status, template_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'draft\', ?)')
+      .run('employee', employee.id, template.name, template.type, template.measure, template.baseline, template.target, template.measurement_direction, template.weight, template.reporting_mode, template.period_aggregation, template.reporting_periods, template.achievement_rule, template.id);
     const now = new Date();
     await db.prepare('INSERT INTO kpi_values (kpi_id, year, month, status) VALUES (?, ?, ?, \'draft\')').run(id, now.getFullYear(), now.getMonth() + 1);
     return id;

@@ -39,3 +39,12 @@ test('an approved value remains official while its amendment is pending', () => 
 
   assert.equal(consecutiveRedStreak(rows, kpi, 50), 1);
 });
+
+test('lower-is-better compliance uses progress toward a lower target', () => {
+  const lowerKpi = { baseline: 20, target: 10, measurement_direction: 'lower' };
+  const behind = [{ year: 2026, month: 4, status: 'approved', value: 15 }];
+  const achieved = [{ year: 2026, month: 4, status: 'approved', value: 10 }];
+
+  assert.equal(consecutiveRedStreak(behind, lowerKpi, 60), 1);
+  assert.equal(consecutiveRedStreak(achieved, lowerKpi, 60), 0);
+});

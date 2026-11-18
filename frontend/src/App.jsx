@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { useApp } from './context/AppContext.jsx';
-import { currentNav } from './lib/nav.js';
+import { currentNav, isRouteAvailable } from './lib/nav.js';
 // Login and ForcedPasswordChange render before the route switch below even
 // exists (see the early returns further down) — they're what every signed-
 // out visitor sees first, so they stay ordinary eager imports rather than
@@ -21,6 +21,7 @@ import Layout from './components/Layout.jsx';
 // account, say, never pays for Organisation Builder's or Permissions'
 // code just because those exist in the bundle for CPU/ICT admin.
 const Overview = lazy(() => import('./pages/Overview.jsx'));
+const OverviewPerformance = lazy(() => import('./pages/OverviewPerformance.jsx'));
 const Entry = lazy(() => import('./pages/Entry.jsx'));
 const Approvals = lazy(() => import('./pages/Approvals.jsx'));
 const Framework = lazy(() => import('./pages/Framework.jsx'));
@@ -29,6 +30,7 @@ const OrganisationBuilder = lazy(() => import('./pages/OrganisationBuilder.jsx')
 const Planning = lazy(() => import('./pages/Planning.jsx'));
 const Compliance = lazy(() => import('./pages/Compliance.jsx'));
 const Reports = lazy(() => import('./pages/Reports.jsx'));
+const ReportsPerformance = lazy(() => import('./pages/ReportsPerformance.jsx'));
 const Audit = lazy(() => import('./pages/Audit.jsx'));
 const Settings = lazy(() => import('./pages/Settings.jsx'));
 const Users = lazy(() => import('./pages/Users.jsx'));
@@ -37,6 +39,7 @@ const Profile = lazy(() => import('./pages/Profile.jsx'));
 
 const PAGES = {
   overview: Overview,
+  overviewPerformance: OverviewPerformance,
   entry: Entry,
   approvals: Approvals,
   framework: Framework,
@@ -45,6 +48,7 @@ const PAGES = {
   planning: Planning,
   compliance: Compliance,
   reports: Reports,
+  reportsPerformance: ReportsPerformance,
   audit: Audit,
   settings: Settings,
   users: Users,
@@ -75,7 +79,7 @@ export default function App() {
     if (user) {
       const saved = window.history.state?.zouApp;
       const sameUser = saved?.userId === user.id;
-      const nextRoute = sameUser && nav.includes(saved.route) ? saved.route : (nav[0] || 'overview');
+      const nextRoute = sameUser && isRouteAvailable(saved.route, nav) ? saved.route : (nav[0] || 'overview');
       const nextNode = sameUser ? saved.selNode || null : null;
       window.history.replaceState({ zouApp: { userId: user.id, route: nextRoute, selNode: nextNode } }, '', window.location.href);
       setRouteState(nextRoute);
@@ -88,12 +92,13 @@ export default function App() {
     function restoreFromHistory(event) {
       const saved = event.state?.zouApp;
       if (!user || saved?.userId !== user.id) return;
+      if (saved.route !== 'profile' && !isRouteAvailable(saved.route, currentNav(user, hasPerm))) return;
       setRouteState(saved.route);
       restoreSelNode(saved.selNode || null);
     }
     window.addEventListener('popstate', restoreFromHistory);
     return () => window.removeEventListener('popstate', restoreFromHistory);
-  }, [user, restoreSelNode]);
+  }, [user, hasPerm, restoreSelNode]);
 
   if (booting) {
     return <div className="min-h-dvh flex items-center justify-center text-ink-muted text-sm">Loading…</div>;
@@ -110,12 +115,12 @@ export default function App() {
   // Everything else must actually be in the caller's nav — so if ICT admin
   // revokes, say, view_overview from someone mid-session, the default
   // 'overview' route state doesn't quietly keep rendering it anyway.
-  const safeRoute = route === 'profile' || nav.includes(route) ? route : (nav[0] || 'overview');
+  const safeRoute = route === 'profile' || isRouteAvailable(route, nav) ? route : (nav[0] || 'overview');
   const Page = PAGES[safeRoute] || Overview;
   return (
     <Layout route={safeRoute} setRoute={setRoute}>
       <Suspense fallback={<div className="text-ink-muted text-[13px]">Loading…</div>}>
-        <Page />
+        <Page setRoute={setRoute} />
       </Suspense>
     </Layout>
   );

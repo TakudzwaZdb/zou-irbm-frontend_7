@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
+import PaginatedRows from '../components/PaginatedRows.jsx';
 import { byId } from '../lib/scope.js';
 import { employeePosition, headPosition } from '../lib/orgDisplay.js';
 
@@ -308,7 +309,14 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
         <div className="overflow-x-auto max-h-[65vh] overflow-y-auto rounded-lg border border-line">
           <table className="w-full text-left text-[12px]">
             <thead className="bg-sunken border-b border-line sticky top-0 z-10"><tr><th className="px-3 py-2 font-bold">Name / Staff</th><th className="px-3 py-2 font-bold">Parent / Unit</th><th className="px-3 py-2 font-bold">Head / Role</th><th className="px-3 py-2 font-bold">Type</th><th className="px-3 py-2 font-bold">Actions</th></tr></thead>
-            <tbody>{filteredRows.length === 0 ? <tr><td colSpan="5" className="px-3 py-6 text-center text-ink-muted">{rows.length === 0 ? `No ${entities.find((entity) => entity.key === entityKey)?.label.toLowerCase()} yet.` : 'No records match your search.'}</td></tr> : filteredRows.map((row) => <tr key={row.id} className="border-b border-line last:border-b-0 hover:bg-sunken/60">{cells(row)}</tr>)}</tbody>
+            <tbody>
+              <PaginatedRows
+                items={filteredRows}
+                colSpan={5}
+                emptyMessage={rows.length === 0 ? `No ${entities.find((entity) => entity.key === entityKey)?.label.toLowerCase()} yet.` : 'No records match your search.'}
+                renderRow={(row) => <tr key={row.id} className="border-b border-line last:border-b-0 hover:bg-sunken/60">{cells(row)}</tr>}
+              />
+            </tbody>
           </table>
         </div>
         <div className="mt-2 text-[11px] text-ink-muted">Showing {filteredRows.length} of {rows.length} {entities.find((entity) => entity.key === entityKey)?.label.toLowerCase()}.</div>

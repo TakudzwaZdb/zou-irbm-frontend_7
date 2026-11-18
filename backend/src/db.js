@@ -287,6 +287,12 @@ CREATE TABLE IF NOT EXISTS kpi_templates (
   measure TEXT NOT NULL,
   baseline REAL NOT NULL,
   target REAL NOT NULL,
+  measurement_direction TEXT NOT NULL DEFAULT 'higher' CHECK(measurement_direction IN ('higher','lower')),
+  weight REAL NOT NULL DEFAULT 1 CHECK(weight > 0),
+  reporting_mode TEXT NOT NULL DEFAULT 'cumulative' CHECK(reporting_mode IN ('cumulative','period')),
+  period_aggregation TEXT NOT NULL DEFAULT 'latest' CHECK(period_aggregation IN ('sum','latest')),
+  reporting_periods TEXT NOT NULL DEFAULT '[]',
+  achievement_rule TEXT NOT NULL DEFAULT 'ratio' CHECK(achievement_rule IN ('ratio','exact_target','baseline_progress')),
   created_by INTEGER REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
   deleted_at TEXT
@@ -301,10 +307,77 @@ CREATE TABLE IF NOT EXISTS kpis (
   measure TEXT NOT NULL,
   baseline REAL NOT NULL,
   target REAL NOT NULL,
+  measurement_direction TEXT NOT NULL DEFAULT 'higher' CHECK(measurement_direction IN ('higher','lower')),
+  weight REAL NOT NULL DEFAULT 1 CHECK(weight > 0),
   is_automated INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
   template_id INTEGER REFERENCES kpi_templates(id) ON DELETE SET NULL,
   deleted_at TEXT
+);
+
+-- KPI configuration lifecycle and immutable revision history. Existing rows
+-- are backfilled to "active" in ensureSchema so this migration does not
+-- unexpectedly remove already-configured KPIs from reporting.
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS strategic_objective TEXT;
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS programme_id INTEGER REFERENCES programmes(id);
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS sub_id INTEGER REFERENCES subs(id);
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS department_id INTEGER REFERENCES units(id);
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS unit_id INTEGER REFERENCES units(id);
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS data_source TEXT;
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS evidence_requirements TEXT;
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS allowable_variance REAL;
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS reporting_frequency TEXT;
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS reporting_periods TEXT;
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS reporting_mode TEXT NOT NULL DEFAULT 'cumulative'
+  CHECK(reporting_mode IN ('cumulative','period'));
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS period_aggregation TEXT NOT NULL DEFAULT 'latest'
+  CHECK(period_aggregation IN ('sum','latest'));
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS achievement_rule TEXT NOT NULL DEFAULT 'ratio'
+  CHECK(achievement_rule IN ('ratio','exact_target','baseline_progress'));
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS start_date TEXT;
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS end_date TEXT;
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS strategic_plan_version TEXT;
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS performance_cycle INTEGER;
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS lifecycle_status TEXT NOT NULL DEFAULT 'draft'
+  CHECK(lifecycle_status IN ('draft','submitted','approved','active','rejected','archived'));
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS submitted_at TEXT;
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS approved_by INTEGER REFERENCES users(id);
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS approved_at TEXT;
+ALTER TABLE kpis ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+
+CREATE TABLE IF NOT EXISTS kpi_revisions (
+  id SERIAL PRIMARY KEY,
+  kpi_id INTEGER NOT NULL REFERENCES kpis(id) ON DELETE CASCADE,
+  revision_no INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  baseline REAL NOT NULL,
+  target REAL NOT NULL,
+  weight REAL NOT NULL,
+  measurement_direction TEXT NOT NULL,
+  configuration TEXT NOT NULL,
+  changed_by INTEGER REFERENCES users(id),
+  changed_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  approved_by INTEGER REFERENCES users(id),
+  approved_at TEXT,
+  UNIQUE(kpi_id, revision_no)
+);
+
+CREATE TABLE IF NOT EXISTS weighting_allocations (
+  id SERIAL PRIMARY KEY,
+  parent_type TEXT NOT NULL CHECK(parent_type IN ('institution','programme','sub','unit','department','employee','senior_manager')),
+  parent_id INTEGER,
+  name TEXT NOT NULL,
+  weight REAL NOT NULL CHECK(weight >= 0),
+  allocation_type TEXT NOT NULL CHECK(allocation_type IN ('kpi','organisational','results_delivery','budget_performance')),
+  effective_from TEXT NOT NULL,
+  effective_to TEXT,
+  status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','approved','archived')),
+  created_by INTEGER REFERENCES users(id),
+  approved_by INTEGER REFERENCES users(id),
+  approved_at TEXT,
+  UNIQUE(parent_type, parent_id, name, effective_from)
 );
 
 CREATE TABLE IF NOT EXISTS kpi_values (
@@ -325,6 +398,10 @@ CREATE TABLE IF NOT EXISTS kpi_values (
   override_cleared_value REAL,
   override_cleared_note TEXT,
   override_cleared_at TEXT,
+  achievement_date TEXT,
+  evidence TEXT,
+  challenges TEXT,
+  corrective_actions TEXT,
   UNIQUE(kpi_id, year, month)
 );
 
@@ -409,6 +486,78 @@ CREATE TABLE IF NOT EXISTS message_recipients (
   UNIQUE(message_id, recipient_id)
 );
 
+CREATE TABLE IF NOT EXISTS performance_alerts (
+  id SERIAL PRIMARY KEY,
+  kpi_id INTEGER NOT NULL REFERENCES kpis(id) ON DELETE CASCADE,
+  year INTEGER NOT NULL,
+  month INTEGER NOT NULL CHECK(month BETWEEN 1 AND 12),
+  severity TEXT NOT NULL CHECK(severity IN ('amber','red','missing')),
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','acknowledged','action_planned','resolved')),
+  actual REAL,
+  target REAL NOT NULL,
+  baseline_progress REAL,
+  target_performance REAL,
+  expected_progress REAL,
+  variance REAL,
+  details TEXT,
+  detected_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  updated_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  resolved_at TEXT,
+  UNIQUE(kpi_id, year, month)
+);
+
+CREATE TABLE IF NOT EXISTS performance_escalations (
+  id SERIAL PRIMARY KEY,
+  alert_id INTEGER NOT NULL REFERENCES performance_alerts(id) ON DELETE CASCADE,
+  level INTEGER NOT NULL CHECK(level BETWEEN 1 AND 3),
+  reference_code TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','acknowledged','in_progress','resolved','closed')),
+  assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  reason TEXT NOT NULL,
+  evidence TEXT,
+  response_due_at TEXT,
+  resolution TEXT,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  updated_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  resolved_at TEXT,
+  UNIQUE(alert_id, level)
+);
+
+CREATE TABLE IF NOT EXISTS corrective_action_plans (
+  id SERIAL PRIMARY KEY,
+  alert_id INTEGER NOT NULL REFERENCES performance_alerts(id) ON DELETE CASCADE,
+  escalation_id INTEGER REFERENCES performance_escalations(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  root_cause TEXT NOT NULL,
+  intervention TEXT NOT NULL,
+  responsible_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  due_date TEXT NOT NULL,
+  expected_improvement TEXT NOT NULL,
+  resources TEXT,
+  status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','submitted','approved','in_progress','completed','rejected')),
+  outcome TEXT,
+  evidence TEXT,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  updated_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS performance_notifications (
+  id SERIAL PRIMARY KEY,
+  recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  alert_id INTEGER REFERENCES performance_alerts(id) ON DELETE CASCADE,
+  escalation_id INTEGER REFERENCES performance_escalations(id) ON DELETE CASCADE,
+  notification_key TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (${NOW_UTC}),
+  read_at TEXT,
+  UNIQUE(recipient_id, notification_key)
+);
+
 CREATE TABLE IF NOT EXISTS kpi_hidden (
   id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -429,6 +578,11 @@ CREATE INDEX IF NOT EXISTS idx_kpi_values_period ON kpi_values(year, month);
 CREATE INDEX IF NOT EXISTS idx_kpi_contributions_period ON kpi_contributions(year, month);
 CREATE INDEX IF NOT EXISTS idx_message_recipients_recipient ON message_recipients(recipient_id);
 CREATE INDEX IF NOT EXISTS idx_mfa_recovery_codes_user ON mfa_recovery_codes(user_id);
+CREATE INDEX IF NOT EXISTS idx_performance_alerts_period ON performance_alerts(year, month, status);
+CREATE INDEX IF NOT EXISTS idx_performance_alerts_kpi ON performance_alerts(kpi_id, year DESC, month DESC);
+CREATE INDEX IF NOT EXISTS idx_performance_escalations_status ON performance_escalations(status, level);
+CREATE INDEX IF NOT EXISTS idx_corrective_action_plans_status ON corrective_action_plans(status, due_date);
+CREATE INDEX IF NOT EXISTS idx_performance_notifications_recipient ON performance_notifications(recipient_id, read_at, created_at DESC);
 
 -- Appointment integrity: Employee, CPU, and ICT administrator accounts may
 -- repeat. Other roles may occur only once per organisation scope.
@@ -782,6 +936,25 @@ async function ensureSchema() {
   await migrateDirectKpiActualSnapshots();
   await pool.query('ALTER TABLE plan_proposals ADD COLUMN IF NOT EXISTS targets TEXT');
   await pool.query('ALTER TABLE plan_proposals ADD COLUMN IF NOT EXISTS plan_title TEXT');
+  await pool.query('ALTER TABLE kpi_values ADD COLUMN IF NOT EXISTS achievement_date TEXT');
+  await pool.query('ALTER TABLE kpi_values ADD COLUMN IF NOT EXISTS evidence TEXT');
+  await pool.query('ALTER TABLE kpi_values ADD COLUMN IF NOT EXISTS challenges TEXT');
+  await pool.query('ALTER TABLE kpi_values ADD COLUMN IF NOT EXISTS corrective_actions TEXT');
+  await pool.query("ALTER TABLE kpis ADD COLUMN IF NOT EXISTS measurement_direction TEXT NOT NULL DEFAULT 'higher' CHECK(measurement_direction IN ('higher','lower'))");
+  await pool.query('ALTER TABLE kpis ADD COLUMN IF NOT EXISTS weight REAL NOT NULL DEFAULT 1 CHECK(weight > 0)');
+  await pool.query("ALTER TABLE kpi_templates ADD COLUMN IF NOT EXISTS measurement_direction TEXT NOT NULL DEFAULT 'higher' CHECK(measurement_direction IN ('higher','lower'))");
+  await pool.query('ALTER TABLE kpi_templates ADD COLUMN IF NOT EXISTS weight REAL NOT NULL DEFAULT 1 CHECK(weight > 0)');
+  await pool.query("ALTER TABLE kpi_templates ADD COLUMN IF NOT EXISTS reporting_mode TEXT NOT NULL DEFAULT 'cumulative' CHECK(reporting_mode IN ('cumulative','period'))");
+  await pool.query("ALTER TABLE kpi_templates ADD COLUMN IF NOT EXISTS period_aggregation TEXT NOT NULL DEFAULT 'latest' CHECK(period_aggregation IN ('sum','latest'))");
+  await pool.query("ALTER TABLE kpi_templates ADD COLUMN IF NOT EXISTS reporting_periods TEXT NOT NULL DEFAULT '[]'");
+  await pool.query("ALTER TABLE kpi_templates ADD COLUMN IF NOT EXISTS achievement_rule TEXT NOT NULL DEFAULT 'ratio' CHECK(achievement_rule IN ('ratio','exact_target','baseline_progress'))");
+  const lifecycleBackfill = await pool.query(
+    "SELECT value FROM settings WHERE key = 'kpiLifecycleBackfillDone'"
+  );
+  if (lifecycleBackfill.rows.length === 0) {
+    await pool.query("UPDATE kpis SET lifecycle_status = 'active' WHERE lifecycle_status = 'draft'");
+    await pool.query("INSERT INTO settings (key, value) VALUES ('kpiLifecycleBackfillDone', '1') ON CONFLICT (key) DO NOTHING");
+  }
   await pool.query(`
     UPDATE plan_proposals
     SET plan_title = CASE owner_type
@@ -811,6 +984,9 @@ async function ensureSchema() {
   await pool.query('ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL');
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT NOT NULL DEFAULT 'local'");
   await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS azure_oid TEXT');
+  await pool.query(
+    "INSERT INTO settings (key, value) VALUES ('alertWarningGap', '10'), ('alertCriticalGap', '25') ON CONFLICT (key) DO NOTHING"
+  );
 
   // Idempotent widen: programmes/subs/units.head used to be NOT NULL, back
   // when creating one also collected a Head name and auto-provisioned their

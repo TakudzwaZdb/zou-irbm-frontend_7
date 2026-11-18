@@ -9,6 +9,7 @@ import { scopeBreadcrumb } from '../lib/scope.js';
 // here — importing rather than keeping a second, driftable copy of
 // ROLE_LABEL, as this file used to.
 import { ROLE_LABEL, UNIT_KIND_OPTIONS } from './Users.jsx';
+import PaginatedRows from '../components/PaginatedRows.jsx';
 
 // Organisation scope is a property of the PERSON, not the role (see
 // routes/users.js's PATCH /:id/role) — a role no longer declares or
@@ -905,8 +906,7 @@ export default function Permissions() {
 
                 <tbody>
 
-                  {(filteredRoles || []).map(
-                    (role) => {
+                  <PaginatedRows items={filteredRoles || []} colSpan={3} emptyMessage="No roles match your filters." renderRow={(role) => {
 
                       const permissions =
                         getRolePermissions(
@@ -987,8 +987,7 @@ export default function Permissions() {
 
                         </tr>
                       );
-                    }
-                  )}
+                  }} />
 
                 </tbody>
 
@@ -1260,8 +1259,7 @@ export default function Permissions() {
 
                 <tbody>
 
-                  {(filteredUsers || []).map(
-                    (user) => {
+                  <PaginatedRows items={filteredUsers || []} colSpan={5} emptyMessage="No users found." renderRow={(user) => {
 
                       const checked =
                         selectedUsers.includes(
@@ -1324,8 +1322,7 @@ export default function Permissions() {
 
                         </tr>
                       );
-                    }
-                  )}
+                  }} />
 
                 </tbody>
 
@@ -1472,8 +1469,7 @@ export default function Permissions() {
 
                 <tbody>
 
-                  {catalog.map(
-                    (permission) => {
+                  <PaginatedRows items={catalog} colSpan={3} emptyMessage="No permissions are available." renderRow={(permission) => {
 
                       const enabled =
                         getRolePermissions(
@@ -1523,8 +1519,7 @@ export default function Permissions() {
 
                         </tr>
                       );
-                    }
-                  )}
+                  }} />
 
                 </tbody>
 

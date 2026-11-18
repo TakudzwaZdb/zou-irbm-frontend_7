@@ -86,6 +86,41 @@
   --color-line-strong: rgb(245 244 240 / 0.28);
 }
 
+/* Overview pages use accent and RAG colors over large, tinted panels as
+   well as on compact charts. Give those semantic colors dark-theme variants
+   so labels and status markers remain clear without bright light-mode
+   panels against the dark surfaces. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .overview-page {
+    --color-accent-50: #182b40;
+    --color-accent-100: #203d5d;
+    --color-accent-400: #83b9f4;
+    --color-accent-500: #69aaf2;
+    --color-accent-600: #95c6ff;
+    --color-accent-700: #bedcff;
+    --color-good: #78e28a;
+    --color-good-soft: #173c25;
+    --color-warning: #ffd166;
+    --color-warning-soft: #493514;
+    --color-critical: #ff9090;
+    --color-critical-soft: #471e20;
+  }
+}
+:root[data-theme="dark"] .overview-page {
+  --color-accent-50: #182b40;
+  --color-accent-100: #203d5d;
+  --color-accent-400: #83b9f4;
+  --color-accent-500: #69aaf2;
+  --color-accent-600: #95c6ff;
+  --color-accent-700: #bedcff;
+  --color-good: #78e28a;
+  --color-good-soft: #173c25;
+  --color-warning: #ffd166;
+  --color-warning-soft: #493514;
+  --color-critical: #ff9090;
+  --color-critical-soft: #471e20;
+}
+
 @layer base {
   * {
     scrollbar-width: thin;

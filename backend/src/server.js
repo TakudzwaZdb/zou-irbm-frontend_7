@@ -38,6 +38,22 @@ if (cluster.isPrimary) {
     console.log(`Primary ${process.pid}: starting ${WORKER_COUNT} worker process(es) (set WEB_CONCURRENCY in .env to override).`);
     for (let i = 0; i < WORKER_COUNT; i++) cluster.fork();
 
+    const { runPerformanceMonitoring } = require('./utils/performanceMonitoring');
+    let monitoring = false;
+    const monitorPerformance = async () => {
+      if (monitoring) return;
+      monitoring = true;
+      try {
+        await runPerformanceMonitoring();
+      } catch (err) {
+        console.error('Scheduled performance-alert monitoring failed:', err);
+      } finally {
+        monitoring = false;
+      }
+    };
+    monitorPerformance();
+    setInterval(monitorPerformance, 5 * 60 * 1000);
+
     // A worker that crashes (an uncaught exception escaping a route
     // handler, say) takes only itself down — replace it so the app's real
     // capacity doesn't quietly shrink every time that happens instead of
@@ -83,6 +99,7 @@ async function runWorker() {
   const auditRoutes = require('./routes/audit');
   const settingsRoutes = require('./routes/settings');
   const complianceRoutes = require('./routes/compliance');
+  const performanceAlertRoutes = require('./routes/performanceAlerts');
   const plansRoutes = require('./routes/plans');
   const messagesRoutes = require('./routes/messages');
 
@@ -137,6 +154,7 @@ async function runWorker() {
   app.use('/api/audit', auditRoutes);
   app.use('/api/settings', settingsRoutes);
   app.use('/api/compliance', complianceRoutes);
+  app.use('/api/performance-alerts', performanceAlertRoutes);
   app.use('/api/plans', plansRoutes);
   app.use('/api/messages', messagesRoutes);
 
