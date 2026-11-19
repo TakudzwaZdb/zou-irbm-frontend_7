@@ -92,7 +92,7 @@ export default function ApprovalsTable({ kpis, interactive }) {
             <th className="px-3 py-2.5 text-right">Target</th>
             <th className="px-3 py-2.5 text-right">Current</th>
             <th className="px-3 py-2.5 text-right min-w-[110px]">Submitted actual</th>
-            <th className="px-3 py-2.5" title="Target-performance score; distinct from the progress score and pace">Performance</th>
+            <th className="px-3 py-2.5 text-right" title="Target-performance score; distinct from the progress score and pace">Performance</th>
             <th className="px-3 py-2.5">Progress score</th>
             <th className="px-3 py-2.5">Progress pace</th>
             <th className="px-3 py-2.5 min-w-[140px] max-w-[200px]">Note</th>

@@ -420,6 +420,15 @@ export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataL
             </div>
             <PerformanceGauge value={summary?.averagePerformance} status={summary?.status} />
           </div>
+
+          <OrganisationUnitBreakdown
+            data={data}
+            childrenByParent={childrenByParent}
+            tierFilter={tierFilter}
+            onHome={() => { setOrgNodeFilter('all'); setTierFilter('all'); }}
+            onDrill={(selected) => { setOrgNodeFilter(selected.key); setTierFilter('all'); }}
+          />
+
           {(summary?.provisional || summary?.ratingStatus === 'not_configured') && (
             <div className="rounded-lg border border-warning/30 bg-warning-soft/40 px-3 py-2.5 mb-4 text-[11.5px] text-ink-secondary">
               <div className="flex flex-wrap items-center gap-2">
@@ -471,13 +480,6 @@ export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataL
 
           <KpiPerformanceTable kpis={kpiDetails} periodLabel={periodLabel} />
 
-          <OrganisationUnitBreakdown
-            data={data}
-            childrenByParent={childrenByParent}
-            tierFilter={tierFilter}
-            onHome={() => { setOrgNodeFilter('all'); setTierFilter('all'); }}
-            onDrill={(selected) => { setOrgNodeFilter(selected.key); setTierFilter('all'); }}
-          />
           <p className="text-[10.5px] text-ink-muted mt-3">
             Each KPI appears once in an aggregate. Parent results include their descendants. Missing actuals are excluded from averages, never treated as zero.
           </p>
@@ -628,7 +630,8 @@ function OrganisationUnitBreakdown({ data, childrenByParent, tierFilter, onHome,
   }
   path.reverse();
   const scopeRoot = path[0];
-  const rootNode = data.nodes.find((node) => node.key === data.rootKey);
+  const rootNode = data.nodes.find((node) => node.key === data.rootKey) || nodesByKey.get(data.rootKey);
+  const rootTier = rootNode?.tier || scopeRoot?.tier || 'Organisational tier';
   const children = tierFilter === 'all'
     ? childrenByParent.get(data.rootKey) || []
     : data.nodes.filter((node) => node.key !== data.rootKey);
@@ -640,8 +643,19 @@ function OrganisationUnitBreakdown({ data, childrenByParent, tierFilter, onHome,
           : rootNode?.kind === 'unit' ? 'Employees' : 'Subordinate organisational units'
     : `${firstChild?.tier || 'Organisational units'} comparison`;
 
+  function drillTo(node) {
+    onDrill(node);
+    requestAnimationFrame(() => {
+      document.getElementById('performance-target-title')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
   return (
-    <section className="card mt-5" aria-labelledby="organisational-unit-breakdown-title">
+    <section
+      id="performance-tier-overview"
+      className="card mt-5 scroll-mt-4"
+      aria-labelledby="organisational-unit-breakdown-title"
+    >
       <div className="flex items-center gap-1.5 flex-wrap text-[11.5px] text-ink-muted mb-3">
         <button type="button" className="hover:text-accent-500 hover:underline" onClick={onHome}>Home</button>
         <span>/</span>
@@ -653,7 +667,7 @@ function OrganisationUnitBreakdown({ data, childrenByParent, tierFilter, onHome,
             <span>/</span>
             {index === path.length - 2
               ? <b className="text-ink-secondary">{node.name}</b>
-              : <button type="button" className="hover:text-accent-500 hover:underline" onClick={() => onDrill(node)}>{node.name}</button>}
+              : <button type="button" className="hover:text-accent-500 hover:underline" onClick={() => drillTo(node)}>{node.name}</button>}
           </span>
         ))}
         {path.length === 1 && scopeRoot?.kind !== 'university' && (
@@ -663,22 +677,38 @@ function OrganisationUnitBreakdown({ data, childrenByParent, tierFilter, onHome,
 
       <div className="flex justify-between gap-3 flex-wrap items-start mb-3">
         <div>
-          <h3 id="organisational-unit-breakdown-title" className="font-display font-bold text-[14.5px]">
-            Organisational unit breakdown
+          <p className="text-[10px] font-extrabold uppercase tracking-[0.12em] text-accent-600">Selected tier overview</p>
+          <h3 id="organisational-unit-breakdown-title" className="mt-0.5 font-display text-[20px] font-extrabold text-ink">
+            {data.summaryName || rootNode?.name || 'Selected scope'}
           </h3>
-          <p className="text-[11.5px] text-ink-muted mt-0.5">
-            {data.summaryName} · select a unit card to view its target performance.
+          <p className="text-[11.5px] text-ink-secondary mt-0.5">
+            {rootTier} · {periodLabelFor(data)} · approved KPI results across this reporting scope.
           </p>
         </div>
-        {data.rootKey !== 'university:0' && (
-          <span className="chip bg-sunken text-ink-secondary">{rootNode?.tier || scopeRoot?.tier || 'Organisational unit'}</span>
-        )}
+        <span className="chip border border-accent-500/20 bg-accent-50 text-accent-700">
+          {data.summary.totalKpis} assigned KPIs
+        </span>
       </div>
 
-      <h4 className="font-display font-bold text-[13px] mb-2">{heading}</h4>
+      <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
+        <TierOverviewMetric
+          label="Average performance"
+          value={data.summary.averagePerformance == null ? '—' : `${data.summary.averagePerformance}%`}
+          className="text-accent-700"
+        />
+        <TierOverviewMetric label="On track" value={data.summary.achieved} className="text-good" />
+        <TierOverviewMetric label="At risk" value={data.summary.approaching} className="text-warning" />
+        <TierOverviewMetric label="Off track" value={data.summary.offTrack} className="text-critical" />
+        <TierOverviewMetric label="Missing actual" value={data.summary.missingActual} className="text-ink-muted" />
+      </div>
+
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+        <h4 className="font-display font-bold text-[13px]">{heading}</h4>
+        <span className="text-[10.5px] text-ink-muted">Select a tier card to open its overview and next tier.</span>
+      </div>
       {children.length ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {children.map((node) => <PerformanceNodeCard key={node.key} node={node} onDrill={onDrill} />)}
+          {children.map((node) => <PerformanceNodeCard key={node.key} node={node} onDrill={drillTo} />)}
         </div>
       ) : (
         <p className="text-[11.5px] text-ink-muted py-5 text-center">
@@ -686,6 +716,22 @@ function OrganisationUnitBreakdown({ data, childrenByParent, tierFilter, onHome,
         </p>
       )}
     </section>
+  );
+}
+
+function periodLabelFor(data) {
+  const type = data.periodType || 'monthly';
+  const label = PERIOD_TYPE_LABEL[type] || type;
+  const index = periodOption(type, data.periodIndex || 1);
+  return `${label} · ${index} ${data.cycleYear || '—'}`;
+}
+
+function TierOverviewMetric({ label, value, className = '' }) {
+  return (
+    <div className="min-w-0 rounded-lg border border-line bg-sunken/50 px-3 py-2.5">
+      <div className="truncate text-[9.5px] font-bold uppercase tracking-wide text-ink-muted">{label}</div>
+      <div className={`mt-0.5 font-display text-[20px] font-extrabold leading-tight tabular-nums ${className}`}>{value}</div>
+    </div>
   );
 }
 
@@ -743,7 +789,8 @@ function PerformanceNodeCard({ node, onDrill }) {
     <button
       type="button"
       onClick={() => onDrill(node)}
-      className="card w-full text-left hover:border-accent-300 transition-colors"
+      aria-label={`Open ${node.tier.toLowerCase()} overview: ${node.name}`}
+      className="card w-full text-left hover:border-accent-300 hover:shadow-md transition-all"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
@@ -790,7 +837,7 @@ function PerformanceNodeCard({ node, onDrill }) {
         <span>{node.offTrack} off track</span>
         <span>{node.missingActual} missing</span>
       </div>
-      <span className="inline-block text-accent-600 font-semibold mt-2 text-[10.5px]">View this unit</span>
+      <span className="inline-block text-accent-600 font-semibold mt-2 text-[10.5px]">Open {node.tier} overview</span>
     </button>
   );
 }

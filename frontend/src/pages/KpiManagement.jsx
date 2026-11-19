@@ -537,52 +537,64 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
             </div>
           ) : (
             <div className="overflow-x-auto max-h-[65vh] overflow-y-auto rounded-lg border border-line">
-              <table className="w-full text-left text-[12px]">
+              <table className="w-full min-w-[1400px] table-fixed text-left text-[12px]">
+                <colgroup>
+                  <col className="w-[200px]" />
+                  <col className="w-[130px]" />
+                  <col className="w-[110px]" />
+                  <col className="w-[190px]" />
+                  <col className="w-[110px]" />
+                  <col className="w-[110px]" />
+                  <col className="w-[150px]" />
+                  <col className="w-[100px]" />
+                  <col className="w-[150px]" />
+                  <col className="w-[250px]" />
+                </colgroup>
                 <thead className="bg-sunken border-b border-line sticky top-0 z-10">
                   <tr>
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">KPI</th>
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">Type</th>
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">Measure</th>
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">Owner</th>
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">Baseline</th>
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">Target</th>
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">Direction</th>
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">Weight</th>
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">Status</th>
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">Actions</th>
+                    <th scope="col" className="px-3 py-2 font-bold whitespace-nowrap">KPI</th>
+                    <th scope="col" className="px-3 py-2 font-bold whitespace-nowrap">Type</th>
+                    <th scope="col" className="px-3 py-2 font-bold whitespace-nowrap">Measure</th>
+                    <th scope="col" className="px-3 py-2 font-bold whitespace-nowrap">Owner</th>
+                    <th scope="col" className="px-3 py-2 text-right font-bold whitespace-nowrap">Baseline</th>
+                    <th scope="col" className="px-3 py-2 text-right font-bold whitespace-nowrap">Target</th>
+                    <th scope="col" className="px-3 py-2 font-bold whitespace-nowrap">Direction</th>
+                    <th scope="col" className="px-3 py-2 text-right font-bold whitespace-nowrap">Weight</th>
+                    <th scope="col" className="px-3 py-2 font-bold whitespace-nowrap">Status</th>
+                    <th scope="col" className="px-3 py-2 font-bold whitespace-nowrap">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   <PaginatedRows items={filtered} colSpan={10} emptyMessage="No KPIs match your search." renderRow={(k) => (
-                    <tr key={k.id} className="border-b border-line last:border-b-0 hover:bg-sunken/60">
-                      <td className="px-3 py-2.5 font-semibold">{editingId === k.id && canFullEdit ? <input className="field-input min-w-32" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /> : (k.name || '—')}</td>
-                      <td className="px-3 py-2.5">{editingId === k.id && canFullEdit ? <input className="field-input min-w-28" value={draft.type} onChange={(e) => setDraft({ ...draft, type: e.target.value })} /> : (k.type || '—')}</td>
-                      <td className="px-3 py-2.5">{editingId === k.id && canFullEdit ? <input className="field-input min-w-28" value={draft.measure} onChange={(e) => setDraft({ ...draft, measure: e.target.value })} /> : (k.measure || '—')}</td>
-                      <td className="px-3 py-2.5">{ownerLabel(k)}</td>
-                      <td className="px-3 py-2.5 whitespace-nowrap">{editingId === k.id ? <input type="number" step="any" className="field-input w-24" value={draft.baseline} onChange={(e) => setDraft({ ...draft, baseline: e.target.value })} /> : (k.baseline ?? '—')}</td>
-                      <td className="px-3 py-2.5 whitespace-nowrap">{editingId === k.id ? <input type="number" step="any" className="field-input w-24" value={draft.target} onChange={(e) => setDraft({ ...draft, target: e.target.value })} /> : (k.target ?? '—')}</td>
-                      <td className="px-3 py-2.5 whitespace-nowrap">
+                    <tr key={k.id} className="border-b border-line last:border-b-0 align-middle hover:bg-sunken/60">
+                      <td className="break-words px-3 py-2.5 font-semibold">{editingId === k.id && canFullEdit ? <input className="field-input w-full" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /> : (k.name || '—')}</td>
+                      <td className="break-words px-3 py-2.5">{editingId === k.id && canFullEdit ? <input className="field-input w-full" value={draft.type} onChange={(e) => setDraft({ ...draft, type: e.target.value })} /> : (k.type || '—')}</td>
+                      <td className="break-words px-3 py-2.5">{editingId === k.id && canFullEdit ? <input className="field-input w-full" value={draft.measure} onChange={(e) => setDraft({ ...draft, measure: e.target.value })} /> : (k.measure || '—')}</td>
+                      <td className="break-words px-3 py-2.5">{ownerLabel(k)}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">{editingId === k.id ? <input type="number" step="any" className="field-input w-full text-right tabular-nums" value={draft.baseline} onChange={(e) => setDraft({ ...draft, baseline: e.target.value })} /> : (k.baseline ?? '—')}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">{editingId === k.id ? <input type="number" step="any" className="field-input w-full text-right tabular-nums" value={draft.target} onChange={(e) => setDraft({ ...draft, target: e.target.value })} /> : (k.target ?? '—')}</td>
+                      <td className="px-3 py-2.5">
                         {editingId === k.id && canFullEdit
-                          ? <select className="field-input" value={draft.measurementDirection} onChange={(e) => setDraft({ ...draft, measurementDirection: e.target.value })}><option value="higher">Higher</option><option value="lower">Lower</option></select>
+                          ? <select className="field-input w-full" value={draft.measurementDirection} onChange={(e) => setDraft({ ...draft, measurementDirection: e.target.value })}><option value="higher">Higher</option><option value="lower">Lower</option></select>
                           : k.measurement_direction === 'lower' ? 'Lower is better' : 'Higher is better'}
                       </td>
-                      <td className="px-3 py-2.5 whitespace-nowrap">
+                      <td className="px-3 py-2.5 text-right tabular-nums">
                         {editingId === k.id && canFullEdit
-                          ? <input min="0.0001" type="number" step="any" className="field-input w-24" value={draft.weight} onChange={(e) => setDraft({ ...draft, weight: e.target.value })} />
+                          ? <input min="0.0001" type="number" step="any" className="field-input w-full text-right tabular-nums" value={draft.weight} onChange={(e) => setDraft({ ...draft, weight: e.target.value })} />
                           : (k.weight ?? 1)}
                       </td>
-                      <td className="px-3 py-2.5 whitespace-nowrap">
+                      <td className="px-3 py-2.5">
                         <span className="chip">{k.lifecycle_status || 'active'}</span>
-                        {k.rejection_reason && <div className="text-[10px] text-red-700 max-w-40">{k.rejection_reason}</div>}
+                        {k.rejection_reason && <div className="mt-1 break-words text-[10px] text-critical">{k.rejection_reason}</div>}
                       </td>
-                      <td className="px-3 py-2.5 whitespace-nowrap">
+                      <td className="px-3 py-2.5">
                         {editingId === k.id ? (
-                          <span className="flex gap-1">
+                          <span className="flex flex-wrap gap-1">
                             <button className="btn btn-sm btn-primary" disabled={busyId === k.id} onClick={() => saveEdit(k)}>Save</button>
                             <button className="btn btn-sm" disabled={busyId === k.id} onClick={() => { setEditingId(null); setDraft(null); }}>Cancel</button>
                           </span>
                         ) : (
-                          <span className="flex gap-1">
+                          <span className="flex flex-wrap gap-1">
                             {(canFullEdit || canEditTargets) && <button className="btn btn-sm" onClick={() => startEdit(k)}>Edit</button>}
                             {(canFullEdit || canManagePace) && <button className="btn btn-sm" onClick={() => setEditingPace(k)}>Pace</button>}
                             {canCreate && ['draft', 'rejected'].includes(k.lifecycle_status) && (

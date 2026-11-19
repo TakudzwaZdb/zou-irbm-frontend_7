@@ -8,7 +8,7 @@ const SECTIONS = [
   {
     id: 'performance-status',
     title: 'KPI status thresholds',
-    shortTitle: 'KPI status',
+    shortTitle: 'Status thresholds',
     hint: 'Set the percentage of target a KPI must reach to be classified as green or amber. Results below amber are red.',
     fields: [
       {
@@ -30,7 +30,7 @@ const SECTIONS = [
   {
     id: 'performance-alerts',
     title: 'Performance alerts',
-    shortTitle: 'Performance alerts',
+    shortTitle: 'Alert thresholds',
     hint: 'Set how far actual progress may fall behind expected baseline progress before an alert is raised.',
     fields: [
       {
@@ -52,7 +52,7 @@ const SECTIONS = [
   {
     id: 'submission-deadlines',
     title: 'Submission deadlines',
-    shortTitle: 'Deadlines',
+    shortTitle: 'Submission deadlines',
     hint: 'Set how long each reporting tier has to submit after the reporting month ends.',
     fields: [
       {
@@ -81,7 +81,7 @@ const SECTIONS = [
   {
     id: 'late-escalations',
     title: 'Late submission escalations',
-    shortTitle: 'Late escalations',
+    shortTitle: 'Late submission escalations',
     hint: 'Choose when overdue submissions are escalated to senior leadership.',
     fields: [
       {
@@ -103,7 +103,7 @@ const SECTIONS = [
   {
     id: 'red-kpi-escalations',
     title: 'Red KPI escalations',
-    shortTitle: 'Red KPIs',
+    shortTitle: 'Red KPI escalations',
     hint: 'Set how many consecutive red reporting periods trigger an escalation.',
     fields: [
       {
@@ -185,10 +185,17 @@ export default function Settings() {
     Number(form[field.key]) !== Number(settings[field.key] ?? field.fallback)
   )).length;
   const resultCount = filteredSections.reduce((total, section) => total + section.fields.length, 0);
+  const selectedSection = filteredSections.find((section) => section.id === activeSection)
+    || filteredSections[0]
+    || null;
+  const visibleSections = selectedSection ? [selectedSection] : [];
+  const visibleResultCount = visibleSections.reduce((total, section) => total + section.fields.length, 0);
 
   function navigateToSection(section) {
     setActiveSection(section.id);
-    document.getElementById(section.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    requestAnimationFrame(() => {
+      document.getElementById(section.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   }
 
   async function saveSetting(field) {
@@ -297,25 +304,26 @@ export default function Settings() {
       <div className="grid items-start gap-5 lg:grid-cols-[230px_minmax(0,1fr)]">
         <aside className="card p-3 lg:sticky lg:top-4">
           <div className="mb-2 px-2 py-1 text-[11px] font-bold uppercase tracking-[0.1em] text-ink-muted">
-            Settings categories
+            Configuration sections
           </div>
           <nav aria-label="Settings categories" className="flex gap-1 overflow-x-auto lg:flex-col lg:overflow-visible">
             {filteredSections.map((section) => {
-              const active = activeSection === section.id;
+              const active = selectedSection?.id === section.id;
               return (
                 <button
                   key={section.id}
                   type="button"
                   onClick={() => navigateToSection(section)}
+                  aria-controls={section.id}
                   aria-current={active ? 'location' : undefined}
-                  className={`flex flex-none items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] font-semibold transition-colors lg:w-full ${
+                  className={`flex flex-none items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left text-[12.5px] font-semibold transition-colors lg:w-full ${
                     active
-                      ? 'bg-accent-50 text-accent-700'
-                      : 'text-ink-secondary hover:bg-sunken hover:text-ink'
+                      ? 'border-accent-500/25 bg-accent-50 text-accent-700 shadow-sm'
+                      : 'border-transparent text-ink-secondary hover:border-line hover:bg-sunken hover:text-ink'
                   }`}
                 >
-                  <span>{section.shortTitle}</span>
-                  <span className={`rounded-full px-2 py-0.5 text-[10px] ${active ? 'bg-white/70 text-accent-700' : 'bg-sunken text-ink-muted'}`}>
+                  <span className="min-w-0">{section.shortTitle}</span>
+                  <span className={`flex-none rounded-full px-2 py-0.5 text-[10px] ${active ? 'bg-white/70 text-accent-700' : 'bg-sunken text-ink-muted'}`}>
                     {section.fields.length}
                   </span>
                 </button>
@@ -328,7 +336,7 @@ export default function Settings() {
         </aside>
 
         <div className="min-w-0 space-y-4">
-          {filteredSections.map((section) => (
+          {visibleSections.map((section) => (
             <section
               key={section.id}
               id={section.id}
@@ -436,7 +444,7 @@ export default function Settings() {
 
           {search && filteredSections.length > 0 && (
             <p className="px-1 text-[11px] text-ink-muted" aria-live="polite">
-              Showing {resultCount} matching {resultCount === 1 ? 'setting' : 'settings'}.
+              Showing {visibleResultCount} of {resultCount} matching {resultCount === 1 ? 'setting' : 'settings'} in {selectedSection.title}.
             </p>
           )}
         </div>
