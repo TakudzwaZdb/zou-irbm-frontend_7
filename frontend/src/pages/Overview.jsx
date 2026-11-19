@@ -537,11 +537,11 @@ function KpiSection({ title, kpis, className = '' }) {
 
         <button
           type="button"
-          className="text-[11.5px] text-accent-600 font-semibold hover:underline"
+          className="btn btn-sm"
           onClick={() => setShowKpis((visible) => !visible)}
           aria-expanded={showKpis}
         >
-          {showKpis ? 'Hide KPIs' : 'Click to view KPIs'}
+          {showKpis ? 'Hide KPI details' : `View KPI details (${kpis.length})`}
         </button>
       </div>
 

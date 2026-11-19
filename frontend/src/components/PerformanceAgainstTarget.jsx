@@ -487,10 +487,13 @@ function SummaryCard({ label, value, className = '', status, description, visual
 function KpiPerformanceTable({ kpis, periodLabel }) {
   return (
     <details className="card mt-5">
-      <summary className="cursor-pointer font-display font-bold text-[14px]">
-        KPI performance detail <span className="text-[11px] text-ink-muted font-normal">— {kpis.length} KPIs · {periodLabel}</span>
+      <summary className="cursor-pointer rounded-lg border border-line bg-sunken/50 px-3 py-2.5 font-display font-bold text-[14px]">
+        <span className="flex flex-wrap items-center justify-between gap-2">
+          <span>KPI performance detail</span>
+          <span className="text-[11px] font-medium text-ink-muted">{kpis.length} KPIs · {periodLabel}</span>
+        </span>
       </summary>
-      <div className="overflow-x-auto mt-3">
+      <div className="mt-3 max-h-[65vh] overflow-auto rounded-xl border border-line bg-surface shadow-sm">
         <table className="w-full min-w-[980px] text-[12px]">
           <caption className="sr-only">KPI target performance, baseline progress, and approved milestone performance for {periodLabel}</caption>
           <thead>

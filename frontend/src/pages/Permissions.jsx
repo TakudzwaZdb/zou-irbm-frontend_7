@@ -822,8 +822,8 @@ export default function Permissions() {
 
           <span className="text-accent-600 font-semibold text-[12px]">
             {rolesOpen
-              ? 'Hide ▲'
-              : 'Click to view ▼'}
+              ? 'Hide role list'
+              : 'View role catalogue'}
           </span>
 
         </button>
@@ -832,8 +832,7 @@ export default function Permissions() {
           <>
 
             <p className="text-[12px] text-ink-muted mt-1">
-              Click anywhere on a role to manage
-              its permissions.
+              Select a role row to review its assigned users and permission grants.
             </p>
 
             {/* =================================================
@@ -1114,8 +1113,8 @@ export default function Permissions() {
 
           <span className="text-accent-600 font-semibold text-[12px]">
             {usersOpen
-              ? 'Hide ▲'
-              : 'Click to view ▼'}
+              ? 'Hide account list'
+              : 'View account list'}
           </span>
 
         </button>
@@ -1124,9 +1123,7 @@ export default function Permissions() {
           <>
 
             <p className="text-[12px] text-ink-muted mt-1">
-              Check one person and use "Assign role" to set their role and scope together. For multiple people,
-              "Assign role" changes their role while preserving their existing scopes. Click any person's row
-              to change only their organisation scope.
+              Assign a role to one or more accounts. Single-account changes can include a scope update; bulk assignments preserve each account's existing scope.
             </p>
 
             {/* =================================================

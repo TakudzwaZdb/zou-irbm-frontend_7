@@ -57,6 +57,7 @@
   --color-ink-muted: #6e6c65;
   --color-line: rgb(21 20 15 / 0.15);
   --color-line-strong: rgb(21 20 15 / 0.25);
+  --color-table-row-hover: #edf3fa;
 }
 
 /* System preference ("system" theme choice — the default until someone
@@ -72,6 +73,13 @@
     --color-ink-muted: #8f8c82;
     --color-line: rgb(245 244 240 / 0.16);
     --color-line-strong: rgb(245 244 240 / 0.28);
+    --color-table-row-hover: #203046;
+    --color-accent-50: #182b40;
+    --color-accent-100: #203d5d;
+    --color-accent-400: #83b9f4;
+    --color-accent-500: #2767a7;
+    --color-accent-600: #95c6ff;
+    --color-accent-700: #bedcff;
   }
 }
 /* Explicit "dark" choice — wins over system preference either way. */
@@ -84,6 +92,13 @@
   --color-ink-muted: #8f8c82;
   --color-line: rgb(245 244 240 / 0.16);
   --color-line-strong: rgb(245 244 240 / 0.28);
+  --color-table-row-hover: #203046;
+  --color-accent-50: #182b40;
+  --color-accent-100: #203d5d;
+  --color-accent-400: #83b9f4;
+  --color-accent-500: #2767a7;
+  --color-accent-600: #95c6ff;
+  --color-accent-700: #bedcff;
 }
 
 /* Overview pages use accent and RAG colors over large, tinted panels as
@@ -144,6 +159,33 @@
     font-size-adjust: 0.62;
     line-height: 1.55;
     @apply bg-page text-ink antialiased;
+  }
+  table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    color: var(--color-ink);
+  }
+  thead {
+    background-color: var(--color-sunken);
+  }
+  th {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background-color: var(--color-sunken);
+    color: var(--color-ink-secondary);
+    font-size: 0.6875rem;
+    font-weight: 800;
+    letter-spacing: 0.075em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  tbody tr {
+    transition: background-color 140ms ease;
+  }
+  tbody tr:hover {
+    background-color: var(--color-table-row-hover);
   }
   h1, h2, h3, h4 {
     font-family: var(--font-display);

@@ -260,48 +260,59 @@ export default function Users() {
             )}
           </p>
         </div>
-        <input
-          className="field-input w-auto min-w-[280px]"
-          placeholder="Search name, email, role, unit…"
-          aria-label="Search users"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
       </div>
-
-      {users && (
-        <p className="text-[11.8px] text-ink-muted mb-2.5">
-          Showing {filtered.length} of {users.length} account{users.length === 1 ? '' : 's'}{q.trim() ? ` matching "${q.trim()}"` : ''}.
-        </p>
-      )}
 
       {filtered?.length === 0 && <div className="card text-center text-ink-muted py-8">No accounts match that search.</div>}
 
       <div className="card mt-4">
-        <button type="button" className="w-full flex items-center justify-between text-left" onClick={() => setUsersOpen((value) => !value)} aria-expanded={usersOpen}>
-          <span className="font-display font-bold text-[14px] flex items-center gap-2">
-            Users
-            <span className="chip">{filtered?.length || 0}</span>
-          </span>
-          <span className="text-accent-600 font-semibold text-[12px]">{usersOpen ? 'Hide ▲' : 'Click to view ▼'}</span>
-        </button>
+        <div className="flex items-center justify-between gap-4 flex-wrap rounded-xl border border-accent-700/15 bg-accent-50/50 p-3 sm:p-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="font-display text-[15px] font-bold text-ink">User directory</h2>
+              <span className="chip bg-surface text-accent-700">{filtered?.length || 0}</span>
+            </div>
+            {users && (
+              <p className="mt-1 text-[11.8px] text-ink-muted">
+                Showing {filtered.length} of {users.length} account{users.length === 1 ? '' : 's'}{q.trim() ? ` matching "${q.trim()}"` : ''}
+              </p>
+            )}
+          </div>
+          <div className="flex w-full items-center gap-2 sm:w-auto">
+            <input
+              type="search"
+              className="field-input min-w-0 flex-1 bg-surface sm:w-[320px] sm:flex-none"
+              placeholder="Search name, email, role, unit…"
+              aria-label="Search users"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+            <button
+              type="button"
+              className="btn btn-sm flex-none"
+              onClick={() => setUsersOpen((value) => !value)}
+              aria-expanded={usersOpen}
+            >
+              {usersOpen ? 'Hide account list' : 'Browse accounts'}
+            </button>
+          </div>
+        </div>
         {usersOpen && <>
           <p className="text-[12px] text-ink-muted mt-1">
             {canEdit ? 'Click anywhere on an account’s row to open its management popup.' : 'Click anywhere on an account’s row to view its full profile.'}
           </p>
-          <div className="mt-3 overflow-x-auto max-h-[65vh] overflow-y-auto rounded-lg border border-line">
-          <table className="w-full text-left text-[12px]">
-            <thead className="bg-sunken border-b border-line sticky top-0 z-10">
+          <div className="mt-3 overflow-x-auto max-h-[65vh] overflow-y-auto rounded-xl border border-line bg-surface shadow-sm">
+          <table className="w-full min-w-[980px] text-left text-[12.5px]">
+            <thead className="sticky top-0 z-10 border-b border-line-strong bg-sunken">
               <tr>
-                <th className="px-3 py-2 font-bold">User</th>
-                <th className="px-3 py-2 font-bold">Email</th>
-                <th className="px-3 py-2 font-bold">Title</th>
-                <th className="px-3 py-2 font-bold">Role</th>
-                <th className="px-3 py-2 font-bold">Organisation scope</th>
-                <th className="px-3 py-2 font-bold" />
+                <th className="px-4 py-3 text-[10px] font-extrabold uppercase tracking-[0.1em] text-ink-muted">User</th>
+                <th className="px-4 py-3 text-[10px] font-extrabold uppercase tracking-[0.1em] text-ink-muted">Email</th>
+                <th className="px-4 py-3 text-[10px] font-extrabold uppercase tracking-[0.1em] text-ink-muted">Title</th>
+                <th className="px-4 py-3 text-[10px] font-extrabold uppercase tracking-[0.1em] text-ink-muted">Role</th>
+                <th className="px-4 py-3 text-[10px] font-extrabold uppercase tracking-[0.1em] text-ink-muted">Organisation scope</th>
+                <th className="px-4 py-3 text-right text-[10px] font-extrabold uppercase tracking-[0.1em] text-ink-muted">Action</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-line">
       <PaginatedRows items={filtered || []} colSpan={6} emptyMessage="No accounts to display." renderRow={(u) => {
         const isSelf = u.id === me.id;
         const breadcrumb = scopeBreadcrumb(org, u);
@@ -331,30 +342,39 @@ export default function Users() {
             role="button"
             tabIndex={0}
             aria-label={`Manage ${u.name}`}
-            className="border-b border-line last:border-b-0 cursor-pointer transition-colors hover:bg-sunken"
+            className="group cursor-pointer transition-colors hover:bg-accent-50/70 focus-visible:bg-accent-50 focus-visible:outline-none"
           >
-            <td className="px-3 py-2.5 min-w-44">
+            <td className="px-4 py-3 min-w-52">
+              <div className="flex min-w-0 items-center gap-2.5">
               {u.avatar ? (
                 <button
                   type="button"
-                  className="w-7 h-7 rounded-full flex-none cursor-zoom-in"
+                  className="h-9 w-9 flex-none cursor-zoom-in overflow-hidden rounded-full ring-2 ring-surface shadow-sm"
                   title={`View ${u.name}'s photo`}
                   onClick={handleAvatarClick}
                 >
-                  <img src={u.avatar} alt="" className="w-7 h-7 rounded-full object-cover" />
+                  <img src={u.avatar} alt="" className="h-full w-full rounded-full object-cover" />
                 </button>
               ) : (
-                <span className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold flex-none ${avatarClass(u.id)}`}>
+                <span className={`flex h-9 w-9 flex-none items-center justify-center rounded-full text-[11px] font-bold shadow-sm ${avatarClass(u.id)}`}>
                   {initialsOf(u.name)}
                 </span>
               )}
-              <span className="truncate">{u.name}</span>
+              <span className="truncate font-semibold text-ink">{u.name}</span>
+              </div>
             </td>
-            <td className="px-3 py-2.5 text-ink-secondary">{u.email}</td>
-            <td className="px-3 py-2.5 text-ink-secondary">{u.title || '—'}</td>
-            <td className="px-3 py-2.5">{ROLE_LABEL[u.role] || u.role}{isSelf ? ' · you' : ''}</td>
-            <td className="px-3 py-2.5 text-ink-secondary">{breadcrumb?.join(' › ') || 'No scope'}</td>
-            <td className="px-3 py-2.5 text-accent-600 font-semibold text-[11px] whitespace-nowrap">{canEdit ? 'Click to manage ›' : 'Click to view ›'}</td>
+            <td className="px-4 py-3 text-ink-secondary">{u.email}</td>
+            <td className="px-4 py-3 text-ink-secondary">{u.title || <span className="text-ink-muted">—</span>}</td>
+            <td className="px-4 py-3">
+              <span className="chip chip-tag">{ROLE_LABEL[u.role] || u.role}</span>
+              {isSelf && <span className="ml-1.5 chip bg-accent-50 text-accent-700">You</span>}
+            </td>
+            <td className="px-4 py-3 text-[11.8px] leading-5 text-ink-secondary">{breadcrumb?.join(' › ') || <span className="text-ink-muted">No scope</span>}</td>
+            <td className="px-4 py-3 text-right">
+              <span className="whitespace-nowrap text-[11px] font-bold text-accent-700">
+                {canEdit ? 'Manage →' : 'View →'}
+              </span>
+            </td>
           </tr>
         );
       }} />
@@ -365,12 +385,12 @@ export default function Users() {
       </div>
 
       <div className="card mt-4">
-        <button className="w-full flex items-center justify-between text-left" onClick={() => setRemovedOpen((v) => !v)}>
+        <button type="button" className="w-full flex items-center justify-between text-left" onClick={() => setRemovedOpen((v) => !v)} aria-expanded={removedOpen}>
           <span className="font-display font-bold text-[14px] flex items-center gap-2">
             Recently Removed
             <span className={`chip ${removedUsers.length ? 'chip-rag-amber' : ''}`}>{removedUsers.length}</span>
           </span>
-          <span className="text-accent-600 font-semibold text-[12px]">{removedOpen ? 'Hide ▲' : 'Show ▼'}</span>
+          <span className="text-accent-600 font-semibold text-[12px]">{removedOpen ? 'Hide removed accounts' : 'Review removed accounts'}</span>
         </button>
         <p className="text-[12px] text-ink-muted mt-1">
           Accounts removed directly from this Directory — nothing here is deleted; restoring lets them sign in again

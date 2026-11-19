@@ -294,9 +294,9 @@ function OrganisationTable({ org, user, canManage, canCreateUnits, canEditUnits,
     <div className="card mt-4">
       <button type="button" className="w-full flex items-center justify-between text-left" onClick={() => { setOpen((value) => !value); if (open) { cancelEdit(); setSearch(''); } }} aria-expanded={open}>
         <span className="font-display font-bold text-[14px]">Organisation structure <span className="chip">{rows.length}</span></span>
-        <span className="text-accent-600 font-semibold text-[12px]">{open ? 'Hide ▲' : 'Click to view ▼'}</span>
+        <span className="text-accent-600 font-semibold text-[12px]">{open ? 'Hide records' : 'Browse records'}</span>
       </button>
-      <p className="text-[12px] text-ink-muted mt-1">Manage records in the table below, or click to collapse it.</p>
+      <p className="text-[12px] text-ink-muted mt-1">Choose a record type to review and manage active organisation entries.</p>
       {open && <div className="mt-3">
         <div className="flex items-end justify-between gap-3 flex-wrap mb-3">
           <div className="flex gap-1.5 flex-wrap">{entities.map((entity) => <NavButton key={entity.key} active={entity.key === entityKey} onClick={() => { cancelEdit(); setEntityKey(entity.key); }}>{entity.label}</NavButton>)}</div>

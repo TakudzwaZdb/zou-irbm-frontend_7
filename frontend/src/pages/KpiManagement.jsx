@@ -98,12 +98,12 @@ function RecentlyRemoved() {
 
   return (
     <div className="card mt-4">
-      <button className="w-full flex items-center justify-between text-left" onClick={() => setOpen((v) => !v)}>
+      <button type="button" className="w-full flex items-center justify-between text-left" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         <span className="font-display font-bold text-[14px] flex items-center gap-2">
           Recently Removed
           <span className={`chip ${total ? 'chip-rag-amber' : ''}`}>{total}</span>
         </span>
-        <span className="text-accent-600 font-semibold text-[12px]">{open ? 'Hide ▲' : 'Show ▼'}</span>
+        <span className="text-accent-600 font-semibold text-[12px]">{open ? 'Hide removed items' : 'Review removed KPIs and templates'}</span>
       </button>
       <p className="text-[12px] text-ink-muted mt-1">
         Every KPI and template removed from this catalogue — nothing here is deleted; restoring puts it straight
@@ -463,22 +463,23 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
           if (open) setSearch('');
         }}
         aria-expanded={open}
+        aria-controls="created-kpi-catalogue"
       >
         <span className="font-display font-bold text-[14px] flex items-center gap-2">
           Created KPIs
           <span className="chip">{activeKpis.length}</span>
         </span>
         <span className="text-accent-600 font-semibold text-[12px]">
-          {open ? 'Hide ▲' : 'Click to view ▼'}
+          {open ? 'Hide catalogue' : 'Browse KPI catalogue'}
         </span>
       </button>
 
       <p className="text-[12px] text-ink-muted mt-1">
-        Browse the KPI catalogue below and search the KPIs you need, or click to collapse it.
+        Search and review active KPIs in the catalogue.
       </p>
 
       {open && (
-        <div className="mt-3">
+        <div id="created-kpi-catalogue" className="mt-3">
           {canCreate && (
             <div className="mb-3">
               <button type="button" className="btn btn-primary btn-sm" onClick={() => setShowCreate(true)}>

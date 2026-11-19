@@ -359,14 +359,16 @@ function RecentlyRemoved({ org, removed, removedOpen, setRemovedOpen, busyKey, o
   return (
     <div className="card mb-4">
       <button
+        type="button"
         className="w-full flex items-center justify-between text-left"
         onClick={() => setRemovedOpen((v) => !v)}
+        aria-expanded={removedOpen}
       >
         <span className="font-display font-bold text-[14px] flex items-center gap-2">
           Recently Removed
           <span className={`chip ${total ? 'chip-rag-amber' : ''}`}>{total}</span>
         </span>
-        <span className="text-accent-600 font-semibold text-[12px]">{removedOpen ? 'Hide ▲' : 'Show ▼'}</span>
+        <span className="text-accent-600 font-semibold text-[12px]">{removedOpen ? 'Hide removed records' : 'Review removed records'}</span>
       </button>
       <p className="text-[12px] text-ink-muted mt-1">
         Everything removed from Organisation Maintenance — nothing here is deleted; restoring puts it straight back

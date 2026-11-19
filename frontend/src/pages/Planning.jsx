@@ -454,7 +454,7 @@ function PlanItemsEditor({ ownerType, ownerId, ownerName, proposals, cycleYear, 
           {canEdit && <button type="button" className="btn btn-sm" disabled={busy} onClick={openAddModal}>Add plans</button>}
           <button type="button" className="btn btn-sm" onClick={() => setTableOpen((open) => !open)}
             aria-expanded={tableOpen} aria-controls={`plans-table-${ownerType}-${ownerId}`}>
-            {tableOpen ? 'Hide plans' : `Show plans (${proposals.length})`}
+            {tableOpen ? 'Hide plans' : `Browse plans (${proposals.length})`}
           </button>
         </div>
       </div>
@@ -725,13 +725,13 @@ function CpuPlanReviewTable({ proposals, cycleYear, reload }) {
       <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
         <div>
           <h2 className="font-display font-bold text-[15px]">Plan approvals — {cycleYear}</h2>
-          <p className="text-[11.8px] text-ink-secondary mt-1">{waiting} awaiting CPU approval · click a plan row to review details</p>
+          <p className="text-[11.8px] text-ink-secondary mt-1">{waiting} awaiting CPU approval · select a plan row to review details</p>
         </div>
         <div className="flex items-center gap-2">
           <span className="chip chip-st-submitted">{waiting} pending</span>
           <button type="button" className="btn btn-sm" onClick={() => setTableOpen((open) => !open)}
             aria-expanded={tableOpen} aria-controls="cpu-plan-approval-table">
-            {tableOpen ? 'Hide table' : 'Show table'}
+            {tableOpen ? 'Hide approval queue' : `Open approval queue (${waiting})`}
           </button>
         </div>
       </div>
