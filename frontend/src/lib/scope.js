@@ -17,9 +17,18 @@ export function kpiSubId(org, kpi) {
   return unitSubId(org, employeeUnitId(org, kpi.owner_id));
 }
 export function isOwner(user, kpi) {
-  if (kpi.owner_type === 'sub') return user.role === 'rep' && user.scope_id === kpi.owner_id;
-  if (kpi.owner_type === 'unit') return user.role === 'unithead' && user.scope_id === kpi.owner_id;
-  return user.role === 'employee' && user.scope_type === 'employee' && user.scope_id === kpi.owner_id;
+  const scopeType = user.scope_type || ({
+    programme: 'programme',
+    rep: 'sub',
+    unithead: 'unit',
+    employee: 'employee',
+  })[user.role];
+  if (kpi.owner_type === 'sub' && scopeType === 'sub' && user.role === 'rep') return user.scope_id === kpi.owner_id;
+  if (kpi.owner_type === 'unit' && scopeType === 'unit' && user.role === 'unithead') return user.scope_id === kpi.owner_id;
+  if (kpi.owner_type === 'employee' && scopeType === 'employee' && user.role === 'employee') return user.scope_id === kpi.owner_id;
+  if (!user.permissions?.includes('submit_data_entries')) return false;
+  if (user.role === 'employee') return false;
+  return scopeType === kpi.owner_type && user.scope_id === kpi.owner_id;
 }
 // Mirrors backend/src/routes/kpis.js's isApprover exactly: single-stage,
 // one real approver per tier — Employee-owned by its Unit Head,
@@ -81,7 +90,7 @@ export function ownerKindLabel(kpi) {
 export const ROLE_LABEL = {
   exec: 'Executive', vc: 'Vice Chancellor', cpu: 'Corporate Planning Unit', ictadmin: 'ICT Systems Administrator',
   rep: 'Sub-programme Rep', unithead: 'Unit Head', employee: 'Employee', programme: 'Programme Head',
-  council: 'University Council',
+  council: 'University Council', director: 'Director', manager: 'Manager', bursar: 'Bursar',
 };
 
 // How deep Overview's Programme -> Sub-programme -> Unit -> Employee
@@ -383,47 +392,54 @@ export function valueStatus(valueRow) {
   return valueRow.status; // 'submitted' or 'approved' — trust it outright
 }
 
+// Mirrors backend/src/routes/plans.js's canManagePlanOwner. Used to keep
+// plan edit/submit controls consistent with the server's scope checks.
+export function canManagePlanOwner(user, ownerType, ownerId) {
+  const scopeType = user.scope_type || ({
+    programme: 'programme',
+    rep: 'sub',
+    unithead: 'unit',
+  })[user.role];
+  if (scopeType !== ownerType || user.scope_id !== ownerId) return false;
+  const ownerRole = { unit: 'unithead', sub: 'rep', programme: 'programme' }[ownerType];
+  return Boolean(ownerRole && (
+    user.role === ownerRole || user.permissions?.includes('submit_plan_budget')
+  ));
+}
+
 // Walks a scoped (non-global) user's own place in the org tree — programme →
 // sub-programme → unit → them — so Overview can show exactly where their
 // data sits instead of a generic "your reporting scope" message. Returns an
 // array of names (outermost first) or null if their scope can't be resolved
 // (e.g. their unit/sub was since removed).
 export function scopeBreadcrumb(org, user) {
-  if (user.role === 'programme') {
+  // Scope belongs to the user, not the role. Custom roles and built-in
+  // roles with a non-canonical scope must therefore resolve by scope_type.
+  // The role fallbacks keep older canonical assignments readable.
+  const type = user.scope_type || ({
+    programme: 'programme',
+    rep: 'sub',
+    unithead: 'unit',
+    employee: 'employee',
+  })[user.role];
+  if (type === 'programme') {
     const p = byId(org.programmes, user.scope_id);
     return p ? [p.name] : null;
   }
-  if (user.role === 'rep') {
+  if (type === 'sub') {
     const sub = byId(org.subs, user.scope_id);
     if (!sub) return null;
     const programme = byId(org.programmes, sub.programme_id);
     return [programme?.name, sub.name].filter(Boolean);
   }
-  if (user.role === 'unithead') {
+  if (type === 'unit') {
     const unit = byId(org.units, user.scope_id);
     if (!unit) return null;
     const sub = byId(org.subs, unit.sub_id);
     const programme = sub ? byId(org.programmes, sub.programme_id) : null;
-    return [programme?.name, sub?.name, unit.name].filter(Boolean);
+    return [programme?.name, sub?.name, `${unit.kind || 'Unit'}: ${unit.name}`].filter(Boolean);
   }
-  if (user.role === 'employee') {
-    if (user.scope_type === 'programme') {
-      const programme = byId(org.programmes, user.scope_id);
-      return programme ? [programme.name] : null;
-    }
-    if (user.scope_type === 'sub') {
-      const sub = byId(org.subs, user.scope_id);
-      if (!sub) return null;
-      const programme = byId(org.programmes, sub.programme_id);
-      return [programme?.name, sub.name].filter(Boolean);
-    }
-    if (user.scope_type === 'unit') {
-      const unit = byId(org.units, user.scope_id);
-      if (!unit) return null;
-      const sub = byId(org.subs, unit.sub_id);
-      const programme = sub ? byId(org.programmes, sub.programme_id) : null;
-      return [programme?.name, sub?.name, `${unit.kind || 'Unit'}: ${unit.name}`].filter(Boolean);
-    }
+  if (type === 'employee') {
     const ind = byId(org.employees, user.scope_id);
     if (!ind) return null;
     const unit = byId(org.units, ind.unit_id);

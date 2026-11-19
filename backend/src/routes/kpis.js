@@ -70,9 +70,18 @@ async function isAssignedEmployee(user, kpi) {
 // row instead, entered/submitted through the /contribution endpoints, and
 // reviewed by their Unit Head before it ever reaches this KPI's real value.
 function isOwner(user, kpi) {
-  if (kpi.owner_type === 'sub') return user.role === 'rep' && user.scope_id === kpi.owner_id;
-  if (kpi.owner_type === 'unit') return user.role === 'unithead' && user.scope_id === kpi.owner_id;
-  return user.role === 'employee' && user.scope_type === 'employee' && user.scope_id === kpi.owner_id;
+  const scopeType = user.scope_type || ({
+    programme: 'programme',
+    rep: 'sub',
+    unithead: 'unit',
+    employee: 'employee',
+  })[user.role];
+  if (kpi.owner_type === 'sub' && scopeType === 'sub' && user.role === 'rep') return user.scope_id === kpi.owner_id;
+  if (kpi.owner_type === 'unit' && scopeType === 'unit' && user.role === 'unithead') return user.scope_id === kpi.owner_id;
+  if (kpi.owner_type === 'employee' && scopeType === 'employee' && user.role === 'employee') return user.scope_id === kpi.owner_id;
+  if (!user.permissions?.includes('submit_data_entries')) return false;
+  if (user.role === 'employee') return false;
+  return scopeType === kpi.owner_type && user.scope_id === kpi.owner_id;
 }
 
 // Is this user the Unit Head who owns this Unit-scoped KPI? (The only person
@@ -686,7 +695,7 @@ router.put('/bulk-value', requirePerm('data_entry'), async (req, res) => {
   res.json({ values: await applyAll() });
 });
 
-router.post('/bulk-submit', requirePerm('data_entry'), async (req, res) => {
+router.post('/bulk-submit', requireAnyPerm('data_entry', 'submit_data_entries'), async (req, res) => {
   const { year, month, ids } = req.body || {};
   if (!year || !month) return res.status(400).json({ error: 'year and month are required.' });
   if (!Array.isArray(ids) || ids.length === 0) {
@@ -922,7 +931,7 @@ router.put('/:id/contribution/explanation', requirePerm('data_entry'), async (re
   res.json({ ok: true });
 });
 
-router.post('/:id/contribution/submit', requirePerm('data_entry'), async (req, res) => {
+router.post('/:id/contribution/submit', requireAnyPerm('data_entry', 'submit_data_entries'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
   if (!await isAssignedEmployee(req.user, kpi)) return res.status(403).json({ error: 'You are not assigned to contribute to this KPI.' });
   const { year, month } = req.body || {};
@@ -1328,7 +1337,7 @@ router.put('/:id/value', requirePerm('data_entry'), async (req, res) => {
   res.json({ value: await db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month) });
 });
 
-router.post('/:id/submit', requirePerm('data_entry'), async (req, res) => {
+router.post('/:id/submit', requireAnyPerm('data_entry', 'submit_data_entries'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
   if (!isOwner(req.user, kpi)) return res.status(403).json({ error: 'You can only submit KPIs you own.' });
   const { year, month } = req.body || {};

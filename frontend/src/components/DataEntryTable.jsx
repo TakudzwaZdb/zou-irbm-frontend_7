@@ -49,8 +49,10 @@ function pctOfTargetLabel(kpi, rawValue) {
 export default function DataEntryTable({ kpis, interactive = true }) {
   const {
     user, org, settings, values, period, reloadValues,
-    assignments, contributions, submissionWindow,
+    assignments, contributions, submissionWindow, hasPerm,
   } = useApp();
+  const canEdit = hasPerm('data_entry');
+  const canSubmit = canEdit || hasPerm('submit_data_entries');
   const submitBlocked = !submissionWindow?.allowed;
   const toast = useToast();
   const [selected, setSelected] = useState(() => new Set(interactive ? kpis.map((k) => k.id) : []));
@@ -110,7 +112,7 @@ export default function DataEntryTable({ kpis, interactive = true }) {
     const contribSubmitted = kpiContributions.filter((c) => c.status === 'submitted').length;
     const locked = valueRow && ['submitted', 'approved'].includes(valueRow.status);
     const canSubmit = valueRow && valueRow.status === 'draft' && (isShared ? valueRow.value != null : valueRow.entered_value != null);
-    const canManageTeam = interactive && user.role === 'unithead' && kpi.owner_type === 'unit';
+    const canManageTeam = interactive && canEdit && user.role === 'unithead' && kpi.owner_type === 'unit';
     return { valueRow, status, rag, variance, current, enteredValue, isShared, assignees, contribSubmitted, locked, canSubmit, canManageTeam };
   }
 
@@ -172,11 +174,12 @@ export default function DataEntryTable({ kpis, interactive = true }) {
     // Directly-entered rows go through bulk-value; a shared/automated row
     // has nothing to save here (its value comes from team contributions —
     // see recomputeUnitTotal on the backend), it only ever gets submitted.
-    const editable = rows.filter((k) => !rowFor(k).isShared);
+    const editable = canEdit ? rows.filter((k) => !rowFor(k).isShared) : [];
     const valueEntries = editable
       .map((k) => ({ id: k.id, value: entryFor(k, rowFor(k)) }))
       .map((e) => ({ id: e.id, value: e.value === '' ? null : Number(e.value) }));
 
+    let submittedCount = 0;
     setBusy(true);
     try {
       if (valueEntries.length > 0) {
@@ -187,7 +190,7 @@ export default function DataEntryTable({ kpis, interactive = true }) {
       // actually has a changed note (no bulk-note endpoint on the backend;
       // this is still one user action, not a separate "save note" trip per
       // KPI the way the old per-card layout required).
-      const noteWrites = rows
+      const noteWrites = (canEdit ? rows : [])
         .map((k) => ({ kpi: k, text: noteFor(k, rowFor(k)) }))
         .filter(({ kpi, text }) => text !== (rowFor(kpi).valueRow?.explanation || ''));
       await Promise.all(noteWrites.map(({ kpi, text }) =>
@@ -208,10 +211,15 @@ export default function DataEntryTable({ kpis, interactive = true }) {
         });
         if (submittable.length > 0) {
           await api('/kpis/bulk-submit', { method: 'POST', body: { year: period.year, month: period.month, ids: submittable.map((k) => k.id) } });
+          submittedCount = submittable.length;
         }
       }
 
-      toast(alsoSubmit ? `Saved and submitted ${rows.length} KPI${rows.length > 1 ? 's' : ''}.` : `Saved ${valueEntries.length} KPI${valueEntries.length === 1 ? '' : 's'}.`);
+      toast(alsoSubmit
+        ? submittedCount
+          ? `${canEdit ? 'Saved and s' : 'S'}ubmitted ${submittedCount} KPI${submittedCount > 1 ? 's' : ''}.`
+          : `Saved ${valueEntries.length} KPI${valueEntries.length === 1 ? '' : 's'}; no saved values were ready to submit.`
+        : `Saved ${valueEntries.length} KPI${valueEntries.length === 1 ? '' : 's'}.`);
       setEntries({});
       setNotes({});
       await reloadValues();
@@ -231,15 +239,17 @@ export default function DataEntryTable({ kpis, interactive = true }) {
           <span className="text-[11.8px] text-ink-secondary">
             {selected.size} of {kpis.length} selected
           </span>
-          <button className="btn btn-sm ml-auto" disabled={busy || selected.size === 0} onClick={() => saveSelected(false)}>
-            Save selected
-          </button>
+          {canEdit && (
+            <button className="btn btn-sm ml-auto" disabled={busy || selected.size === 0} onClick={() => saveSelected(false)}>
+              Save selected
+            </button>
+          )}
           <button
-            className="btn btn-sm btn-primary" disabled={busy || selected.size === 0 || submitBlocked}
+            className="btn btn-sm btn-primary" disabled={!canSubmit || busy || selected.size === 0 || submitBlocked}
             title={submitBlocked ? (submissionWindow?.message || 'Submissions are not open for this period.') : undefined}
             onClick={() => saveSelected(true)}
           >
-            Save &amp; submit selected
+            {canEdit ? 'Save & submit selected' : 'Submit selected'}
           </button>
         </div>
       )}
@@ -266,7 +276,7 @@ export default function DataEntryTable({ kpis, interactive = true }) {
           <tbody>
             <PaginatedRows items={kpis} colSpan={interactive ? 10 : 9} emptyMessage="No KPIs in this reporting scope." renderRow={(kpi) => {
               const r = rowFor(kpi);
-              const rowInteractive = interactive && !r.locked;
+              const rowInteractive = interactive && canEdit && !r.locked;
               const teamOpen = expandedTeamId === kpi.id;
               return (
                 <Fragment key={kpi.id}>

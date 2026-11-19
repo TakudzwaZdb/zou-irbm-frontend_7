@@ -4,7 +4,7 @@ import { useConfirm } from '../context/ConfirmContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
 import PaginatedRows from '../components/PaginatedRows.jsx';
-import { yearRange } from '../lib/scope.js';
+import { canManagePlanOwner, yearRange } from '../lib/scope.js';
 
 const STATUS_LABEL = { draft: 'Draft', returned: 'Returned', submitted: 'Submitted', approved: 'Approved' };
 
@@ -219,6 +219,14 @@ export default function Planning() {
   const [cycleYear, setCycleYear] = useState(now + 1);
   const [data, setData] = useState(null);
   const [pdfBusy, setPdfBusy] = useState(false);
+  const scopeType = user.scope_type || ({
+    programme: 'programme',
+    rep: 'sub',
+    unithead: 'unit',
+    employee: 'employee',
+  })[user.role];
+  const isInstitutionalReadOnly = ['exec', 'vc', 'ictadmin', 'employee'].includes(user.role);
+  const hasScopedPlanningPanel = !['cpu', 'council', 'exec', 'vc', 'ictadmin', 'employee'].includes(user.role);
 
   async function load(year) {
     try { setData(await api(`/plans?year=${year ?? cycleYear}`)); } catch (err) { toast(err.message, 'err'); }
@@ -253,12 +261,19 @@ export default function Planning() {
       </div>
 
       {!data && <div className="text-ink-muted text-[13px]">Loading…</div>}
-      {data && user.role === 'unithead' && <UnitPanel data={data} cycleYear={cycleYear} reload={() => load()} />}
-      {data && user.role === 'rep' && <RepPanel data={data} cycleYear={cycleYear} reload={() => load()} />}
-      {data && user.role === 'programme' && <ProgrammeHeadPanel data={data} cycleYear={cycleYear} reload={() => load()} />}
       {data && user.role === 'cpu' && <CpuPanel data={data} cycleYear={cycleYear} reload={() => load()} />}
       {data && user.role === 'council' && <CouncilPanel data={data} cycleYear={cycleYear} />}
-      {data && ['exec', 'vc', 'ictadmin', 'employee'].includes(user.role) && <ReadOnlyPanel data={data} />}
+      {data && hasScopedPlanningPanel && scopeType === 'unit' && <UnitPanel data={data} cycleYear={cycleYear} reload={() => load()} />}
+      {data && hasScopedPlanningPanel && scopeType === 'sub' && <RepPanel data={data} cycleYear={cycleYear} reload={() => load()} />}
+      {data && hasScopedPlanningPanel && scopeType === 'programme' && <ProgrammeHeadPanel data={data} cycleYear={cycleYear} reload={() => load()} />}
+      {data && (isInstitutionalReadOnly || (hasScopedPlanningPanel && scopeType === 'employee')) && (
+        <ReadOnlyPanel data={data} showUniversity={isInstitutionalReadOnly} />
+      )}
+      {data && hasScopedPlanningPanel && !scopeType && (
+        <div className="card text-center text-ink-muted py-8">
+          Assign an organisation scope to this account to view plans for its area.
+        </div>
+      )}
     </div>
   );
 }
@@ -298,8 +313,12 @@ function RepPanel({ data, cycleYear, reload }) {
 }
 
 function PlanItemsEditor({ ownerType, ownerId, ownerName, proposals, cycleYear, reload }) {
+  const { user, hasPerm } = useApp();
   const confirm = useConfirm();
   const toast = useToast();
+  const canManageOwner = canManagePlanOwner(user, ownerType, ownerId);
+  const canEdit = canManageOwner && (hasPerm('data_entry') || hasPerm('approve_own_tier'));
+  const canSubmit = canManageOwner && (hasPerm('data_entry') || hasPerm('approve_own_tier') || hasPerm('submit_plan_budget'));
   const [drafts, setDrafts] = useState({});
   const [selected, setSelected] = useState(new Set());
   const [expandedId, setExpandedId] = useState(null);
@@ -425,10 +444,14 @@ function PlanItemsEditor({ ownerType, ownerId, ownerName, proposals, cycleYear, 
       <div className="flex items-start justify-between gap-3 flex-wrap mb-3">
         <div>
           <h2 className="font-display font-bold text-[14.5px]">{ownerName} plans — {cycleYear}</h2>
-          <p className="text-[11.8px] text-ink-secondary mt-1">Add separate plans, then select and submit multiple drafts together. Each submitted row is reviewed by CPU.</p>
+          <p className="text-[11.8px] text-ink-secondary mt-1">
+            {canEdit
+              ? 'Add separate plans, then select and submit multiple drafts together. Each submitted row is reviewed by CPU.'
+              : 'Select and submit existing draft plans. Draft details are read-only.'}
+          </p>
         </div>
         <div className="flex gap-2">
-          <button type="button" className="btn btn-sm" disabled={busy} onClick={openAddModal}>Add plans</button>
+          {canEdit && <button type="button" className="btn btn-sm" disabled={busy} onClick={openAddModal}>Add plans</button>}
           <button type="button" className="btn btn-sm" onClick={() => setTableOpen((open) => !open)}
             aria-expanded={tableOpen} aria-controls={`plans-table-${ownerType}-${ownerId}`}>
             {tableOpen ? 'Hide plans' : `Show plans (${proposals.length})`}
@@ -439,12 +462,12 @@ function PlanItemsEditor({ ownerType, ownerId, ownerName, proposals, cycleYear, 
         {tableOpen && (
           <>
           <div className="flex items-center gap-2 flex-wrap mb-2">
-            <button className="btn btn-sm" disabled={busy || !proposals.some((proposal) => proposal.status === 'draft')} onClick={selectAllDrafts}>
+            <button className="btn btn-sm" disabled={!canSubmit || busy || !proposals.some((proposal) => proposal.status === 'draft')} onClick={selectAllDrafts}>
               {selected.size ? 'Clear selection' : 'Select all drafts'}
             </button>
-            <button className="btn btn-sm" disabled={busy || !proposals.some((proposal) => proposal.status === 'draft')} onClick={saveDrafts}>Save all drafts</button>
-            <button className="btn btn-sm btn-primary" disabled={busy || selected.size === 0} onClick={submitSelected}>
-              {busy ? 'Working…' : `Save & submit selected${selected.size ? ` (${selected.size})` : ''}`}
+            {canEdit && <button className="btn btn-sm" disabled={busy || !proposals.some((proposal) => proposal.status === 'draft')} onClick={saveDrafts}>Save all drafts</button>}
+            <button className="btn btn-sm btn-primary" disabled={!canSubmit || busy || selected.size === 0} onClick={submitSelected}>
+              {busy ? 'Working…' : `${canEdit ? 'Save & submit' : 'Submit'} selected${selected.size ? ` (${selected.size})` : ''}`}
             </button>
           </div>
 
@@ -474,6 +497,8 @@ function PlanItemsEditor({ ownerType, ownerId, ownerName, proposals, cycleYear, 
                       expanded={expanded}
                       selected={selected.has(proposal.id)}
                       busy={busy}
+                      canEdit={canEdit}
+                      canSubmit={canSubmit}
                       onToggle={() => setExpandedId(expanded ? null : proposal.id)}
                       onSelect={() => toggleSelected(proposal.id)}
                       onChange={(field, value) => updateDraft(proposal.id, field, value)}
@@ -548,14 +573,15 @@ function PlanItemsEditor({ ownerType, ownerId, ownerName, proposals, cycleYear, 
   );
 }
 
-function FragmentPlanItemRow({ proposal, item, status, expanded, selected, busy, onToggle, onSelect, onChange, onDelete }) {
-  const editable = proposal.status === 'draft';
+function FragmentPlanItemRow({ proposal, item, status, expanded, selected, busy, canEdit, canSubmit, onToggle, onSelect, onChange, onDelete }) {
+  const editable = proposal.status === 'draft' && canEdit;
+  const submittable = proposal.status === 'draft' && canSubmit;
   return (
     <>
       <tr className="hover:bg-sunken/60">
         <td className="px-3 py-2 align-top">
           <input type="checkbox" aria-label={`Select ${item.planTitle || 'untitled plan'}`}
-            checked={selected} disabled={!editable} onChange={onSelect} />
+            checked={selected} disabled={!submittable} onChange={onSelect} />
         </td>
         <td className="px-3 py-2 align-top">
           <button type="button" className="text-left font-semibold text-accent-700 hover:underline" aria-expanded={expanded} onClick={onToggle}>
@@ -1030,7 +1056,10 @@ function CpuApprovalActions({ proposal, endpoint, cycleYear, reload, label }) {
   );
 }
 
-function ReadOnlyPanel({ data }) {
+function ReadOnlyPanel({ data, showUniversity }) {
+  if (!data.programmes.length && !showUniversity) {
+    return <div className="card text-center text-ink-muted py-8">No plans are visible in this account's organisation scope.</div>;
+  }
   return (
     <div>
       {data.programmes.map((p) => (
@@ -1044,17 +1073,19 @@ function ReadOnlyPanel({ data }) {
           <ReadOnlyPlanRows proposals={p.proposals || (p.proposal ? [p.proposal] : [])} />
         </div>
       ))}
-      <div className="card border-2 border-accent-500/20">
-        <div className="flex items-center gap-2 mb-1 flex-wrap">
-          <h2 className="font-display font-bold text-[15px]">University Annual Plan</h2>
+      {showUniversity && (
+        <div className="card border-2 border-accent-500/20">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <h2 className="font-display font-bold text-[15px]">University Annual Plan</h2>
+          </div>
+          <p className="text-[12px] text-ink-secondary">
+            Approved: <b>{fmtMoney(data.university.approvedBudget)}</b> · Provisional: <b>{fmtMoney(data.university.provisionalBudget)}</b>
+          </p>
+          {(data.university.proposals || (data.university.proposal ? [data.university.proposal] : [])).length
+            ? <ReadOnlyPlanRows proposals={data.university.proposals || [data.university.proposal]} />
+            : <p className="text-[12.6px] text-ink-muted mt-2">Not yet compiled by CPU for this cycle.</p>}
         </div>
-        <p className="text-[12px] text-ink-secondary">
-          Approved: <b>{fmtMoney(data.university.approvedBudget)}</b> · Provisional: <b>{fmtMoney(data.university.provisionalBudget)}</b>
-        </p>
-        {(data.university.proposals || (data.university.proposal ? [data.university.proposal] : [])).length
-          ? <ReadOnlyPlanRows proposals={data.university.proposals || [data.university.proposal]} />
-          : <p className="text-[12.6px] text-ink-muted mt-2">Not yet compiled by CPU for this cycle.</p>}
-      </div>
+      )}
     </div>
   );
 }

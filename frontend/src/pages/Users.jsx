@@ -15,11 +15,11 @@ import PaginatedRows from '../components/PaginatedRows.jsx';
 // scope at all — see the note above UserManagementDialog for why, and
 // OrgStructure.jsx's own note on why its former, separate, scope-blind
 // role-change control was removed rather than also reading from here.
-export const ROLES = ['exec', 'vc', 'cpu', 'ictadmin', 'rep', 'unithead', 'employee', 'programme', 'council'];
+export const ROLES = ['exec', 'vc', 'cpu', 'ictadmin', 'rep', 'unithead', 'employee', 'programme', 'council', 'director', 'manager', 'bursar'];
 export const ROLE_LABEL = {
   exec: 'Executive', vc: 'Vice Chancellor', cpu: 'Corporate Planning Unit', ictadmin: 'ICT Systems Administrator',
   rep: 'Sub-programme Rep', unithead: 'Unit Head', employee: 'Employee', programme: 'Programme Head',
-  council: 'University Council',
+  council: 'University Council', director: 'Director', manager: 'Manager', bursar: 'Bursar',
 };
 export const UNIT_KIND_OPTIONS = ['All organisation units', 'Unit', 'Department', 'Faculty', 'Region', 'Regional Campus'];
 const OVERVIEW_LIMIT_LABEL = {

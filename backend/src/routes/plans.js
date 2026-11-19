@@ -73,13 +73,34 @@ function httpError(status, message) {
   return error;
 }
 
-function isUnitOwner(user, unitId) { return user.role === 'unithead' && user.scope_id === unitId; }
-function isSubOwner(user, subId) { return user.role === 'rep' && user.scope_id === subId; }
+function assignedScopeType(user) {
+  return user.scope_type || ({
+    programme: 'programme',
+    rep: 'sub',
+    unithead: 'unit',
+  })[user.role] || null;
+}
+function canSubmitScopedPlan(user, ownerType, ownerId) {
+  return user.permissions?.includes('submit_plan_budget')
+    && assignedScopeType(user) === ownerType
+    && user.scope_id === ownerId;
+}
+function isUnitOwner(user, unitId) {
+  return (user.role === 'unithead' && assignedScopeType(user) === 'unit' && user.scope_id === unitId)
+    || canSubmitScopedPlan(user, 'unit', unitId);
+}
+function isSubOwner(user, subId) {
+  return (user.role === 'rep' && assignedScopeType(user) === 'sub' && user.scope_id === subId)
+    || canSubmitScopedPlan(user, 'sub', subId);
+}
 // A Programme Head's real, server-enforced scope check — same pattern as
 // isUnitOwner/isSubOwner above: role AND scope_id must both match, never
 // trusting programmes.head_user_id (display-only, like units.head_user_id /
 // subs.rep_user_id elsewhere in this app).
-function isProgrammeHeadOwner(user, programmeId) { return user.role === 'programme' && user.scope_id === programmeId; }
+function isProgrammeHeadOwner(user, programmeId) {
+  return (user.role === 'programme' && assignedScopeType(user) === 'programme' && user.scope_id === programmeId)
+    || canSubmitScopedPlan(user, 'programme', programmeId);
+}
 
 function canManagePlanOwner(user, ownerType, ownerId) {
   if (ownerType === 'unit') return isUnitOwner(user, ownerId);
@@ -250,13 +271,14 @@ router.put('/items/drafts', requireAnyPerm('data_entry', 'approve_own_tier'), as
   res.json({ ok: true, saved: ids.length });
 });
 
-router.post('/items/submit', requireAnyPerm('data_entry', 'approve_own_tier'), async (req, res) => {
+router.post('/items/submit', requireAnyPerm('data_entry', 'approve_own_tier', 'submit_plan_budget'), async (req, res) => {
   const { items } = req.body || {};
   let ids;
   try { ids = parseItemIds(items); } catch (error) {
     if (error.httpStatus) return res.status(error.httpStatus).json({ error: error.message });
     throw error;
   }
+  const canEditDrafts = req.user.permissions?.includes('data_entry') || req.user.permissions?.includes('approve_own_tier');
   try {
     await db.transaction(async () => {
       let batchOwner = null;
@@ -267,13 +289,26 @@ router.post('/items/submit', requireAnyPerm('data_entry', 'approve_own_tier'), a
           throw httpError(400, 'Submit selected plans from the same organisation and cycle together.');
         }
         batchOwner = owner;
-        const fields = parsePlanItem(items[index], true);
-        const result = await db.prepare(`
-          UPDATE plan_proposals
-          SET plan_title = ?, narrative = ?, targets = ?, budget = ?,
-              status = 'submitted', submitted_at = datetime('now'), approved_at = NULL, return_comment = NULL
-          WHERE id = ? AND status = 'draft'
-        `).run(fields.planTitle, fields.narrative, fields.targets, fields.budget, row.id);
+        const fields = canEditDrafts
+          ? parsePlanItem(items[index], true)
+          : parsePlanItem({
+            planTitle: row.plan_title || `Plan ${row.id}`,
+            narrative: row.narrative,
+            targets: row.targets,
+            budget: row.budget,
+          }, true);
+        const result = canEditDrafts
+          ? await db.prepare(`
+            UPDATE plan_proposals
+            SET plan_title = ?, narrative = ?, targets = ?, budget = ?,
+                status = 'submitted', submitted_at = datetime('now'), approved_at = NULL, return_comment = NULL
+            WHERE id = ? AND status = 'draft'
+          `).run(fields.planTitle, fields.narrative, fields.targets, fields.budget, row.id)
+          : await db.prepare(`
+            UPDATE plan_proposals
+            SET status = 'submitted', submitted_at = datetime('now'), approved_at = NULL, return_comment = NULL
+            WHERE id = ? AND status = 'draft'
+          `).run(row.id);
         if (!result.changes) throw httpError(409, `Plan "${fields.planTitle}" is no longer a draft.`);
         await db.prepare(`
           INSERT INTO audit_log (user_id, action, entity, entity_id, detail)
@@ -417,17 +452,6 @@ router.get('/', async (req, res) => {
     });
   }
 
-  // Every budget/count above is computed from the FULL org tree first — a
-  // Unit's own approvedBudget and a Sub/Programme's roll-up must stay
-  // genuinely complete regardless of who's asking. Only the ARRAYS handed
-  // back to the client are narrowed here, same read-visibility boundary as
-  // kpis.js/compliance.js (see utils/scope.js) — except an Employee keeps
-  // the full institutional compilation here, same as exec/ictadmin/cpu/
-  // council already did and pages/Planning.jsx's ReadOnlyPanel already shows
-  // them: nothing anyone could already reach through the app changes, only
-  // a Unit Head/Sub Rep/Programme Head's direct-API reach into a different
-  // branch — one their own panel never requested in the first place — is
-  // now actually blocked server-side too.
   const seesWholePlan = isGlobalReader(req.user) || req.user.role === 'employee';
   let visibleUnits = units, visibleSubs = subs, visibleProgrammes = programmes;
   if (!seesWholePlan) {
@@ -439,15 +463,19 @@ router.get('/', async (req, res) => {
     for (const p of programmes) { if (await canReadProgramme(req.user, p.id)) visibleProgrammes.push(p); }
   }
 
-  const universityApprovedBudget = programmes.reduce((sum, p) => sum + p.approvedBudget, 0);
-  const universityProvisionalBudget = programmes.reduce((sum, p) => sum + p.provisionalBudget, 0);
+  const universityApprovedBudget = seesWholePlan
+    ? programmes.reduce((sum, p) => sum + p.approvedBudget, 0)
+    : null;
+  const universityProvisionalBudget = seesWholePlan
+    ? programmes.reduce((sum, p) => sum + p.provisionalBudget, 0)
+    : null;
 
   res.json({
     cycleYear, units: visibleUnits, subs: visibleSubs, programmes: visibleProgrammes,
     university: {
       approvedBudget: universityApprovedBudget, provisionalBudget: universityProvisionalBudget,
-      proposals: await getRows(cycleYear, 'university', null),
-      proposal: (await getRow(cycleYear, 'university', null)) || null,
+      proposals: seesWholePlan ? await getRows(cycleYear, 'university', null) : [],
+      proposal: seesWholePlan ? (await getRow(cycleYear, 'university', null)) || null : null,
     },
   });
 });
@@ -474,7 +502,7 @@ router.put('/units/:unitId', requirePerm('data_entry'), async (req, res) => {
   res.json({ proposal: row });
 });
 
-router.post('/units/:unitId/submit', requirePerm('data_entry'), async (req, res) => {
+router.post('/units/:unitId/submit', requireAnyPerm('data_entry', 'submit_plan_budget'), async (req, res) => {
   const unitId = Number(req.params.unitId);
   if (!isUnitOwner(req.user, unitId)) return res.status(403).json({ error: 'You can only submit your own unit\'s plan proposal.' });
   const { cycleYear } = req.body || {};
@@ -536,7 +564,7 @@ router.put('/subs/:subId', requirePerm('data_entry'), async (req, res) => {
   res.json({ proposal: row });
 });
 
-router.post('/subs/:subId/submit', requirePerm('data_entry'), async (req, res) => {
+router.post('/subs/:subId/submit', requireAnyPerm('data_entry', 'submit_plan_budget'), async (req, res) => {
   const subId = Number(req.params.subId);
   if (!isSubOwner(req.user, subId)) return res.status(403).json({ error: 'You can only submit your own sub-programme\'s plan proposal.' });
   const { cycleYear } = req.body || {};
@@ -600,7 +628,7 @@ router.put('/programmes/:programmeId', requireAnyPerm('approve_own_tier', 'data_
   res.json({ proposal: row });
 });
 
-router.post('/programmes/:programmeId/submit', requireAnyPerm('approve_own_tier', 'data_entry'), async (req, res) => {
+router.post('/programmes/:programmeId/submit', requireAnyPerm('approve_own_tier', 'data_entry', 'submit_plan_budget'), async (req, res) => {
   const programmeId = Number(req.params.programmeId);
   if (req.user.role !== 'cpu' && !isProgrammeHeadOwner(req.user, programmeId)) {
     return res.status(403).json({ error: 'Only CPU or this Programme\'s own Programme Head submits its plan.' });

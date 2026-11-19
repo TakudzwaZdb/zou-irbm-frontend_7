@@ -15,3 +15,11 @@ test('Performance appears before Progress in overview and reports tabs', () => {
     assert.equal(NAV_CHILDREN[section][1].label, 'Progress');
   }
 });
+
+test('submission permissions expose data entry and annual plan pages', () => {
+  const permissions = new Set(['submit_data_entries', 'submit_plan_budget']);
+  const nav = currentNav({ role: 'manager' }, (key) => permissions.has(key));
+
+  assert.ok(nav.includes('entry'));
+  assert.ok(nav.includes('planning'));
+});

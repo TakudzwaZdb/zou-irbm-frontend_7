@@ -14,14 +14,14 @@ import PaginatedRows from '../components/PaginatedRows.jsx';
 // Organisation scope is a property of the PERSON, not the role (see
 // routes/users.js's PATCH /:id/role) — a role no longer declares or
 // requires one, so there's nothing here to pick when creating a role.
-// Every role EXCEPT the built-in Employee role can optionally be given a
-// Programme/Sub-programme/Unit scope, freely, per person — "Employee" is
-// deliberately not one of these choices since Employee is a role, not a
-// scope type; ScopePicker below only offers it when role === 'employee'.
+// Every role can optionally be given a Programme/Sub-programme/Unit or
+// individual Employee scope. The built-in Employee role still requires
+// some scope to be selected.
 const GENERAL_SCOPE_TYPE_OPTIONS = [
   { key: 'programme', label: 'Programme' },
   { key: 'sub', label: 'Sub-programme' },
   { key: 'unit', label: 'Unit / Department / Faculty / Region' },
+  { key: 'employee', label: 'Employee' },
 ];
 // Only the built-in Employee role still needs a specific organisation scope
 // picked for every person holding it — see PATCH /:id/role. No other role
@@ -49,10 +49,9 @@ export default function Permissions() {
   // (which now only searches Roles), so filtering the Users table doesn't
   // depend on a search box that's visually anchored to a different table.
   const [userSearch, setUserSearch] = useState('');
-  // Both tables on this page start collapsed — a click on the header is
-  // required to view either the Roles table or the Users list, same as
-  // every other collapsible table across the app.
-  const [rolesOpen, setRolesOpen] = useState(false);
+  // Keep the Roles table visible so built-in/custom roles and their grants
+  // are immediately discoverable; the larger Users list stays collapsed.
+  const [rolesOpen, setRolesOpen] = useState(true);
   const [usersOpen, setUsersOpen] = useState(false);
 
   const [assignRole, setAssignRole] = useState('');
@@ -166,16 +165,9 @@ export default function Permissions() {
     );
   }
 
-  // Only the built-in Employee role needs a specific organisation scope
-  // picked per person (see BULK_EXCLUDED_ROLE_KEYS above) — there's one
-  // "Assign role" button above the Users table (see openAssignForSelection):
-  // checking exactly one person opens the role modal, which can assign any
-  // role, Employee included (with an inline scope picker only for
-  // Employee); checking more than one opens the bulk modal instead, which
-  // excludes Employee from its role chips — it has no per-user scope field,
-  // and Employee always needs one picked per person. Every other role's
-  // scope, if any, is changed entirely separately — click that person's row
-  // in the table to open "Change scope" (see changeScopeUser below).
+  // The single-person "Assign role" modal can assign any role and its
+  // optional scope together. The bulk modal excludes Employee because it
+  // requires a different scope picked for each person.
 
   /*
    * =========================================================
@@ -612,17 +604,10 @@ export default function Permissions() {
 
   /*
    * =========================================================
-   * ASSIGN ROLE (per person or in bulk) — role only
+   * ASSIGN ROLE (per person or in bulk)
    *
-   * Role and organisation scope are two independent decisions now (see
-   * routes/users.js's PATCH /:id/role header note): this modal changes
-   * ONLY the role and sends no scope fields at all, so PATCH /:id/role
-   * leaves whatever scope the person already had exactly as it was. The
-   * one exception is the built-in Employee role, which still needs a
-   * specific scope picked in the SAME action (it can't exist without one),
-   * so the role picker below shows an inline scope picker only when
-   * Employee is chosen. Every other role's scope is changed separately —
-   * click that person's row in the table to open "Change scope" instead.
+   * A single-person assignment updates role and scope together, while a
+   * bulk assignment changes roles and preserves each person's scope.
    * =========================================================
    */
 
@@ -665,45 +650,33 @@ export default function Permissions() {
     }
   }
 
-  // Only the Employee role needs anything from the scope draft here — every
-  // other role change leaves scope untouched (see applyRoleAndScope below),
-  // so switching TO Employee seeds the picker from whatever the person
-  // already has, if it's a valid Employee scope; switching AWAY from
-  // Employee doesn't need to clear anything since a non-Employee role never
-  // reads or sends the scope draft at all.
-  function updateRoleDraft(user, newRole) {
-    setRoleDraft((draft) => ({ ...draft, [user.id]: newRole }));
-    if (newRole !== 'employee') return;
-    const seedScope = ['programme', 'sub', 'unit', 'employee'].includes(user.scope_type)
-      ? { type: user.scope_type, id: user.scope_id }
-      : { type: '', id: '' };
-    setScopeDraft((draft) => ({ ...draft, [user.id]: seedScope }));
-    const unit = seedScope.type === 'unit' ? org.units.find((item) => item.id === Number(seedScope.id)) : null;
-    setUnitKindDraft((draft) => ({ ...draft, [user.id]: unit?.kind || 'All organisation units' }));
+  // Scope is independent of role, so choosing a role never changes the
+  // current scope selection.
+  function updateRoleDraft(userId, newRole) {
+    setRoleDraft((draft) => ({ ...draft, [userId]: newRole }));
   }
 
   async function applyRoleAndScope(user) {
     const role = roleDraft[user.id] || user.role;
     const roleChanged = role !== user.role;
-    if (!roleChanged) return;
-    const isEmployee = role === 'employee';
-    const scope = isEmployee ? (scopeDraft[user.id] || { type: '', id: '' }) : null;
+    const scope = scopeDraft[user.id] || { type: user.scope_type || '', id: user.scope_id || '' };
+    const scopeChanged = String(scope.type || '') !== String(user.scope_type || '')
+      || String(scope.id || '') !== String(user.scope_id || '');
+    if (!roleChanged && !scopeChanged) return;
     const roleName = ROLE_LABEL[role] || role;
-    const scopeName = isEmployee ? scopeLabel(scope.type, scope.id, org) : '';
+    const scopeName = scopeLabel(scope.type, scope.id, org);
     if (!(await confirm({
-      title: `Change ${user.name}'s role to ${roleName}?`,
-      message: isEmployee
-        ? (scopeName ? `Scope: ${scopeName}.` : 'No organisation scope will be set.')
-        : 'Their organisation scope will not change.',
-      confirmLabel: 'Change role',
+      title: roleChanged ? `Change ${user.name}'s role to ${roleName}?` : `Update ${user.name}'s organisation scope?`,
+      message: roleChanged
+        ? `Scope: ${scopeName || 'No scope'}.`
+        : `Their role (${getUserRoleName(user)}) will not change. Scope: ${scopeName || 'No scope'}.`,
+      confirmLabel: roleChanged ? 'Apply changes' : 'Change scope',
     }))) return;
     setScopeBusyId(user.id);
     try {
-      const body = isEmployee
-        ? { role, scopeType: scope.type || null, scopeId: scope.id ? Number(scope.id) : null }
-        : { role };
+      const body = { role, scopeType: scope.type || null, scopeId: scope.id ? Number(scope.id) : null };
       await api(`/users/${user.id}/role`, { method: 'PATCH', body });
-      toast(`${user.name}'s role changed to ${roleName}.`);
+      toast(roleChanged ? `${user.name}'s role changed to ${roleName}.` : `${user.name}'s organisation scope updated.`);
       await load();
       setScopeManageUser(null);
       setSelectedUsers([]);
@@ -801,9 +774,8 @@ export default function Permissions() {
 
           <p className="text-[13px] text-ink-secondary max-w-[62ch]">
             Permissions are assigned to roles only — users receive access through the role assigned to their
-            account. Role and organisation scope are changed separately below: check one or more people and use
-            "Assign role" to change role, or click any person's row to change just their scope. See the Users
-            page for the plain, view-only account directory.
+            account. For one person, "Assign role" lets you set the role and organisation scope together; click
+            any person's row to change only their scope. See the Users page for the plain, view-only account directory.
           </p>
 
         </div>
@@ -1044,9 +1016,8 @@ export default function Permissions() {
               only removed if they're custom (see the roles table below). A
               new role starts with no permissions granted — open it from
               the roles table once it appears to grant some. Organisation
-              scope isn't set here at all — it's picked per person, after
-              the role exists, by clicking that person's row further down
-              this page and using "Change scope".
+              scope is selected per person while assigning the role, or
+              changed later by clicking that person's row.
             </p>
 
             <form
@@ -1153,10 +1124,9 @@ export default function Permissions() {
           <>
 
             <p className="text-[12px] text-ink-muted mt-1">
-              Role and organisation scope are changed separately now. Check one or more people below and use
-              "Assign role" to change their role only — Employee is the one exception, since it needs a scope
-              picked in that same step. Click anywhere on a single person's row to open "Change scope" instead,
-              which changes their organisation scope without touching their role at all.
+              Check one person and use "Assign role" to set their role and scope together. For multiple people,
+              "Assign role" changes their role while preserving their existing scopes. Click any person's row
+              to change only their organisation scope.
             </p>
 
             {/* =================================================
@@ -1164,8 +1134,8 @@ export default function Permissions() {
                 this single button: it reads selectedUsers and opens either
                 the single-person modal (scopeManageUser) or the bulk modal
                 (bulkAssignOpen) — see openAssignForSelection() above.
-                Changing scope is a completely separate action — click a
-                row (see the table below) rather than using this button.
+                Single-person assignments include a scope picker; bulk
+                assignments preserve each person's current scope.
                 ================================================= */}
 
             <div className="mt-3 mb-3 flex items-center gap-2 flex-wrap">
@@ -1533,17 +1503,14 @@ export default function Permissions() {
       )}
 
       {/* =====================================================
-          ASSIGN ROLE MODAL — role only, independent of scope
+          ASSIGN ROLE MODAL — per-person role and scope
 
           This is the ONE place any role, including the built-in Employee
           role, is actually assigned to a person — the bulk "Assign Roles
           to Users" control above deliberately excludes Employee (see
-          BULK_EXCLUDED_ROLE_KEYS). It changes ONLY the role: no scope
-          picker at all, UNLESS Employee is the role picked, since that one
-          role can't exist without a scope — see updateRoleDraft/
-          applyRoleAndScope above. Every other role's scope is left exactly
-          as it was; click that person's row in the table instead to open
-          "Change scope" separately. Escape, the backdrop, and Close all
+          BULK_EXCLUDED_ROLE_KEYS). This single-person modal updates role
+          and scope together, and allows scope-only changes too. Employee
+          still requires a scope. Escape, the backdrop, and Close all
           dismiss it without saving.
           ===================================================== */}
 
@@ -1552,9 +1519,8 @@ export default function Permissions() {
         const roleChanged = draftRole !== scopeManageUser.role;
         const isEmployee = draftRole === 'employee';
         const currentScope = scopeDraft[scopeManageUser.id] || { type: scopeManageUser.scope_type || '', id: scopeManageUser.scope_id || '' };
-        // Only the Employee role still requires a scope, picked in this
-        // same action since it can't exist without one — every other role
-        // is applied with no scope field at all (see applyRoleAndScope).
+        const scopeChanged = String(currentScope.type || '') !== String(scopeManageUser.scope_type || '')
+          || String(currentScope.id || '') !== String(scopeManageUser.scope_id || '');
         const missingRequiredScope = isEmployee && !currentScope.id;
         return (
         <div
@@ -1596,7 +1562,7 @@ export default function Permissions() {
                       type="button"
                       disabled={scopeBusyId === scopeManageUser.id}
                       aria-pressed={isSelected}
-                      onClick={() => updateRoleDraft(scopeManageUser, key)}
+                      onClick={() => updateRoleDraft(scopeManageUser.id, key)}
                       className={`rounded-md border px-2.5 py-1 text-[11.5px] font-semibold transition-colors ${
                         isSelected
                           ? 'bg-accent-50 text-accent-600 border-accent-600'
@@ -1610,34 +1576,25 @@ export default function Permissions() {
               </div>
             </div>
 
-            {isEmployee ? (
-              <>
-                <ScopePicker
-                  user={scopeManageUser}
-                  role={draftRole}
-                  org={org}
-                  scopeDraft={scopeDraft}
-                  setScopeDraft={setScopeDraft}
-                  unitKindDraft={unitKindDraft}
-                  setUnitKindDraft={setUnitKindDraft}
-                  disabled={scopeBusyId === scopeManageUser.id}
-                />
-                {missingRequiredScope && (
-                  <p className="text-[11.5px] text-critical mt-2">
-                    Employee needs an organisation scope — pick one above before applying.
-                  </p>
-                )}
-              </>
-            ) : (
-              <p className="text-[12px] text-ink-muted">
-                This person's organisation scope won't change — click their row in the table to change it separately.
+            <ScopePicker
+              user={scopeManageUser}
+              org={org}
+              scopeDraft={scopeDraft}
+              setScopeDraft={setScopeDraft}
+              unitKindDraft={unitKindDraft}
+              setUnitKindDraft={setUnitKindDraft}
+              disabled={scopeBusyId === scopeManageUser.id}
+            />
+            {missingRequiredScope && (
+              <p className="text-[11.5px] text-critical mt-2">
+                Employee needs an organisation scope — pick one above before applying.
               </p>
             )}
 
             <div className="flex justify-end mt-3">
               <button
                 className="btn btn-sm btn-primary"
-                disabled={!roleChanged || missingRequiredScope || scopeBusyId === scopeManageUser.id}
+                disabled={(!roleChanged && !scopeChanged) || missingRequiredScope || scopeBusyId === scopeManageUser.id}
                 onClick={() => applyRoleAndScope(scopeManageUser)}
               >
                 {scopeBusyId === scopeManageUser.id ? 'Applying…' : 'Apply'}
@@ -1809,17 +1766,9 @@ export default function Permissions() {
 }
 
 // Organisation scope is now a property of the PERSON, entirely free of the
-// DRAFT role being assigned (see the role picker above this in the modal),
-// with exactly one exception: the built-in Employee role always needs one
-// of Programme/Sub-programme/Unit/an individual employee record — every
-// other role, built-in or custom, gets the same three-way Programme/Sub-
-// programme/Unit choice (or "No scope"), entirely optional. "Employee" is
-// only ever offered as a scope choice when role === 'employee', never for
-// any other role — Employee is a role, not a scope type. Ported from
-// Users.jsx — see that file's own header note on why scope management
-// moved here.
-function ScopePicker({ user, role, org, scopeDraft, setScopeDraft, unitKindDraft, setUnitKindDraft, disabled = false }) {
-  const isEmployee = role === 'employee';
+// DRAFT role being assigned. Scope options stay the same regardless of
+// role; only the built-in Employee role requires a scope before saving.
+function ScopePicker({ user, org, scopeDraft, setScopeDraft, unitKindDraft, setUnitKindDraft, disabled = false }) {
   const current = scopeDraft[user.id] || { type: user.scope_type || '', id: user.scope_id || '' };
   const effectiveType = current.type;
   const selectedUnit = org.units.find((unit) => unit.id === Number(current.id));
@@ -1839,7 +1788,6 @@ function ScopePicker({ user, role, org, scopeDraft, setScopeDraft, unitKindDraft
       <select id={scopeTypeId} className="field-input py-1.5" value={current.type} disabled={disabled} onChange={(e) => { setScopeDraft((draft) => ({ ...draft, [user.id]: { type: e.target.value, id: '' } })); }}>
         <option value="">No scope</option>
         {GENERAL_SCOPE_TYPE_OPTIONS.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
-        {isEmployee && <option value="employee">Employee</option>}
       </select>
       {effectiveType === 'unit' && <select
         className="field-input py-1.5"

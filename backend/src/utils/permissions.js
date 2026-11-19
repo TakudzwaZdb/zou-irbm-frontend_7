@@ -6,6 +6,7 @@
 
 const PERMISSIONS = [
   { key: 'data_entry', label: 'Enter data for own scope', group: 'Data' },
+  { key: 'submit_data_entries', label: 'Submit KPI / data-entry submissions', group: 'Data' },
   { key: 'approve_own_tier', label: 'Review KPI submissions (Corporate Planning Unit only)', group: 'Data' },
   { key: 'apply_override', label: 'Apply manual overrides on automated KPIs', group: 'Data' },
   { key: 'edit_targets', label: 'Edit KPI baselines & targets', group: 'Framework' },
@@ -48,6 +49,7 @@ const PERMISSIONS = [
   { key: 'delete_employees', label: 'Delete Employees', group: 'Framework' },
   { key: 'manage_framework', label: 'Propose structural changes', group: 'Framework' },
   { key: 'submit_annual_plan', label: 'Compile & submit the university annual plan', group: 'Framework' },
+  { key: 'submit_plan_budget', label: 'Submit annual plans and budgets', group: 'Governance' },
   { key: 'approve_annual_plan', label: 'Approve or return annual plans and budgets (Corporate Planning Unit only)', group: 'Governance' },
   { key: 'manage_settings', label: 'Manage RAG thresholds & cutoffs', group: 'Admin' },
   { key: 'manage_users', label: 'Grant & revoke permissions', group: 'Admin' },
@@ -140,9 +142,9 @@ const DEFAULT_PERMS_BY_ROLE = {
     'manage_users',
     'apply_override',
   ],
-  rep: ['data_entry', 'view_overview', 'view_framework', 'view_performance_alerts', 'manage_performance_alerts', 'manage_corrective_actions'],
-  unithead: ['data_entry', 'view_overview', 'view_framework', 'view_performance_alerts', 'manage_performance_alerts', 'manage_corrective_actions'],
-  employee: ['data_entry', 'view_overview', 'view_framework', 'view_performance_alerts'],
+  rep: ['data_entry', 'submit_data_entries', 'submit_plan_budget', 'view_overview', 'view_framework', 'view_performance_alerts', 'manage_performance_alerts', 'manage_corrective_actions'],
+  unithead: ['data_entry', 'submit_data_entries', 'submit_plan_budget', 'view_overview', 'view_framework', 'view_performance_alerts', 'manage_performance_alerts', 'manage_corrective_actions'],
+  employee: ['data_entry', 'submit_data_entries', 'view_overview', 'view_framework', 'view_performance_alerts'],
   // A bare, scope-less, read-only account (see routes/org.js's POST
   // /employees) — identical to 'employee' minus 'data_entry', so
   // nothing about it can enter, submit, or edit anything; it can only look.
@@ -165,13 +167,16 @@ const DEFAULT_PERMS_BY_ROLE = {
   // user_permissions and role_permissions (see middleware/auth.js), this
   // takes effect immediately for every existing Programme Head account —
   // no backfill migration needed.
-  programme: ['data_entry', 'view_overview', 'view_framework', 'view_reports', 'view_performance_alerts', 'manage_performance_alerts', 'manage_corrective_actions'],
+  programme: ['data_entry', 'submit_plan_budget', 'view_overview', 'view_framework', 'view_reports', 'view_performance_alerts', 'manage_performance_alerts', 'manage_corrective_actions'],
   // Dead/unused key (not in db.js's BUILT_IN_ROLES) — kept in sync for
   // consistency only.
   programmehead: ['data_entry', 'view_overview', 'view_framework', 'view_reports', 'view_performance_alerts', 'manage_performance_alerts', 'manage_corrective_actions'],
   // University Council: read-only oversight of the annual plan and institutional
   // reports. CPU alone approves and returns plan proposals at every tier.
-  council: ['view_reports', 'view_overview', 'view_framework', 'view_institutional_performance', 'view_performance_alerts']
+  council: ['view_reports', 'view_overview', 'view_framework', 'view_institutional_performance', 'view_performance_alerts'],
+  director: ['submit_data_entries', 'submit_plan_budget'],
+  manager: ['submit_data_entries', 'submit_plan_budget'],
+  bursar: ['submit_data_entries', 'submit_plan_budget'],
 };
 
 function defaultPermsForRole(role) {

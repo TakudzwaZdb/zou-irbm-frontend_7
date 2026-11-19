@@ -17,7 +17,9 @@ const STATUS_LABEL = { none: 'Not started', draft: 'Draft', returned: 'Returned'
 // everyone else assigned to it) or returns it with feedback, same shape as
 // every other submission in this app just one level down.
 export default function ContributionCard({ kpi, contributionRow }) {
-  const { user, org, values, settings, period, reloadContributions, submissionWindow } = useApp();
+  const { user, org, values, settings, period, reloadContributions, submissionWindow, hasPerm } = useApp();
+  const canEditData = hasPerm('data_entry');
+  const canSubmitData = canEditData || hasPerm('submit_data_entries');
   const submitBlocked = !submissionWindow?.allowed;
   const toast = useToast();
   const status = valueStatus(contributionRow);
@@ -134,17 +136,17 @@ export default function ContributionCard({ kpi, contributionRow }) {
       <div className="flex gap-2 flex-wrap items-end mt-3">
         <div className="space-y-1">
           <label className="field-label">Your value ({kpi.measure})</label>
-          <input type="number" step="any" disabled={locked} value={entryValue}
+          <input type="number" step="any" disabled={locked || !canEditData} value={entryValue}
             onChange={(e) => onEntryValueChange(e.target.value)}
             onKeyUp={onValueKeyRelease} onBlur={onValueKeyRelease}
             placeholder={kpi.measure ? `e.g. 12 (${kpi.measure})` : undefined}
             className="field-input w-36 py-1.5" />
         </div>
-        <button className="btn btn-sm" disabled={locked || busy}
+        <button className="btn btn-sm" disabled={!canEditData || locked || busy}
           onClick={() => run(() => api(`/kpis/${kpi.id}/contribution`, { method: 'PUT', body: { year: period.year, month: period.month, value: entryValue === '' ? null : Number(entryValue) } }), 'Value saved.', () => clearDraft(valueDraftKey))}>
           Save value
         </button>
-        <button className="btn btn-sm btn-primary" disabled={!canSubmit || busy || submitBlocked}
+        <button className="btn btn-sm btn-primary" disabled={!canSubmitData || !canSubmit || busy || submitBlocked}
           title={submitBlocked ? (submissionWindow?.message || 'Submissions are not open for this period.') : undefined}
           onClick={() => run(() => api(`/kpis/${kpi.id}/contribution/submit`, { method: 'POST', body: { year: period.year, month: period.month } }), 'Submitted to your Unit Head.', () => clearDraft(valueDraftKey))}>
           Submit
@@ -157,11 +159,12 @@ export default function ContributionCard({ kpi, contributionRow }) {
       )}
       <div className="mt-2.5 space-y-1">
         <label className="field-label">Explanation / notes</label>
-        <textarea rows={2} className="field-input" placeholder="Optional context for your Unit Head"
+        <textarea rows={2} className="field-input" disabled={!canEditData}
+          placeholder="Optional context for your Unit Head"
           value={explanation} onChange={(e) => onExplanationChange(e.target.value)}
           onKeyUp={onNoteKeyRelease} onBlur={onNoteKeyRelease} />
       </div>
-      <button className="btn btn-sm btn-ghost mt-1.5" disabled={busy}
+      <button className="btn btn-sm btn-ghost mt-1.5" disabled={!canEditData || busy}
         onClick={() => run(() => api(`/kpis/${kpi.id}/contribution/explanation`, { method: 'PUT', body: { year: period.year, month: period.month, text: explanation } }), 'Note saved.', () => clearDraft(noteDraftKey))}>
         Save note
       </button>

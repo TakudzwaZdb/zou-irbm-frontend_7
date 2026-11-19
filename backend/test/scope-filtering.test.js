@@ -76,6 +76,10 @@ test('Annual Plan & Budget read-scoping matches the same boundary', async () => 
   assert.equal(scoped.status, 200);
   assert.ok(scoped.body.units.length < full.body.units.length, 'a Unit Head must see fewer units than the full org-wide plan');
   assert.ok(scoped.body.units.some((u) => u.id === 1), 'a Unit Head must still see their own unit\'s plan proposal');
+  assert.deepEqual(scoped.body.university.proposals, [], 'a scoped user must not receive university-wide plan proposals');
+  assert.equal(scoped.body.university.proposal, null);
+  assert.equal(scoped.body.university.approvedBudget, null);
+  assert.equal(scoped.body.university.provisionalBudget, null);
 });
 
 test('Compliance & Escalations read-scoping matches the same boundary', async () => {

@@ -34,6 +34,15 @@ const db = require('../db');
 // Council reviewer).
 const GLOBAL_READ_ROLES = ['cpu', 'ictadmin', 'exec', 'vc', 'council'];
 function isGlobalReader(user) { return GLOBAL_READ_ROLES.includes(user.role); }
+function hasPermission(user, key) { return user.permissions?.includes(key) || false; }
+function assignedScopeType(user) {
+  return user.scope_type || ({
+    programme: 'programme',
+    rep: 'sub',
+    unithead: 'unit',
+    employee: 'employee',
+  })[user.role] || null;
+}
 
 async function unitSubId(unitId) {
   return (await db.prepare('SELECT sub_id FROM units WHERE id = ?').get(unitId))?.sub_id ?? null;
@@ -72,6 +81,21 @@ async function isAssignedEmployee(user, kpi) {
 // Can this user see this KPI (and by extension its values/contributions)?
 async function canReadKpi(user, kpi) {
   if (isGlobalReader(user)) return true;
+  if (hasPermission(user, 'submit_data_entries')) {
+    const scopeType = assignedScopeType(user);
+    if (scopeType === 'programme') return (await kpiProgrammeId(kpi)) === user.scope_id;
+    if (scopeType === 'sub') return (await kpiSubId(kpi)) === user.scope_id;
+    if (scopeType === 'unit') {
+      if (kpi.owner_type === 'unit') return kpi.owner_id === user.scope_id;
+      if (kpi.owner_type === 'employee') return (await employeeUnitId(kpi.owner_id)) === user.scope_id;
+      return false;
+    }
+    if (scopeType === 'employee') {
+      if (kpi.owner_type === 'employee' && kpi.owner_id === user.scope_id) return true;
+      return isAssignedEmployee(user, kpi);
+    }
+    return false;
+  }
   if (user.role === 'programme') return (await kpiProgrammeId(kpi)) === user.scope_id;
   if (user.role === 'rep') return (await kpiSubId(kpi)) === user.scope_id;
   if (user.role === 'unithead') {
@@ -98,6 +122,14 @@ async function canReadKpi(user, kpi) {
 // blocked.
 async function canReadSub(user, subId) {
   if (isGlobalReader(user)) return true;
+  if (hasPermission(user, 'submit_plan_budget')) {
+    const scopeType = assignedScopeType(user);
+    if (scopeType === 'programme') return (await subProgrammeId(subId)) === user.scope_id;
+    if (scopeType === 'sub') return user.scope_id === subId;
+    if (scopeType === 'unit') return (await unitSubId(user.scope_id)) === subId;
+    if (scopeType === 'employee') return (await unitSubId(await employeeUnitId(user.scope_id))) === subId;
+    return false;
+  }
   if (user.role === 'programme') return (await subProgrammeId(subId)) === user.scope_id;
   if (user.role === 'rep') return user.scope_id === subId;
   if (user.role === 'unithead') return (await unitSubId(user.scope_id)) === subId;
@@ -115,6 +147,14 @@ async function canReadSub(user, subId) {
 // or an Employee who belongs to that unit.
 async function canReadUnit(user, unitId) {
   if (isGlobalReader(user)) return true;
+  if (hasPermission(user, 'submit_plan_budget')) {
+    const scopeType = assignedScopeType(user);
+    if (scopeType === 'programme') return (await subProgrammeId(await unitSubId(unitId))) === user.scope_id;
+    if (scopeType === 'sub') return (await unitSubId(unitId)) === user.scope_id;
+    if (scopeType === 'unit') return user.scope_id === unitId;
+    if (scopeType === 'employee') return (await employeeUnitId(user.scope_id)) === unitId;
+    return false;
+  }
   if (user.role === 'unithead') return user.scope_id === unitId;
   if (user.role === 'employee') {
     if (employeeScopeType(user) === 'employee') return (await employeeUnitId(user.scope_id)) === unitId;
@@ -131,6 +171,14 @@ async function canReadUnit(user, unitId) {
 // Programme Head themselves, or anyone nested within their programme.
 async function canReadProgramme(user, programmeId) {
   if (isGlobalReader(user)) return true;
+  if (hasPermission(user, 'submit_plan_budget')) {
+    const scopeType = assignedScopeType(user);
+    if (scopeType === 'programme') return user.scope_id === programmeId;
+    if (scopeType === 'sub') return (await subProgrammeId(user.scope_id)) === programmeId;
+    if (scopeType === 'unit') return (await subProgrammeId(await unitSubId(user.scope_id))) === programmeId;
+    if (scopeType === 'employee') return (await subProgrammeId(await unitSubId(await employeeUnitId(user.scope_id)))) === programmeId;
+    return false;
+  }
   if (user.role === 'programme') return user.scope_id === programmeId;
   if (user.role === 'rep') return (await subProgrammeId(user.scope_id)) === programmeId;
   if (user.role === 'unithead') return (await subProgrammeId(await unitSubId(user.scope_id))) === programmeId;

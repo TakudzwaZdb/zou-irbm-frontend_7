@@ -1,19 +1,64 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  canManagePlanOwner,
   computeRag,
   computeVariance,
   expectedPacePct,
   institutionalRollup,
+  isOwner,
   nodeOwnKpis,
   nodeRagCls,
   performanceRollup,
+  scopeBreadcrumb,
   varianceRollup,
 } from '../src/lib/scope.js';
 import { latestInRange } from '../src/lib/period.js';
 
 const settings = { ragGreen: 80, ragAmber: 50 };
 const kpi = { id: 1, baseline: 0, target: 100 };
+
+test('scope breadcrumb uses the assigned scope for custom and non-canonical roles', () => {
+  const org = {
+    programmes: [{ id: 10, name: 'Programme A' }],
+    subs: [{ id: 20, name: 'Sub-programme A', programme_id: 10 }],
+    units: [{ id: 30, name: 'Unit A', kind: 'Department', sub_id: 20 }],
+    employees: [],
+  };
+  const expected = ['Programme A', 'Sub-programme A', 'Department: Unit A'];
+
+  assert.deepEqual(scopeBreadcrumb(org, { role: 'auditor', scope_type: 'unit', scope_id: 30 }), expected);
+  assert.deepEqual(scopeBreadcrumb(org, { role: 'programme', scope_type: 'unit', scope_id: 30 }), expected);
+  assert.equal(scopeBreadcrumb(org, { role: 'auditor', scope_type: null, scope_id: null }), null);
+});
+
+test('submission permission allows a scoped manager to submit only matching KPI ownership', () => {
+  const user = {
+    role: 'manager',
+    scope_type: 'unit',
+    scope_id: 30,
+    permissions: ['submit_data_entries'],
+  };
+
+  assert.equal(isOwner(user, { owner_type: 'unit', owner_id: 30 }), true);
+  assert.equal(isOwner(user, { owner_type: 'unit', owner_id: 31 }), false);
+  assert.equal(isOwner(user, { owner_type: 'sub', owner_id: 20 }), false);
+  assert.equal(isOwner({ ...user, permissions: [] }, { owner_type: 'unit', owner_id: 30 }), false);
+});
+
+test('planning controls match scoped plan ownership and keep employee scopes read-only', () => {
+  const manager = {
+    role: 'manager',
+    scope_type: 'unit',
+    scope_id: 30,
+    permissions: ['submit_plan_budget'],
+  };
+
+  assert.equal(canManagePlanOwner(manager, 'unit', 30), true);
+  assert.equal(canManagePlanOwner(manager, 'unit', 31), false);
+  assert.equal(canManagePlanOwner({ ...manager, scope_type: 'employee' }, 'unit', 30), false);
+  assert.equal(canManagePlanOwner({ ...manager, permissions: [] }, 'unit', 30), false);
+});
 
 test('RAG thresholds use unrounded progress', () => {
   const result = computeRag(kpi, { value: 79.6 }, settings);

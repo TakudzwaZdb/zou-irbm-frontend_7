@@ -1,6 +1,6 @@
 export const NAV_ITEMS = {
   overview: { label: 'Overview', icon: '◆', perm: 'view_overview' },
-  entry: { label: 'My Data Entry', icon: '✎', perm: 'data_entry' },
+  entry: { label: 'My Data Entry', icon: '✎', perm: ['data_entry', 'submit_data_entries'] },
   approvals: { label: 'Approvals Queue', icon: '✓', perm: 'approve_own_tier' },
   framework: { label: 'Framework', icon: '▦', perm: 'view_framework' },
   // Two admin pages split out of Framework's old create/edit/delete forms
@@ -28,7 +28,11 @@ export const NAV_ITEMS = {
   // Create/Update navigation then further narrows what a holder of just one
   // of them can actually do — see OrganisationBuilder.jsx).
   orgBuilder: { label: 'Organisation Setup', icon: '🏗', perm: ['manage_org_units', 'create_org_units', 'edit_org_units', 'add_employee'] },
-  planning: { label: 'Annual Plan & Budget', icon: '🧾' },
+  planning: {
+    label: 'Annual Plan & Budget',
+    icon: '🧾',
+    perm: ['submit_plan_budget', 'submit_annual_plan', 'approve_annual_plan', 'approve_own_tier', 'view_reports'],
+  },
   compliance: { label: 'Compliance & Escalations', icon: '⏱', perm: 'view_performance_alerts' },
   reports: { label: 'Reports', icon: '▤', perm: 'view_reports' },
   audit: { label: 'Audit Log', icon: '≣', perm: 'view_audit' },

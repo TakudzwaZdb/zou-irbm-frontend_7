@@ -160,6 +160,47 @@ test('role changes reject an occupied post by name but allow the Employee role',
   });
   assert.equal(employee.status, 200);
   assert.equal(employee.body.user.role, 'employee');
+  assert.equal(employee.body.user.scope_type, 'employee');
+  assert.equal(employee.body.user.scope_id, target.scope_id);
+
+  const changedRole = await api.request(`/api/users/${target.id}/role`, {
+    method: 'PATCH',
+    token,
+    body: { role: 'ictadmin' },
+  });
+  assert.equal(changedRole.status, 200);
+  assert.equal(changedRole.body.user.role, 'ictadmin');
+  assert.equal(changedRole.body.user.scope_type, 'employee');
+  assert.equal(changedRole.body.user.scope_id, target.scope_id);
+
+  const restoredAfterSingle = await api.request(`/api/users/${target.id}/role`, {
+    method: 'PATCH',
+    token,
+    body: { role: 'employee', scopeType: 'employee', scopeId: target.scope_id },
+  });
+  assert.equal(restoredAfterSingle.status, 200);
+
+  const bulkChangedRole = await api.request('/api/users/assign-role', {
+    method: 'POST',
+    token,
+    body: { userIds: [target.id], role: 'ictadmin' },
+  });
+  assert.equal(bulkChangedRole.status, 200);
+  assert.equal(bulkChangedRole.body.assigned, 1);
+  const afterBulk = await api.request('/api/users', { token });
+  assert.equal(afterBulk.status, 200);
+  const targetAfterBulk = afterBulk.body.users.find((user) => user.id === target.id);
+  assert.equal(targetAfterBulk.scope_type, 'employee');
+  assert.equal(targetAfterBulk.scope_id, target.scope_id);
+
+  const restoredAfterBulk = await api.request(`/api/users/${target.id}/role`, {
+    method: 'PATCH',
+    token,
+    body: { role: 'employee', scopeType: 'employee', scopeId: target.scope_id },
+  });
+  assert.equal(restoredAfterBulk.status, 200);
+  assert.equal(restoredAfterBulk.body.user.scope_type, 'employee');
+  assert.equal(restoredAfterBulk.body.user.scope_id, target.scope_id);
 });
 
 test('sign out everywhere immediately invalidates the token that called it', async () => {

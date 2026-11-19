@@ -9,6 +9,7 @@ import PhotoLightbox from '../components/PhotoLightbox.jsx';
 const ROLE_LABEL = {
   exec: 'Executive', vc: 'Vice Chancellor', cpu: 'Corporate Planning Unit', ictadmin: 'ICT Systems Administrator',
   rep: 'Sub-programme Rep', unithead: 'Unit Head', employee: 'Employee', programme: 'Programme Head',
+  director: 'Director', manager: 'Manager', bursar: 'Bursar',
 };
 
 // Resizes/compresses an image client-side before it ever reaches the

@@ -20,7 +20,8 @@ import SubmissionWindowBanner from '../components/SubmissionWindowBanner.jsx';
 // shape either way, since "needs action / submitted / approved" reads the
 // same regardless of which kind it is.
 export default function Entry() {
-  const { user, org, kpis, templates, values, contributions, period, assignments } = useApp();
+  const { user, org, kpis, templates, values, contributions, period, assignments, hasPerm } = useApp();
+  const canEditData = hasPerm('data_entry');
   const mine = kpis.filter((k) => canEnterData(user, k));
   const contributed = kpis.filter((k) => canContribute(user, k, assignments));
   const statusOf = (k) => valueStatus(values[`${k.id}-${period.year}-${period.month}`]);
@@ -35,7 +36,7 @@ export default function Entry() {
   // independent KPI owned by this person alone — not a shared figure like
   // the contribution pipeline above.
   const myUnitId = user.role === 'employee' ? employeeUnitId(org, user.scope_id) : null;
-  const pickable = myUnitId != null
+  const pickable = canEditData && myUnitId != null
     ? templates.filter((t) => t.unit_id === myUnitId && !mine.some((k) => k.template_id === t.id))
     : [];
 

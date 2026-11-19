@@ -606,6 +606,7 @@ const BUILT_IN_ROLES = [
   ['ictadmin', 'ICT Systems Administrator'], ['rep', 'Sub-programme Rep'],
   ['unithead', 'Unit Head'], ['employee', 'Employee'],
   ['programme', 'Programme Head'], ['council', 'University Council'],
+  ['director', 'Director'], ['manager', 'Manager'], ['bursar', 'Bursar'],
   // Vice Chancellor — its own built-in role (see utils/permissions.js's
   // DEFAULT_PERMS_BY_ROLE for its privileges and seed.js for the seeded
   // account). Built-in like every role above: not deletable as a role type
