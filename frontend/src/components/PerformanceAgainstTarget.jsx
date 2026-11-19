@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext.jsx';
 import { api } from '../lib/api.js';
 import { GLOBAL_REPORT_ROLES, MONTHS } from '../lib/scope.js';
 import { PERIOD_TYPES, PERIOD_TYPE_LABEL } from '../lib/period.js';
+import { configuredPaceForPeriod } from '../lib/configuredPace.js';
 import RagBarChart from './RagBarChart.jsx';
 import RagPieChart from './RagPieChart.jsx';
 import VarianceChart from './VarianceChart.jsx';
@@ -102,7 +103,8 @@ function PerformanceGauge({ value, status }) {
   const hasValue = value != null && Number.isFinite(Number(value));
   const numericValue = hasValue ? Number(value) : 0;
   const progress = Math.max(0, Math.min(100, numericValue));
-  const color = STATUS[status]?.color || STATUS.missing.color;
+  const isOffTrack = status === 'below-target';
+  const color = isOffTrack ? '#ff3333' : STATUS[status]?.color || STATUS.missing.color;
   const label = hasValue ? STATUS[status]?.label || 'Calculated' : 'Not available';
   const needleAngle = Math.PI + (progress / 100) * Math.PI;
   const needleX = 120 + 68 * Math.cos(needleAngle);
@@ -112,17 +114,17 @@ function PerformanceGauge({ value, status }) {
     <div
       role="group"
       aria-label={`Average performance against target: ${hasValue ? `${numericValue}%` : 'not available'}, ${label}`}
-      className="flex min-w-0 flex-col items-center justify-center rounded-xl border bg-surface px-4 py-3"
+      className="flex min-w-0 self-stretch flex-col items-center justify-between gap-5 rounded-2xl border-2 bg-surface px-5 py-5"
       style={{
-        borderColor: `color-mix(in srgb, ${color} 52%, transparent)`,
-        boxShadow: `0 0 22px color-mix(in srgb, ${color} 16%, transparent)`,
+        borderColor: `color-mix(in srgb, ${color} 68%, transparent)`,
+        boxShadow: `0 8px 28px color-mix(in srgb, ${color} 20%, transparent)`,
       }}
     >
-      <p className="text-center text-[11px] font-bold uppercase tracking-wide text-ink-muted">Average performance against target</p>
-      <div className="font-display text-[42px] font-extrabold leading-tight tabular-nums text-ink">
+      <p className="text-center text-[13px] font-extrabold uppercase tracking-[0.12em] text-ink">Average performance against target</p>
+      <div className="mt-1 font-display text-5xl font-extrabold leading-tight tabular-nums text-ink sm:text-6xl">
         {hasValue ? `${numericValue.toFixed(1)}%` : '—'}
       </div>
-      <svg className="h-[150px] w-full max-w-[340px]" viewBox="0 0 240 170" aria-hidden="true">
+      <svg className="h-[230px] w-full max-w-[340px]" viewBox="0 0 240 170" aria-hidden="true">
         <path d="M30 135 A90 90 0 0 1 210 135" fill="none" stroke="var(--color-line-strong)" strokeWidth="17" strokeLinecap="round" pathLength="100" />
         <path
           d="M30 135 A90 90 0 0 1 210 135"
@@ -134,16 +136,19 @@ function PerformanceGauge({ value, status }) {
           strokeDasharray={`${hasValue ? progress : 0} 100`}
           style={{ filter: `drop-shadow(0 0 5px ${color}80)` }}
         />
-        {hasValue && <line x1="120" y1="135" x2={needleX} y2={needleY} stroke="var(--color-ink-muted)" strokeWidth="5" strokeLinecap="round" />}
-        {hasValue && <circle cx="120" cy="135" r="7" fill="var(--color-ink-secondary)" />}
-        <text x="50" y="122" textAnchor="middle" fill="var(--color-ink-secondary)" fontSize="10">Off track</text>
-        <text x="50" y="136" textAnchor="middle" fill="var(--color-ink-muted)" fontSize="9">&lt;80%</text>
-        <text x="120" y="67" textAnchor="middle" fill="var(--color-ink-secondary)" fontSize="10">At risk</text>
-        <text x="120" y="81" textAnchor="middle" fill="var(--color-ink-muted)" fontSize="9">80–&lt;100%</text>
-        <text x="190" y="122" textAnchor="middle" fill="var(--color-ink-secondary)" fontSize="10">On track</text>
-        <text x="190" y="136" textAnchor="middle" fill="var(--color-ink-muted)" fontSize="9">≥100%</text>
+        {hasValue && <line x1="120" y1="135" x2={needleX} y2={needleY} stroke="var(--color-ink)" strokeWidth="6" strokeLinecap="round" />}
+        {hasValue && <circle cx="120" cy="135" r="8" fill="var(--color-ink)" />}
+        <text x="50" y="122" textAnchor="middle" fill="#ff3333" fontSize="12" fontWeight="700">Off track</text>
+        <text x="50" y="138" textAnchor="middle" fill="var(--color-ink)" fontSize="11" fontWeight="600">&lt;80%</text>
+        <text x="120" y="67" textAnchor="middle" fill="var(--color-warning)" fontSize="12" fontWeight="700">At risk</text>
+        <text x="120" y="83" textAnchor="middle" fill="var(--color-ink)" fontSize="11" fontWeight="600">80–&lt;100%</text>
+        <text x="190" y="122" textAnchor="middle" fill="var(--color-good)" fontSize="12" fontWeight="700">On track</text>
+        <text x="190" y="138" textAnchor="middle" fill="var(--color-ink)" fontSize="11" fontWeight="600">≥100%</text>
       </svg>
-      <span className={`chip ${hasValue ? STATUS[status]?.className || 'chip-rag-none' : 'chip-rag-none'} -mt-1`}>
+      <span
+        className={`chip border px-4 py-1.5 text-[14px] font-extrabold shadow-sm ${hasValue ? STATUS[status]?.className || 'chip-rag-none' : 'chip-rag-none'} -mt-1`}
+        style={isOffTrack ? { backgroundColor: '#260707', borderColor: color, color } : undefined}
+      >
         {label}
       </span>
     </div>
@@ -177,7 +182,7 @@ function CoverageGauge({ value }) {
 }
 
 export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataLoaded, syncSelectedNode = false, onNavigate }) {
-  const { user, hasPerm, perfPeriod, perfValues, selNode } = useApp();
+  const { user, hasPerm, perfPeriod, perfValues, selNode, kpis: catalogKpis } = useApp();
   const allowed = !GLOBAL_REPORT_ROLES.includes(user.role) || hasPerm('view_institutional_performance');
   const [cycleYear, setCycleYear] = useState(null);
   const [reportType, setReportType] = useState(perfPeriod.type);
@@ -239,10 +244,18 @@ export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataL
     return result;
   }, [data]);
 
+  const paceResults = useMemo(() => configuredPaceForPeriod(
+    data?.kpis || [],
+    catalogKpis,
+    reportType,
+    reportIndex
+  ), [data?.kpis, catalogKpis, reportType, reportIndex]);
+
   if (!allowed) return null;
 
   const summary = data?.summary;
-  const kpiDetails = data?.kpis || [];
+  const kpiDetails = paceResults.kpis;
+  const paceSummary = paceResults.summary;
   const ragCounts = kpiDetails.reduce((counts, kpi) => {
     const key = kpi.status === 'achieved' ? 'green'
       : kpi.status === 'approaching' ? 'amber'
@@ -264,12 +277,10 @@ export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataL
   const behindPace = kpiDetails
     .filter((kpi) => kpi.paceFlag === 'behind' || kpi.paceFlag === 'attention')
     .sort((a, b) => b.paceVarianceRawPct - a.paceVarianceRawPct);
-  const expectedPacePct = summary?.expectedPacePct ?? null;
-  const comparedExpectedPace = summary?.averageComparedExpectedPacePct ?? null;
-  const actualPerformancePct = summary?.averagePacePerformancePct ?? null;
-  const averagePaceVariance = comparedExpectedPace == null || actualPerformancePct == null
-    ? null
-    : Math.round((comparedExpectedPace - actualPerformancePct) * 10) / 10;
+  const expectedPacePct = paceSummary.expectedPacePct ?? summary?.expectedPacePct ?? null;
+  const comparedExpectedPace = paceSummary.averageComparedExpectedPacePct ?? summary?.averageComparedExpectedPacePct ?? null;
+  const actualPerformancePct = paceSummary.averagePacePerformancePct ?? summary?.averagePacePerformancePct ?? null;
+  const averagePaceVariance = paceSummary.averagePaceVariancePct ?? summary?.averagePaceVariancePct ?? null;
   const periodLabel = `${PERIOD_TYPE_LABEL[reportType]} · ${periodOption(reportType, reportIndex)} ${selectedYear}`;
 
   function clearFilters() {
@@ -389,10 +400,12 @@ export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataL
                 actual={actualPerformancePct}
                 variance={averagePaceVariance}
                 behind={averagePaceVariance != null && averagePaceVariance > 0}
-                behindCount={summary?.behindPaceCount ?? 0}
-                notCalculableCount={summary?.notCalculablePaceCount ?? 0}
-                notConfiguredCount={summary?.notConfiguredPaceCount ?? 0}
-                count={summary?.paceKpiCount ?? 0}
+                behindCount={paceSummary.behindPaceCount ?? summary?.behindPaceCount ?? 0}
+                notCalculableCount={paceSummary.notCalculablePaceCount ?? summary?.notCalculablePaceCount ?? 0}
+                notConfiguredCount={paceSummary.notConfiguredPaceCount ?? summary?.notConfiguredPaceCount ?? 0}
+                invalidScheduleCount={paceSummary.invalidScheduleCount ?? 0}
+                monthlyFallbackCount={paceSummary.monthlyFallbackCount ?? 0}
+                count={paceSummary.paceKpiCount ?? summary?.paceKpiCount ?? 0}
                 periodLabel={periodLabel}
                 canConfigure={hasPerm('manage_settings')}
                 onConfigure={() => onNavigate?.('settings')}
@@ -735,44 +748,93 @@ function TierOverviewMetric({ label, value, className = '' }) {
   );
 }
 
-function ExpectedPaceCard({ expected, comparedExpected, actual, variance, behind, behindCount, notCalculableCount, notConfiguredCount, count, periodLabel, canConfigure, onConfigure }) {
+function ExpectedPaceCard({ expected, comparedExpected, actual, variance, behind, behindCount, notCalculableCount, notConfiguredCount, invalidScheduleCount, monthlyFallbackCount, count, periodLabel, canConfigure, onConfigure }) {
   const paceAlert = behind || behindCount > 0;
+  const cardTone = paceAlert
+    ? 'border-critical/40 bg-critical-soft/60'
+    : 'border-accent-500/35 bg-gradient-to-br from-accent-50 via-surface to-accent-50/70';
+  const statusTone = paceAlert
+    ? 'border-critical/40 bg-surface'
+    : 'border-accent-500/30 bg-surface';
   const status = variance == null
-    ? expected == null && notConfiguredCount > 0 ? 'No KPI reporting milestones configured'
+    ? invalidScheduleCount > 0 ? 'Review invalid KPI reporting schedules'
+      : expected == null && notConfiguredCount > 0 ? 'No KPI reporting milestones configured'
       : notCalculableCount > 0 ? 'Approved actuals cannot be compared'
       : expected == null ? 'No pace data available' : 'Awaiting approved actuals'
     : behind ? 'Overall behind expected pace'
       : behindCount > 0 ? `${behindCount} KPIs behind expected pace`
         : variance < 0 ? 'Overall ahead of expected pace' : 'Overall on expected pace';
+  const statusColor = paceAlert ? 'text-critical' : variance == null ? 'text-ink-secondary' : 'text-good';
   const varianceLabel = variance == null
     ? expected == null && notConfiguredCount > 0 ? 'No KPI reporting milestones are configured for this period'
       : notCalculableCount > 0 ? 'Approved actuals cannot be compared with pace' : expected == null ? 'No pace data available' : 'Awaiting approved actuals'
     : Math.abs(variance) < 0.1 ? 'Expected pace and actual performance are within 0.1 pts'
       : `Expected pace (${comparedExpected == null ? '—' : `${comparedExpected.toFixed(1)}%`}) − actual performance (${actual == null ? '—' : `${actual.toFixed(1)}%`}) = ${variance > 0 ? '+' : ''}${variance} pts`;
   return (
-    <div className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3 mb-4 ${paceAlert ? 'border-critical/40 bg-critical-soft pace-alert-pulse' : 'border-accent-500/25 bg-accent-50'}`}>
-      <div>
-        <p className="text-[10.5px] font-extrabold tracking-[0.12em] text-ink-secondary uppercase">KPI milestone expected pace · {periodLabel}</p>
-        <div className={`font-display text-[30px] leading-tight font-extrabold ${paceAlert ? 'text-critical' : 'text-accent-700'}`}>
-          {expected == null ? '—' : `${expected}%`}
+    <section
+      className={`mb-4 overflow-hidden rounded-2xl border-2 px-4 py-4 shadow-sm sm:px-6 sm:py-5 ${cardTone} ${paceAlert ? 'pace-alert-pulse' : ''}`}
+      aria-label={`KPI expected pace for ${periodLabel}`}
+    >
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(260px,0.8fr)] md:items-center md:gap-6">
+        <div className="flex min-w-0 items-center gap-4 sm:gap-5">
+          <div className={`h-16 w-1.5 flex-none rounded-full sm:h-20 ${paceAlert ? 'bg-critical' : 'bg-accent-500'}`} aria-hidden="true" />
+          <div className="min-w-0">
+            <p className="text-[13px] font-extrabold uppercase tracking-[0.14em] text-accent-700">
+              Expected pace · {periodLabel}
+            </p>
+            <div className={`mt-1 font-display text-5xl font-extrabold leading-none tracking-tight tabular-nums sm:text-6xl lg:text-7xl ${paceAlert ? 'text-critical' : 'text-accent-700'}`}>
+              {expected == null ? '—' : `${expected}%`}
+            </div>
+            <p className="mt-2 text-[14px] font-semibold leading-snug text-ink">
+              KPI performance expected by this reporting period
+            </p>
+          </div>
+        </div>
+        <div className={`min-w-0 rounded-xl border-2 p-4 ${statusTone}`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[12px] font-extrabold uppercase tracking-[0.12em] text-ink">Current assessment</span>
+            <span className={`chip border px-3 py-1.5 text-[14px] font-extrabold shadow-sm ${paceAlert ? 'chip-rag-red border-critical/40' : variance == null ? 'chip-rag-none border-line' : 'chip-rag-green border-good/40'}`}>
+              {paceAlert ? 'Attention' : variance == null ? 'Pending' : 'On pace'}
+            </span>
+          </div>
+          <p className={`mt-2 font-display text-[19px] font-extrabold leading-snug sm:text-[21px] ${statusColor}`} role={paceAlert ? 'alert' : undefined}>
+            {paceAlert && <span aria-hidden="true">⚠ </span>}{status}
+          </p>
+          <p className="mt-2 text-[14px] font-semibold leading-relaxed text-ink">{varianceLabel}</p>
+          <div className="mt-4 flex flex-wrap gap-2.5">
+            {count > 0 && (
+              <span className="rounded-full border border-line bg-surface px-3.5 py-1.5 text-[13px] font-bold text-ink shadow-sm">
+                {count} KPI{count === 1 ? '' : 's'} compared
+              </span>
+            )}
+            {notConfiguredCount > 0 && (
+              <span className="rounded-full border border-line bg-surface px-3.5 py-1.5 text-[13px] font-bold text-ink shadow-sm">
+                {notConfiguredCount} without a milestone
+              </span>
+            )}
+          </div>
+          {expected == null && notConfiguredCount > 0 && canConfigure && onConfigure && (
+            <button type="button" className="btn btn-sm mt-4 px-4 py-2.5 text-[13px] font-bold" onClick={onConfigure}>
+              Configure milestones in Settings
+            </button>
+          )}
         </div>
       </div>
-      <div className="text-right">
-        <p className={`font-display font-extrabold text-[14px] ${paceAlert ? 'text-critical' : variance == null ? 'text-ink-muted' : 'text-good'}`} role={paceAlert ? 'alert' : undefined}>
-          {paceAlert && <span aria-hidden="true">⚠ </span>}{status}
-        </p>
-        <p className="text-[11px] text-ink-secondary mt-0.5">
-          {varianceLabel}
-          {count > 0 ? ` · ${count} KPIs compared` : ''}
-          {notConfiguredCount > 0 ? ` · ${notConfiguredCount} without a milestone` : ''}
-        </p>
-        {expected == null && notConfiguredCount > 0 && canConfigure && onConfigure && (
-          <button type="button" className="btn btn-sm mt-2" onClick={onConfigure}>
-            Configure milestones in Settings
-          </button>
-        )}
-      </div>
-    </div>
+      {(monthlyFallbackCount > 0 || invalidScheduleCount > 0) && (
+        <div className={`mt-4 border-t pt-3 text-[13px] font-semibold leading-relaxed ${paceAlert ? 'border-critical/30' : 'border-accent-500/30'}`}>
+          {monthlyFallbackCount > 0 && (
+            <p className="text-ink">
+              Using the month-end monthly milestone for {monthlyFallbackCount} KPI{monthlyFallbackCount === 1 ? '' : 's'} without a matching period milestone.
+            </p>
+          )}
+          {invalidScheduleCount > 0 && (
+            <p className="mt-1 font-bold text-critical">
+              {invalidScheduleCount} KPI reporting schedule{invalidScheduleCount === 1 ? ' is' : 's are'} invalid and cannot be used.
+            </p>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
