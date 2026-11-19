@@ -340,6 +340,58 @@ export function effectiveKpiValue(valueRow) {
   if (valueRow.override_value != null) return valueRow.override_value;
   return valueRow.value != null ? valueRow.value : valueRow.preview_value;
 }
+
+function performanceNumber(value) {
+  if (typeof value !== 'number' && (typeof value !== 'string' || value.trim() === '')) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+// Mirrors backend target-performance scoring for live entry/review previews.
+// It deliberately does not use computeRag or computeVariance.
+export function performanceScorePct(kpi, actual, periodType = 'monthly', periodIndex = null) {
+  const value = performanceNumber(actual);
+  if (value == null) return null;
+  let scoringKpi = kpi;
+  if (kpi.reporting_mode === 'period') {
+    let milestones;
+    try {
+      milestones = typeof kpi.reporting_periods === 'string'
+        ? JSON.parse(kpi.reporting_periods)
+        : kpi.reporting_periods;
+    } catch {
+      return null;
+    }
+    const milestone = Array.isArray(milestones)
+      ? milestones.find((item) => item?.periodType === periodType && Number(item.periodIndex) === Number(periodIndex))
+      : null;
+    const periodTarget = performanceNumber(milestone?.expectedValue);
+    if (periodTarget == null) return null;
+    scoringKpi = { ...kpi, target: periodTarget };
+  }
+
+  const target = performanceNumber(scoringKpi.target);
+  if (target == null) return null;
+  const rule = scoringKpi.achievement_rule || 'ratio';
+  if (rule === 'exact_target') return value === target ? 100 : 0;
+  if (rule === 'baseline_progress') {
+    const baseline = performanceNumber(scoringKpi.baseline);
+    if (baseline == null) return null;
+    const reached = scoringKpi.measurement_direction === 'lower' ? value <= target : value >= target;
+    if (target === baseline) return reached ? 100 : null;
+    const score = scoringKpi.measurement_direction === 'lower'
+      ? ((baseline - value) / (baseline - target)) * 100
+      : ((value - baseline) / (target - baseline)) * 100;
+    return Number.isFinite(score) ? score : null;
+  }
+  if (rule !== 'ratio' || target <= 0 || value < 0
+      || (scoringKpi.measurement_direction === 'lower' && value === 0)) return null;
+  const score = scoringKpi.measurement_direction === 'lower'
+    ? (target / value) * 100
+    : (value / target) * 100;
+  return Number.isFinite(score) ? score : null;
+}
+
 // A pending amendment retains its last approved value until CPU approves the
 // replacement; approved_at distinguishes that official value from a draft.
 export function officialKpiValueRow(valueRow) {

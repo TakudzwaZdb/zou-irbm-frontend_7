@@ -84,7 +84,32 @@ function calculateProgressPace(kpi, actual, asOfMonth) {
   return {
     actualProgressPct,
     expectedPacePct,
-    ...classifyTargetPace(actualProgressPct, expectedPacePct),
+    ...classifyProgressPace(actualProgressPct, expectedPacePct),
+    status: 'calculated',
+  };
+}
+
+function calculatePerformancePace(kpi, actual, expectedValue) {
+  const performance = calculatePerformanceAgainstTarget(kpi, actual);
+  const expectedPerformance = expectedValue == null
+    ? null
+    : calculatePerformanceAgainstTarget(kpi, expectedValue);
+  const expectedPacePct = expectedPerformance?.status === 'calculated'
+    ? expectedPerformance.performancePct : null;
+  if (expectedValue == null || expectedPacePct == null || performance.performancePct == null) {
+    return {
+      performancePct: performance.performancePct,
+      expectedPacePct,
+      variance: null,
+      flag: 'none',
+      status: expectedValue == null ? 'not_configured'
+        : actual == null ? 'missing' : 'not_calculable',
+    };
+  }
+  return {
+    performancePct: performance.performancePct,
+    expectedPacePct,
+    ...classifyTargetPace(performance.performancePct, expectedPacePct),
     status: 'calculated',
   };
 }
@@ -161,15 +186,61 @@ function classifyProgressVariance(progress, expectedProgress, warningGap, critic
   return { variance, severity };
 }
 
-function classifyTargetPace(performancePct, expectedPacePct) {
-  if (!Number.isFinite(performancePct) || !Number.isFinite(expectedPacePct)) {
+function classifyProgressPace(actualProgressPct, expectedPacePct) {
+  if (!Number.isFinite(actualProgressPct) || !Number.isFinite(expectedPacePct)) {
     return { variance: null, flag: 'none' };
   }
-  const variance = performancePct - expectedPacePct;
+  const variance = actualProgressPct - expectedPacePct;
   const flag = variance <= -10 ? 'attention'
     : variance < 0 ? 'behind'
       : variance >= 10 ? 'ahead' : 'on-pace';
   return { variance, flag };
+}
+
+function classifyTargetPace(performancePct, expectedPacePct) {
+  if (!Number.isFinite(performancePct) || !Number.isFinite(expectedPacePct)) {
+    return { variance: null, flag: 'none' };
+  }
+  const variance = expectedPacePct - performancePct;
+  const flag = variance >= 10 ? 'attention'
+    : variance > 0 ? 'behind'
+      : variance <= -10 ? 'ahead' : 'on-pace';
+  return { variance, flag };
+}
+
+function weightedPaceAverage(paces, valueFor) {
+  let weightedTotal = 0;
+  let weightTotal = 0;
+  for (const pace of paces) {
+    const value = valueFor(pace);
+    if (!Number.isFinite(value)) continue;
+    const weight = pace.weight == null ? 1 : Number(pace.weight);
+    if (!Number.isFinite(weight) || weight <= 0) continue;
+    weightedTotal += value * weight;
+    weightTotal += weight;
+  }
+  return weightTotal > 0 ? weightedTotal / weightTotal : null;
+}
+
+function summarizePace(paces) {
+  const calculated = paces.filter((pace) => pace?.status === 'calculated');
+  const expectedValues = paces.filter((pace) => Number.isFinite(pace?.expectedPacePct));
+  const expectedPace = weightedPaceAverage(expectedValues, (pace) => pace.expectedPacePct);
+  const averageComparedExpectedPace = weightedPaceAverage(calculated, (pace) => pace.expectedPacePct);
+  const averagePerformance = weightedPaceAverage(calculated, (pace) => pace.performancePct);
+  const averageVariance = weightedPaceAverage(calculated, (pace) => pace.variance);
+  return {
+    expectedPacePct: expectedPace == null ? null : Math.round(expectedPace * 10) / 10,
+    averageComparedExpectedPacePct: averageComparedExpectedPace == null ? null : Math.round(averageComparedExpectedPace * 10) / 10,
+    averagePacePerformancePct: averagePerformance == null ? null : Math.round(averagePerformance * 10) / 10,
+    averagePaceVariancePct: averageVariance == null ? null : Math.round(averageVariance * 10) / 10,
+    isBehindPace: averageVariance != null && averageVariance > 0,
+    paceKpiCount: calculated.length,
+    missingPaceCount: paces.filter((pace) => pace?.status === 'missing').length,
+    notCalculablePaceCount: paces.filter((pace) => pace?.status === 'not_calculable').length,
+    notConfiguredPaceCount: paces.filter((pace) => pace?.status === 'not_configured').length,
+    behindPaceCount: calculated.filter((pace) => pace.flag === 'behind' || pace.flag === 'attention').length,
+  };
 }
 
 function summarizeKpis(kpis) {
@@ -324,11 +395,13 @@ module.exports = {
   classifyTargetPerformance,
   calculateBaselineProgress,
   calculateProgressPace,
+  calculatePerformancePace,
   calculateTargetVariance,
   calculateExpectedProgress,
   getReportingMilestone,
   classifyProgressVariance,
   classifyTargetPace,
+  summarizePace,
   summarizeKpis,
   calculateWeightedKpiScore,
   calculateOverallSeniorManagerPerformance,

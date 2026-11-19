@@ -4,7 +4,9 @@ import { useToast } from '../context/ToastContext.jsx';
 import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
 import PaginatedRows from '../components/PaginatedRows.jsx';
-import { inJurisdiction, byId } from '../lib/scope.js';
+import { inJurisdiction, byId, MONTHS } from '../lib/scope.js';
+import { withMonthlyMilestones } from '../lib/reportingPeriods.js';
+import MonthlyPaceEditor from '../components/MonthlyPaceEditor.jsx';
 
 // Everything to do with the KPI catalogue itself — creating a new KPI,
 // managing the "for employees" template pool, and editing or deleting an
@@ -19,8 +21,9 @@ export default function KpiManagement() {
   const canEditKpi = canCreateKpi || hasPerm('edit_kpi');
   const canDeleteKpi = canCreateKpi || hasPerm('delete_kpi');
   const canTargets = hasPerm('edit_targets');
+  const canManagePace = hasPerm('manage_settings');
 
-  if (!canCreateKpi && !canEditKpi && !canDeleteKpi && !canTargets) {
+  if (!canCreateKpi && !canEditKpi && !canDeleteKpi && !canTargets && !canManagePace) {
     return (
       <div>
         <div className="mb-5">
@@ -42,7 +45,7 @@ export default function KpiManagement() {
         <p className="text-[13px] text-ink-secondary">Create, edit, and remove KPIs across the catalogue.</p>
       </div>
 
-      {(canEditKpi || canDeleteKpi || canTargets) && <CreatedKpisTable kpis={kpis} canFullEdit={canEditKpi} canEditTargets={canTargets} canCreate={canCreateKpi} canDelete={canDeleteKpi} />}
+      {(canEditKpi || canDeleteKpi || canTargets || canManagePace) && <CreatedKpisTable kpis={kpis} canFullEdit={canEditKpi} canEditTargets={canTargets} canCreate={canCreateKpi} canDelete={canDeleteKpi} canManagePace={canManagePace} />}
       {canDeleteKpi && <RecentlyRemoved />}
     </div>
   );
@@ -195,6 +198,7 @@ function AddKpiForm({ onClose }) {
   const [achievementRule, setAchievementRule] = useState('ratio');
   const [reportingMode, setReportingMode] = useState('cumulative');
   const [periodAggregation, setPeriodAggregation] = useState('latest');
+  const [monthlyMilestones, setMonthlyMilestones] = useState(Array(12).fill(''));
   const [assigneeIds, setAssigneeIds] = useState([]);
   const [busy, setBusy] = useState(false);
 
@@ -217,8 +221,9 @@ function AddKpiForm({ onClose }) {
     setBusy(true);
     try {
       const chosenId = Number(ownerId || options[0]?.id);
+      const reportingPeriods = withMonthlyMilestones([], monthlyMilestones);
       if (ownerType === 'employee') {
-        await api('/kpi-templates', { method: 'POST', body: { unitId: chosenId, name, type, measure, baseline: Number(baseline), target: Number(target), measurementDirection, weight: Number(weight), achievementRule, reportingMode, periodAggregation } });
+        await api('/kpi-templates', { method: 'POST', body: { unitId: chosenId, name, type, measure, baseline: Number(baseline), target: Number(target), measurementDirection, weight: Number(weight), achievementRule, reportingMode, periodAggregation, reportingPeriods } });
         toast('KPI created for staff in this unit — each one can now pick it up as their own from My Data Entry.');
       } else {
         await api('/kpis', {
@@ -228,12 +233,13 @@ function AddKpiForm({ onClose }) {
             baseline: Number(baseline), target: Number(target),
             measurementDirection, weight: Number(weight),
             achievementRule, reportingMode, periodAggregation,
+            reportingPeriods,
             assigneeIds: ownerType === 'unit' ? assigneeIds : undefined,
           },
         });
         toast(assigneeIds.length ? `KPI created and assigned to ${assigneeIds.length} custodian(s).` : 'KPI created.');
       }
-      setName(''); setType(''); setMeasure(''); setBaseline(''); setTarget(''); setMeasurementDirection('higher'); setWeight('1'); setAchievementRule('ratio'); setReportingMode('cumulative'); setPeriodAggregation('latest'); setAssigneeIds([]);
+      setName(''); setType(''); setMeasure(''); setBaseline(''); setTarget(''); setMeasurementDirection('higher'); setWeight('1'); setAchievementRule('ratio'); setReportingMode('cumulative'); setPeriodAggregation('latest'); setMonthlyMilestones(Array(12).fill('')); setAssigneeIds([]);
       await Promise.all([reloadCore(), ownerType === 'employee' ? reloadTemplates() : Promise.resolve()]);
       onClose();
     } catch (err) { toast(err.message, 'err'); }
@@ -295,6 +301,28 @@ function AddKpiForm({ onClose }) {
               </Field>
             )}
           </div>
+          <details className="rounded-lg border border-line px-3 py-2.5">
+            <summary className="cursor-pointer text-[12px] font-bold text-ink">
+              Monthly expected pace milestones (optional)
+            </summary>
+            <p className="mb-3 mt-1 text-[11px] text-ink-secondary">
+              Enter the expected KPI value for each month. Leave months blank when no milestone is configured.
+            </p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+              {MONTHS.slice(1).map((month, index) => (
+                <Field key={month} label={month}>
+                  <input
+                    type="number"
+                    step="any"
+                    className="field-input"
+                    value={monthlyMilestones[index]}
+                    onChange={(event) => setMonthlyMilestones((current) => current.map((value, valueIndex) => valueIndex === index ? event.target.value : value))}
+                    aria-label={`${month} expected KPI value`}
+                  />
+                </Field>
+              ))}
+            </div>
+          </details>
           {ownerType === 'employee' && (
             <p className="text-[11.5px] text-ink-muted max-w-[65ch]">
               This creates the KPI once, scoped to the unit you picked — nobody owns it yet. Anyone in that unit sees it
@@ -337,7 +365,7 @@ function AddKpiForm({ onClose }) {
 // Created KPI catalogue — starts collapsed; a click on the header opens it,
 // same as every other collapsible table in the app. A search filter is
 // available only while the catalogue is open.
-function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDelete }) {
+function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDelete, canManagePace }) {
   const { org, reloadCore, user } = useApp();
   const toast = useToast();
   const confirm = useConfirm();
@@ -347,6 +375,7 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
   const [draft, setDraft] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [editingPace, setEditingPace] = useState(null);
 
   const activeKpis = (kpis || []).filter((k) => !k.deleted_at && !k.removed_at);
 
@@ -555,6 +584,7 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
                         ) : (
                           <span className="flex gap-1">
                             {(canFullEdit || canEditTargets) && <button className="btn btn-sm" onClick={() => startEdit(k)}>Edit</button>}
+                            {(canFullEdit || canManagePace) && <button className="btn btn-sm" onClick={() => setEditingPace(k)}>Pace</button>}
                             {canCreate && ['draft', 'rejected'].includes(k.lifecycle_status) && (
                               <button className="btn btn-sm" disabled={busyId === k.id} onClick={() => submitConfiguration(k)}>Submit</button>
                             )}
@@ -577,6 +607,7 @@ function CreatedKpisTable({ kpis, canFullEdit, canEditTargets, canCreate, canDel
           </div>
         </div>
       )}
+      {editingPace && <MonthlyPaceEditor kpi={editingPace} onClose={() => setEditingPace(null)} />}
     </div>
   );
 }

@@ -24,8 +24,9 @@ const USER_DESIGNATION = {
 
 // Durable performance-alert workflows are layered beside, not substituted
 // for, the existing live submission-compliance calculations.
-export default function Compliance() {
+export default function Compliance({ route = 'complianceProgress' }) {
   const { period, hasPerm, org, user } = useApp();
+  const activeView = route === 'compliancePerformance' ? 'performance' : 'progress';
   const [data, setData] = useState(null);
   const [alertData, setAlertData] = useState(null);
   const [error, setError] = useState(null);
@@ -61,20 +62,29 @@ export default function Compliance() {
     setAlertData(null);
     setError(null);
     setAlertError(null);
-    api(`/compliance?year=${period.year}&month=${period.month}`)
+    const selectedFilter = activeView === 'performance' && orgFilter.startsWith('employee:') ? '' : orgFilter;
+    const complianceParams = new URLSearchParams({ year: String(period.year), month: String(period.month) });
+    if (activeView === 'performance' && selectedFilter) {
+      const [ownerType, ownerId] = selectedFilter.split(':');
+      complianceParams.set('ownerType', ownerType);
+      complianceParams.set('ownerId', ownerId);
+    }
+    api(`/compliance?${complianceParams}`)
       .then((result) => { if (active) setData(result); })
       .catch((err) => { if (active) setError(err.message || 'Unable to load compliance results.'); });
-    const params = new URLSearchParams({ year: String(period.year), month: String(period.month) });
-    if (orgFilter) {
-      const [ownerType, ownerId] = orgFilter.split(':');
-      params.set('ownerType', ownerType);
-      params.set('ownerId', ownerId);
+    if (activeView === 'progress') {
+      const params = new URLSearchParams({ year: String(period.year), month: String(period.month) });
+      if (orgFilter) {
+        const [ownerType, ownerId] = orgFilter.split(':');
+        params.set('ownerType', ownerType);
+        params.set('ownerId', ownerId);
+      }
+      api(`/performance-alerts?${params}`)
+        .then((result) => { if (active) setAlertData(result); })
+        .catch((err) => { if (active) setAlertError(err.message || 'Unable to load progress pace alerts.'); });
     }
-    api(`/performance-alerts?${params}`)
-      .then((result) => { if (active) setAlertData(result); })
-      .catch((err) => { if (active) setAlertError(err.message || 'Unable to load performance alerts.'); });
     return () => { active = false; };
-  }, [period.year, period.month, orgFilter, retry]);
+  }, [period.year, period.month, activeView, orgFilter, retry]);
 
   function refreshWorkflowData() {
     setRetry((value) => value + 1);
@@ -86,30 +96,19 @@ export default function Compliance() {
       <div className="mb-5">
         <h1 className="text-xl font-bold mb-0.5">Compliance &amp; Escalations</h1>
         <p className="text-[13px] text-ink-secondary max-w-[60ch]">
-          Check late reports and performance alerts, then follow up on items that need action.
+          Progress, submission compliance, and target-performance escalations are reported separately.
         </p>
       </div>
 
-      <section aria-label="Performance alerts and escalations" className="mb-7">
-        <div className="card mb-3 flex flex-wrap items-end gap-3">
-          <label className="text-[11px] font-semibold text-ink-secondary">
-            Show alerts for
-            <select className="field-input mt-1 min-w-[280px] max-w-full" value={orgFilter} onChange={(event) => setOrgFilter(event.target.value)}>
-              <option value="">All organisations in my scope</option>
-              {['Programmes', 'Sub-programmes', 'Departments, faculties and units', 'Employees'].map((group) => {
-                const options = orgFilterOptions.filter((item) => item.group === group);
-                return options.length > 0 && (
-                  <optgroup key={group} label={group}>
-                    {options.map((item) => (
-                      <option key={`${item.filterType}:${item.id}`} value={`${item.filterType}:${item.id}`}>{item.label}</option>
-                    ))}
-                  </optgroup>
-                );
-              })}
-            </select>
-          </label>
-          <p className="text-[11.5px] text-ink-muted pb-2">Selecting a Programme, Sub-programme or Unit includes alerts from its child levels. Results update automatically.</p>
-        </div>
+      {activeView === 'progress' && <>
+      <section aria-label="Progress pace alerts and submission escalations" className="mb-7">
+        <OrganisationFilter
+          label="Show alerts for"
+          value={orgFilter}
+          options={orgFilterOptions}
+          onChange={setOrgFilter}
+          help="Selecting a Programme, Sub-programme or Unit includes alerts from its child levels. Results update automatically."
+        />
         {alertError
           ? <div role="alert" className="card border-l-4 border-l-critical text-[12.5px] text-critical">
             <p className="mb-2">{alertError}</p>
@@ -124,7 +123,7 @@ export default function Compliance() {
               currentUserId={user.id}
               onRefresh={refreshWorkflowData}
             />
-            : <div role="status" className="card text-[13px] text-ink-muted">Loading performance alerts…</div>}
+            : <div role="status" className="card text-[13px] text-ink-muted">Loading progress pace alerts…</div>}
       </section>
 
       {error
@@ -177,31 +176,125 @@ export default function Compliance() {
           </div>
         ))}
 
-      <h2 className="font-display font-bold text-[14.5px] mb-2.5 mt-8">
-        Red-KPI performance escalation <span className="text-[11.8px] font-normal text-ink-muted">(a KPI behind target, separate from late submissions)</span>
-      </h2>
-      {data.redEscalations.length === 0
-        ? <div className="card text-center text-ink-muted py-8">No KPI is currently escalated on performance — nothing to act on.</div>
-        : data.redEscalations.map((e) => (
-          <div key={e.kpiId} className="card mb-2 flex items-center justify-between gap-3 flex-wrap">
-            <div>
-              <p className="font-semibold text-[13px] mb-0.5">{e.kpiName}</p>
-              <p className="text-[12px] text-ink-secondary">{e.ownerName} · Red for {e.streak} consecutive period{e.streak > 1 ? 's' : ''}</p>
-            </div>
-            <div className="flex gap-1.5 flex-wrap">
-              {e.chain.map((c) => <span key={c} className="chip chip-rag-red">{c}</span>)}
-            </div>
-          </div>
-        ))}
-
-      {data.redKpis.length > 0 && (
-        <p className="text-[11.5px] text-ink-muted mt-3">
-          {data.redKpis.length} KPI{data.redKpis.length > 1 ? 's are' : ' is'} currently Red for at least one period;
-          only those past a trigger in Settings are listed above as escalations.
-        </p>
-      )}
           </>}
+      </>}
+
+      {activeView === 'performance' && <section aria-labelledby="target-performance-escalations-heading">
+        <OrganisationFilter
+          label="Show performance escalations for"
+          value={orgFilter.startsWith('employee:') ? '' : orgFilter}
+          options={orgFilterOptions.filter((item) => item.filterType !== 'employee')}
+          onChange={setOrgFilter}
+          help="Selecting a Programme, Sub-programme or Unit includes target-performance escalations from its child levels. Results update automatically."
+        />
+        {error
+          ? <div role="alert" className="card max-w-xl border-l-4 border-l-critical">
+            <p className="font-semibold mb-1">Target-performance escalations could not be loaded</p>
+            <p className="text-[13px] text-ink-secondary mb-3">{error}</p>
+            <button type="button" className="btn btn-sm" onClick={() => setRetry((value) => value + 1)}>Retry performance escalations</button>
+          </div>
+          : !data
+            ? <div role="status" className="card text-ink-muted text-[13px]">Loading target-performance escalations…</div>
+            : <TargetPerformanceEscalations data={data} period={period} />}
+      </section>}
     </div>
+  );
+}
+
+function OrganisationFilter({ label, value, options, onChange, help }) {
+  return (
+    <div className="card mb-3 flex flex-wrap items-end gap-3">
+      <label className="text-[11px] font-semibold text-ink-secondary">
+        {label}
+        <select className="field-input mt-1 min-w-[280px] max-w-full" value={value} onChange={(event) => onChange(event.target.value)}>
+          <option value="">All organisations in my scope</option>
+          {['Programmes', 'Sub-programmes', 'Departments, faculties and units', 'Employees'].map((group) => {
+            const groupedOptions = options.filter((item) => item.group === group);
+            return groupedOptions.length > 0 && (
+              <optgroup key={group} label={group}>
+                {groupedOptions.map((item) => (
+                  <option key={`${item.filterType}:${item.id}`} value={`${item.filterType}:${item.id}`}>{item.label}</option>
+                ))}
+              </optgroup>
+            );
+          })}
+        </select>
+      </label>
+      <p className="text-[11.5px] text-ink-muted pb-2">{help}</p>
+    </div>
+  );
+}
+
+function TargetPerformanceEscalations({ data, period }) {
+  const escalationByKpi = new Map(data.redEscalations.map((item) => [item.kpiId, item]));
+  const programmeEscalations = data.redEscalations.filter((item) => item.chain.includes('Programme Head')).length;
+  const seniorEscalations = data.redEscalations.filter((item) => item.chain.includes('VC / Council')).length;
+  return (
+    <section aria-labelledby="target-performance-escalations-heading" className="mb-7">
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-extrabold tracking-[0.12em] text-accent-600 mb-1">TARGET-PERFORMANCE OVERSIGHT</p>
+          <h2 id="target-performance-escalations-heading" className="font-display font-extrabold text-[21px]">
+            Performance escalations
+          </h2>
+          <p className="text-[12.5px] text-ink-secondary mt-1 max-w-[80ch]">
+            Calculated from actual performance against each KPI target over consecutive approved reporting periods. Progress pace and submission compliance are not used in these figures.
+          </p>
+        </div>
+        <span className="chip border border-line bg-surface text-ink-secondary">{MONTHS[period.month]} {period.year}</span>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <AlertMetric label="Below performance threshold" value={data.redKpis.length} className="border-l-critical" />
+        <AlertMetric label="Escalated to Programme Head" value={programmeEscalations} className="border-l-warning" />
+        <AlertMetric label="Escalated to VC / Council" value={seniorEscalations} className="border-l-accent-500" />
+        <AlertMetric label="Performance threshold" value={`${data.settings.ragAmber}%`} className="border-l-line-strong" />
+      </div>
+      <div className="rounded-xl border border-line bg-sunken/50 px-4 py-3 mb-4">
+        <h3 className="font-display text-[14px] font-bold text-ink mb-1">Target-performance escalation workflow</h3>
+        <p className="text-[11.5px] text-ink-secondary">
+          Review each KPI's actual value against its target and performance threshold. The escalation path is determined by the number of consecutive approved periods below threshold and the triggers configured in Settings.
+        </p>
+      </div>
+      <div className="card">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h3 className="font-display text-[14px] font-bold text-ink">Target-performance indicators</h3>
+            <p className="text-[11.5px] text-ink-muted">The table shows actual-versus-target performance, not baseline progress.</p>
+          </div>
+          <span className="text-[11px] text-ink-muted">{data.redKpis.length} KPI{data.redKpis.length === 1 ? '' : 's'} below threshold</span>
+        </div>
+        <div className="rounded-xl border border-line bg-surface overflow-x-auto max-h-[65vh] overflow-y-auto">
+          <table className="w-full text-[12.6px]">
+            <thead className="sticky top-0 z-10">
+              <tr className="bg-sunken text-[10.8px] uppercase tracking-wide text-ink-muted font-bold">
+                <Th>KPI</Th><Th>Owner</Th><Th>Actual</Th><Th>Target</Th><Th>Performance</Th><Th>Periods below threshold</Th><Th>Escalation path</Th>
+              </tr>
+            </thead>
+            <tbody>
+              <PaginatedRows items={data.redKpis} colSpan={7} emptyMessage="No KPI is below the target-performance threshold for this period." renderRow={(item) => {
+                const escalation = escalationByKpi.get(item.kpiId);
+                const ownerType = ({ programme: 'Programme', sub: 'Sub-programme', unit: 'Unit', university: 'University' })[item.ownerType] || item.ownerType;
+                return (
+                  <tr key={item.kpiId} className="border-t border-line">
+                    <Td className="font-semibold min-w-[220px]">{item.kpiName}</Td>
+                    <Td><span className="block font-medium">{item.ownerName}</span><span className="text-[10.5px] text-ink-muted">{ownerType}</span></Td>
+                    <Td className="tabular-nums">{Number(item.actualValue).toLocaleString(undefined, { maximumFractionDigits: 2 })}</Td>
+                    <Td className="tabular-nums">{Number(item.target).toLocaleString(undefined, { maximumFractionDigits: 2 })}</Td>
+                    <Td className="tabular-nums font-bold text-critical">{Number(item.performancePct).toFixed(1)}%</Td>
+                    <Td className="tabular-nums">{item.streak}</Td>
+                    <Td>
+                      {escalation
+                        ? <div className="flex flex-wrap gap-1">{escalation.chain.map((name) => <span key={name} className="chip chip-rag-red">{name}</span>)}</div>
+                        : <span className="chip bg-sunken text-ink-secondary">Monitoring</span>}
+                    </Td>
+                  </tr>
+                );
+              }} />
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -222,26 +315,26 @@ function PerformanceWorkflow({ data, canManage, canManageActions, canApproveActi
     <section aria-labelledby="performance-alerts-heading" className="mb-8">
       <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="text-[10px] font-extrabold tracking-[0.12em] text-accent-600 mb-1">PERFORMANCE OVERSIGHT</p>
+          <p className="text-[10px] font-extrabold tracking-[0.12em] text-accent-600 mb-1">PROGRESS PACE OVERSIGHT</p>
           <h2 id="performance-alerts-heading" className="font-display font-extrabold text-[21px]">
-            Alerts needing attention
+            Progress pace and submission alerts
           </h2>
           <p className="text-[12.5px] text-ink-secondary mt-1 max-w-[80ch]">
-            Review missing reports and KPIs falling behind expected progress.
+            Progress alerts compare baseline-to-target progress with expected pace. Target-performance escalations are listed separately below.
           </p>
         </div>
         <span className="chip border border-line bg-surface text-ink-secondary">{MONTHS[data.period.month]} {data.period.year}</span>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-        <AlertMetric label="Critical / red" value={summary.red} className="border-l-critical" />
-        <AlertMetric label="Warning / amber" value={summary.amber} className="border-l-warning" />
+        <AlertMetric label="Critical progress" value={summary.red} className="border-l-critical" />
+        <AlertMetric label="Progress warning" value={summary.amber} className="border-l-warning" />
         <AlertMetric label="Missing reports" value={summary.missing} className="border-l-line-strong" />
-        <AlertMetric label="Escalation records" value={escalationCount} className="border-l-accent-500" />
+        <AlertMetric label="Progress / report escalations" value={escalationCount} className="border-l-accent-500" />
       </div>
       <div className="mb-4 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
         <div className="rounded-xl border border-line bg-sunken/50 px-4 py-3">
-          <h3 className="font-display text-[14px] font-bold text-ink mb-1">What to do</h3>
-          <p className="text-[11.5px] text-ink-secondary">Review the alert, assign an action owner, submit a plan for approval, then record the outcome.</p>
+          <h3 className="font-display text-[14px] font-bold text-ink mb-1">Progress and submission workflow</h3>
+          <p className="text-[11.5px] text-ink-secondary">Review the alert, assign an action owner, submit a plan for approval, then record the outcome. Target-performance escalations are tracked separately.</p>
           <details className="mt-2 text-[11px] text-ink-muted">
             <summary className="cursor-pointer font-semibold">View workflow steps</summary>
             <ol className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -272,7 +365,9 @@ function PerformanceWorkflow({ data, canManage, canManageActions, canApproveActi
                 onChange={(event) => setSelectedAlertId(event.target.value)}
               >
                 {visibleAlerts.map((alert) => (
-                  <option key={alert.id} value={alert.id}>{alert.kpi_name} · {alert.owner_name} · {alert.severity}</option>
+                  <option key={alert.id} value={alert.id}>
+                    {alert.severity === 'missing' ? 'Missing report' : `Progress pace ${alert.severity}`} · {alert.kpi_name} · {alert.owner_name}
+                  </option>
                 ))}
               </select>
               {visibleAlerts.length === 1 && (
@@ -501,7 +596,7 @@ function EscalationsTable({ alerts, canManage, onRefresh }) {
     <section className="card mb-4 p-0 overflow-hidden" aria-labelledby="escalations-table-heading">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
         <div>
-          <h3 id="escalations-table-heading" className="font-display text-[16px] font-bold">Performance escalations</h3>
+          <h3 id="escalations-table-heading" className="font-display text-[16px] font-bold">Progress-pace and submission escalations</h3>
           <p className="text-[11.5px] text-ink-muted mt-0.5">Select open records to resolve together, or change a single record’s status.</p>
         </div>
         {canManage && (
@@ -513,7 +608,7 @@ function EscalationsTable({ alerts, canManage, onRefresh }) {
       {error && <p role="alert" className="mx-4 mt-3 rounded-lg bg-critical-soft px-3 py-2 text-[12px] text-critical">{error}</p>}
       {notice && <p role="status" className="mx-4 mt-3 rounded-lg bg-good-soft px-3 py-2 text-[12px] text-good">{notice}</p>}
       {escalations.length === 0
-        ? <p className="px-4 py-7 text-center text-[12.5px] text-ink-muted">No performance escalations have been recorded for this reporting period.</p>
+        ? <p className="px-4 py-7 text-center text-[12.5px] text-ink-muted">No progress-pace or submission escalations have been recorded for this reporting period.</p>
         : <div className="max-h-[440px] overflow-auto">
           <table className="w-full min-w-[980px] text-[12px]">
             <thead className="sticky top-0 z-10 bg-sunken">
@@ -558,7 +653,7 @@ function EscalationsTable({ alerts, canManage, onRefresh }) {
     </section>
     {dialog && (
       <WorkflowDialog
-        title={dialog.status === 'closed' ? 'Close escalation' : 'Resolve performance escalation'}
+        title={dialog.status === 'closed' ? 'Close escalation' : 'Resolve progress/report escalation'}
         description={dialog.type === 'resolve-row'
           ? `Add a resolution summary for ${dialog.escalation.reference_code}.`
           : `Add one resolution summary for ${dialog.ids.length} selected escalation${dialog.ids.length === 1 ? '' : 's'}.`}
@@ -875,8 +970,8 @@ function PerformanceAlertCard({ alert, canManage, canManageActions, canApproveAc
           ? [{ name: 'reason', label: 'Revision feedback', type: 'textarea', required: true, minLength: 3, maxLength: 2000, hint: 'Explain what must change before the plan can be approved.' }]
           : [];
   const dialogTitles = {
-    'resolve-alert': ['Resolve performance alert', 'Add a clear resolution note to the alert record.', 'Resolve alert'],
-    'create-escalation': ['Escalate performance alert', 'Choose an escalation level and explain the reason.', 'Create escalation'],
+    'resolve-alert': ['Resolve progress pace alert', 'Add a clear resolution note to the alert record.', 'Resolve alert'],
+    'create-escalation': ['Escalate progress pace alert', 'Choose an escalation level and explain the reason.', 'Create escalation'],
     'complete-action': ['Complete corrective action', 'Record the outcome before marking this plan complete.', 'Save outcome and complete'],
     'reject-action': ['Request a plan revision', 'Provide actionable feedback for the plan creator.', 'Send revision feedback'],
   };
@@ -888,7 +983,9 @@ function PerformanceAlertCard({ alert, canManage, canManageActions, canApproveAc
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-[220px] flex-1">
           <div className="flex flex-wrap items-center gap-2 mb-1">
-            <span className={`chip ${severity}`}>{alert.severity === 'missing' ? 'Missing actual' : alert.severity.toUpperCase()}</span>
+            <span className={`chip ${severity}`}>
+              {alert.severity === 'missing' ? 'Missing submission' : `Progress pace · ${alert.severity.toUpperCase()}`}
+            </span>
             <span className="chip bg-sunken text-ink-secondary">{statusLabel[alert.status]}</span>
             <span className="text-[11px] text-ink-muted">{alert.programme_name} · {alert.sub_name} · {alert.unit_name || alert.employee_name || alert.owner_name}</span>
           </div>
@@ -1162,7 +1259,7 @@ function WorkflowDialog({ title, description, submitLabel, fields, onClose, onSu
       >
         <header className="flex items-start justify-between gap-4 border-b border-line bg-sunken/50 px-5 py-4 sm:px-6">
           <div>
-            <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-accent-700">Performance workflow</p>
+            <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-accent-700">Progress / submission workflow</p>
             <h2 id="workflow-dialog-title" className="mt-1 font-display text-lg font-bold text-ink">{title}</h2>
             <p className="mt-1 text-[12px] text-ink-secondary">{description}</p>
           </div>

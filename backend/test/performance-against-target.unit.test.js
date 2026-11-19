@@ -4,11 +4,13 @@ const {
   calculatePerformanceAgainstTarget,
   calculateBaselineProgress,
   calculateProgressPace,
+  calculatePerformancePace,
   calculateTargetVariance,
   calculateExpectedProgress,
   getReportingMilestone,
   classifyProgressVariance,
   classifyTargetPace,
+  summarizePace,
   summarizeKpis,
   calculateWeightedKpiScore,
   calculateOverallSeniorManagerPerformance,
@@ -79,19 +81,91 @@ test('progress pace matches month-based progress variance and supports lower-is-
   assert.equal(calculateProgressPace({ baseline: 0, target: 100 }, 50, null).status, 'not_calculable');
 });
 
+test('performance pace uses KPI-specific milestone performance instead of a uniform month rate', () => {
+  const behind = calculatePerformancePace(
+    { baseline: 70, target: 100, measurement_direction: 'higher' },
+    40,
+    50,
+  );
+  assert.equal(behind.performancePct, 40);
+  assert.equal(behind.expectedPacePct, 50);
+  assert.equal(behind.variance, 10);
+  assert.equal(behind.flag, 'attention');
+
+  const lowerIsBetter = calculatePerformancePace(
+    { baseline: 30, target: 10, measurement_direction: 'lower' },
+    12,
+    12,
+  );
+  assert.equal(lowerIsBetter.performancePct, 10 / 12 * 100);
+  assert.equal(lowerIsBetter.expectedPacePct, 10 / 12 * 100);
+  assert.equal(lowerIsBetter.variance, 0);
+
+  const missing = calculatePerformancePace({ target: 100 }, null, 50);
+  assert.equal(missing.expectedPacePct, 50);
+  assert.equal(missing.status, 'missing');
+
+  const noMilestone = calculatePerformancePace({ target: 100 }, 64, null);
+  assert.equal(noMilestone.expectedPacePct, null);
+  assert.equal(noMilestone.variance, null);
+  assert.equal(noMilestone.status, 'not_configured');
+
+  const firstTier = calculatePerformancePace({ target: 100 }, 64, 80);
+  const secondTier = calculatePerformancePace({ target: 200 }, 128, 140);
+  assert.equal(firstTier.expectedPacePct, 80);
+  assert.equal(firstTier.variance, 16);
+  assert.equal(secondTier.expectedPacePct, 70);
+  assert.equal(secondTier.variance, 6);
+});
+
+test('target performance compares with expected pace independently of baseline', () => {
+  const performance = calculatePerformanceAgainstTarget({ baseline: 70, target: 100 }, 40).performancePct;
+  assert.deepEqual(classifyTargetPace(performance, 50), { variance: 10, flag: 'attention' });
+  assert.deepEqual(classifyTargetPace(45, 50), { variance: 5, flag: 'behind' });
+  assert.deepEqual(classifyTargetPace(65, 50), { variance: -15, flag: 'ahead' });
+  assert.deepEqual(classifyTargetPace(null, 50), { variance: null, flag: 'none' });
+});
+
+test('pace rollups average configured milestones and performance by KPI weight', () => {
+  const summary = summarizePace([
+    { status: 'calculated', expectedPacePct: 80, performancePct: 40, variance: 40, flag: 'attention', weight: 3 },
+    { status: 'calculated', expectedPacePct: 60, performancePct: 50, variance: 10, flag: 'attention', weight: 1 },
+    { status: 'not_configured', expectedPacePct: null, performancePct: 64, variance: null, flag: 'none', weight: 4 },
+    { status: 'missing', expectedPacePct: 70, performancePct: null, variance: null, flag: 'none', weight: 1 },
+  ]);
+  assert.equal(summary.expectedPacePct, 74);
+  assert.equal(summary.averageComparedExpectedPacePct, 75);
+  assert.equal(summary.averagePacePerformancePct, 42.5);
+  assert.equal(summary.averagePaceVariancePct, 32.5);
+  assert.equal(summary.paceKpiCount, 2);
+  assert.equal(summary.notConfiguredPaceCount, 1);
+  assert.equal(summary.missingPaceCount, 1);
+  assert.equal(summary.isBehindPace, true);
+});
+
+test('pace rollup does not invent an expected pace without a KPI milestone', () => {
+  assert.equal(summarizePace([
+    { status: 'not_configured', expectedPacePct: null, variance: null, flag: 'none' },
+  ]).expectedPacePct, null);
+  assert.deepEqual(summarizePace([]), {
+    expectedPacePct: null,
+    averageComparedExpectedPacePct: null,
+    averagePacePerformancePct: null,
+    averagePaceVariancePct: null,
+    isBehindPace: false,
+    paceKpiCount: 0,
+    missingPaceCount: 0,
+    notCalculablePaceCount: 0,
+    notConfiguredPaceCount: 0,
+    behindPaceCount: 0,
+  });
+});
+
 test('monitoring classifies pace gaps without turning missing actuals into zero', () => {
   assert.deepEqual(classifyProgressVariance(68, 80, 10, 25), { variance: -12, severity: 'amber' });
   assert.deepEqual(classifyProgressVariance(54, 80, 10, 25), { variance: -26, severity: 'red' });
   assert.deepEqual(classifyProgressVariance(72, 80, 10, 25), { variance: -8, severity: null });
   assert.deepEqual(classifyProgressVariance(null, 80, 10, 25), { variance: null, severity: null });
-});
-
-test('target performance compares with expected pace independently of baseline', () => {
-  const performance = calculatePerformanceAgainstTarget({ baseline: 70, target: 100 }, 40).performancePct;
-  assert.deepEqual(classifyTargetPace(performance, 50), { variance: -10, flag: 'attention' });
-  assert.deepEqual(classifyTargetPace(45, 50), { variance: -5, flag: 'behind' });
-  assert.deepEqual(classifyTargetPace(65, 50), { variance: 15, flag: 'ahead' });
-  assert.deepEqual(classifyTargetPace(null, 50), { variance: null, flag: 'none' });
 });
 
 test('summary uses KPI weights and excludes missing actuals without counting them as zero', () => {
@@ -209,4 +283,43 @@ test('approved KPI weights aggregate to the expected weighted group score', () =
   assert.equal(summary.averagePerformance, 84);
   assert.equal(summary.applicableWeight, 100);
   assert.equal(summary.scoredWeight, 100);
+});
+
+test('pace rollups average configured milestones and count behind-pace results', () => {
+  const summary = summarizePace([
+    { status: 'calculated', expectedPacePct: 80, performancePct: 40, variance: 40, flag: 'attention' },
+    { status: 'calculated', expectedPacePct: 60, performancePct: 50, variance: 10, flag: 'attention' },
+    { status: 'missing', expectedPacePct: null, variance: null, flag: 'none' },
+  ]);
+
+  assert.deepEqual(summary, {
+    expectedPacePct: 70,
+    averageComparedExpectedPacePct: 70,
+    averagePacePerformancePct: 45,
+    averagePaceVariancePct: 25,
+    isBehindPace: true,
+    paceKpiCount: 2,
+    missingPaceCount: 1,
+    notCalculablePaceCount: 0,
+    notConfiguredPaceCount: 0,
+    behindPaceCount: 2,
+  });
+  assert.equal(summarizePace([
+    { status: 'calculated', expectedPacePct: 50, variance: 0.01, flag: 'behind' },
+  ]).isBehindPace, true, 'small positive expected-minus-actual variances still mark the tier behind before display rounding');
+  assert.equal(summarizePace([
+    { status: 'missing', expectedPacePct: 91.7, variance: null, flag: 'none' },
+  ]).expectedPacePct, 91.7, 'the selected month expected pace is independent of actual submission');
+  assert.deepEqual(summarizePace([]), {
+    expectedPacePct: null,
+    averageComparedExpectedPacePct: null,
+    averagePacePerformancePct: null,
+    averagePaceVariancePct: null,
+    isBehindPace: false,
+    paceKpiCount: 0,
+    missingPaceCount: 0,
+    notCalculablePaceCount: 0,
+    notConfiguredPaceCount: 0,
+    behindPaceCount: 0,
+  });
 });

@@ -176,7 +176,7 @@ function CoverageGauge({ value }) {
   );
 }
 
-export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataLoaded, syncSelectedNode = false }) {
+export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataLoaded, syncSelectedNode = false, onNavigate }) {
   const { user, hasPerm, perfPeriod, perfValues, selNode } = useApp();
   const allowed = !GLOBAL_REPORT_ROLES.includes(user.role) || hasPerm('view_institutional_performance');
   const [cycleYear, setCycleYear] = useState(null);
@@ -251,22 +251,25 @@ export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataL
     return counts;
   }, { green: 0, amber: 0, red: 0, none: 0 });
   const paceData = kpiDetails
-    .filter((kpi) => kpi.actualProgressPct != null && kpi.progressExpectedPacePct != null)
+    .filter((kpi) => kpi.performancePct != null && kpi.performanceExpectedPacePct != null)
     .map((kpi) => ({
       name: kpi.name,
       owner: kpi.ownerUnitName ? `${kpi.ownerName} · ${kpi.ownerUnitName}` : kpi.ownerName,
       ownerKind: kpi.ownerTier,
-      actual: kpi.actualProgressPct,
-      expected: kpi.progressExpectedPacePct,
+      actual: kpi.performancePct,
+      expected: kpi.performanceExpectedPacePct,
       variance: kpi.paceVariancePct,
       flag: kpi.paceFlag,
     }));
   const behindPace = kpiDetails
     .filter((kpi) => kpi.paceFlag === 'behind' || kpi.paceFlag === 'attention')
-    .sort((a, b) => a.paceVarianceRawPct - b.paceVarianceRawPct);
+    .sort((a, b) => b.paceVarianceRawPct - a.paceVarianceRawPct);
   const expectedPacePct = summary?.expectedPacePct ?? null;
-  const averagePaceVariance = summary?.averagePaceVariancePct ?? null;
-  const paceMaxValue = Math.max(100, Math.ceil(Math.max(0, ...paceData.map((item) => item.actual)) / 10) * 10);
+  const comparedExpectedPace = summary?.averageComparedExpectedPacePct ?? null;
+  const actualPerformancePct = summary?.averagePacePerformancePct ?? null;
+  const averagePaceVariance = comparedExpectedPace == null || actualPerformancePct == null
+    ? null
+    : Math.round((comparedExpectedPace - actualPerformancePct) * 10) / 10;
   const periodLabel = `${PERIOD_TYPE_LABEL[reportType]} · ${periodOption(reportType, reportIndex)} ${selectedYear}`;
 
   function clearFilters() {
@@ -282,11 +285,11 @@ export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataL
       <div className="flex flex-wrap justify-between items-start gap-4 mb-5">
         <div>
           <p className="text-[10.5px] font-extrabold tracking-[0.12em] text-accent-600 mb-1">{eyebrow} · PERFORMANCE</p>
-          <h2 id="performance-target-title" className="font-display font-extrabold text-[24px] leading-tight">
+          <h2 id="performance-target-title" className="font-display font-extrabold text-[22px] leading-tight">
             Performance against target
           </h2>
           <p className="text-[12.5px] text-ink-secondary mt-1 max-w-2xl">
-            Review approved KPI results, identify performance risks, and compare progress with the expected pace.
+            Review approved KPI results, identify performance risks, and compare target performance with the expected pace.
           </p>
         </div>
       </div>
@@ -380,6 +383,20 @@ export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataL
                 </div>
                 <span className="chip border border-accent-500/20 bg-surface text-accent-700">{periodLabel} · approved values</span>
               </div>
+              <ExpectedPaceCard
+                expected={expectedPacePct}
+                comparedExpected={comparedExpectedPace}
+                actual={actualPerformancePct}
+                variance={averagePaceVariance}
+                behind={averagePaceVariance != null && averagePaceVariance > 0}
+                behindCount={summary?.behindPaceCount ?? 0}
+                notCalculableCount={summary?.notCalculablePaceCount ?? 0}
+                notConfiguredCount={summary?.notConfiguredPaceCount ?? 0}
+                count={summary?.paceKpiCount ?? 0}
+                periodLabel={periodLabel}
+                canConfigure={hasPerm('manage_settings')}
+                onConfigure={() => onNavigate?.('settings')}
+              />
               <div className="flex flex-wrap justify-between items-baseline gap-2 mb-2">
                 <h3 className="font-display font-bold text-[16px]">KPI status</h3>
                 <span className="text-[11px] text-ink-muted">Based on performance against each KPI target</span>
@@ -436,17 +453,17 @@ export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataL
               </div>
             </div>
             <div className="card min-w-0">
-              <h3 className="font-display font-bold text-[14px] mb-1">Variance analysis — actual vs. expected pace</h3>
-              <p className="text-[11px] text-ink-muted mb-2">
-                Uses the same baseline-to-target progress and month-based expected pace as Progress, from each KPI’s latest approved actual in this period.
+              <h3 className="font-display font-bold text-[13px] mb-1">Variance analysis — performance vs. expected pace</h3>
+              <p className="text-[10.5px] text-ink-muted mb-2">
+                Compares each KPI’s target-performance percentage with the expected pace for this reporting period, using approved actuals.
               </p>
-              <div className="rounded-lg bg-sunken/60 px-3 py-2 mb-2 flex flex-wrap justify-between gap-2 text-[11.5px]">
-                <span>Average pace variance · expected {expectedPacePct == null ? '—' : `${expectedPacePct}%`} · {periodLabel}</span>
-                <strong className={averagePaceVariance == null ? 'text-ink-muted' : averagePaceVariance <= -10 ? 'text-critical' : averagePaceVariance < 0 ? 'text-warning' : averagePaceVariance >= 10 ? 'text-good' : 'text-accent-600'}>
+              <div className="rounded-lg bg-sunken/60 px-3 py-2 mb-2 flex flex-wrap justify-between gap-2 text-[11px]">
+                <span>Expected pace − actual performance · {periodLabel}</span>
+                <strong className={averagePaceVariance == null ? 'text-ink-muted' : averagePaceVariance >= 10 ? 'text-critical' : averagePaceVariance > 0 ? 'text-warning' : averagePaceVariance <= -10 ? 'text-good' : 'text-accent-600'}>
                   {averagePaceVariance == null ? '—' : `${averagePaceVariance > 0 ? '+' : ''}${averagePaceVariance} pts`}
                 </strong>
               </div>
-              <VarianceChart data={paceData} height={250} maxValue={paceMaxValue} />
+              <VarianceChart data={paceData} height={250} actualLabel="Actual performance" />
             </div>
           </div>
 
@@ -495,24 +512,21 @@ function KpiPerformanceTable({ kpis, periodLabel }) {
       </summary>
       <div className="mt-3 max-h-[65vh] overflow-auto rounded-xl border border-line bg-surface shadow-sm">
         <table className="w-full min-w-[980px] text-[12px]">
-          <caption className="sr-only">KPI target performance, baseline progress, and approved milestone performance for {periodLabel}</caption>
+          <caption className="sr-only">KPI target performance, expected pace, and performance variance for {periodLabel}</caption>
           <thead>
             <tr className="bg-sunken text-[10px] uppercase tracking-wide text-ink-secondary font-bold">
               <th className="px-3 py-2.5 text-left">KPI / owner</th>
-              <th className="px-3 py-2.5 text-right">Actual</th>
-              <th className="px-3 py-2.5 text-right">Target</th>
+              <th className="px-3 py-2.5 text-right">Actual value</th>
+              <th className="px-3 py-2.5 text-right">Target value</th>
               <th className="px-3 py-2.5 text-right">Target performance</th>
-              <th className="px-3 py-2.5 text-right">Baseline progress</th>
-              <th className="px-3 py-2.5 text-right">Target variance</th>
-              <th className="px-3 py-2.5 text-right">Milestone progress expected</th>
-              <th className="px-3 py-2.5 text-right">Performance vs milestone</th>
-              <th className="px-3 py-2.5 text-right">Milestone variance</th>
+              <th className="px-3 py-2.5 text-right">Expected pace</th>
+              <th className="px-3 py-2.5 text-right">Pace variance (expected − actual)</th>
               <th className="px-3 py-2.5 text-right">Weight</th>
               <th className="px-3 py-2.5 text-left">Status</th>
             </tr>
           </thead>
           <tbody>
-            <PaginatedRows items={kpis} colSpan={11} emptyMessage="No KPIs are assigned in this scope." renderRow={(kpi) => {
+            <PaginatedRows items={kpis} colSpan={8} emptyMessage="No KPIs are assigned in this scope." renderRow={(kpi) => {
               const status = STATUS[kpi.status] || STATUS.missing;
               const rowClass = kpi.paceFlag === 'attention' || kpi.status === 'below-target'
                 ? 'bg-critical-soft/35'
@@ -520,8 +534,6 @@ function KpiPerformanceTable({ kpis, periodLabel }) {
               const paceClass = kpi.paceFlag === 'attention' ? 'text-critical font-bold'
                 : kpi.paceFlag === 'behind' ? 'text-warning font-semibold'
                   : kpi.paceFlag === 'ahead' ? 'text-good font-semibold' : 'text-ink-secondary';
-              const targetVarianceSuffix = kpi.measure === '%' ? ' pp' : kpi.measure ? ` ${kpi.measure}` : '';
-              const expectedVarianceSuffix = kpi.measure === '%' ? ' pp' : kpi.measure ? ` ${kpi.measure}` : '';
               return (
                 <tr key={kpi.id} className={`border-t border-line ${rowClass}`}>
                   <td className="px-3 py-2.5">
@@ -531,11 +543,8 @@ function KpiPerformanceTable({ kpis, periodLabel }) {
                   <td className="px-3 py-2.5 text-right tabular-nums">{kpi.actual == null ? '—' : `${kpi.actual}${kpi.measure ? ` ${kpi.measure}` : ''}`}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{kpi.target == null ? '—' : `${kpi.target}${kpi.measure ? ` ${kpi.measure}` : ''}`}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{kpi.performancePct == null ? '—' : `${kpi.performancePct}%`}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{kpi.baselineProgressPct == null ? '—' : `${kpi.baselineProgressPct}%`}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{kpi.targetVariance == null ? '—' : `${kpi.targetVariance > 0 ? '+' : ''}${kpi.targetVariance}${targetVarianceSuffix}`}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{kpi.expectedPacePct == null ? '—' : `${kpi.expectedPacePct}%`}</td>
-                  <td className={`px-3 py-2.5 text-right tabular-nums ${paceClass}`}>{kpi.performanceAgainstExpectedPct == null ? '—' : `${kpi.performanceAgainstExpectedPct}%`}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{kpi.expectedVariance == null ? '—' : `${kpi.expectedVariance > 0 ? '+' : ''}${kpi.expectedVariance}${expectedVarianceSuffix}`}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{kpi.performanceExpectedPacePct == null ? '—' : `${kpi.performanceExpectedPacePct}%`}</td>
+                  <td className={`px-3 py-2.5 text-right tabular-nums ${paceClass}`}>{kpi.paceVariancePct == null ? '—' : `${kpi.paceVariancePct > 0 ? '+' : ''}${kpi.paceVariancePct} pp`}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{kpi.weight}</td>
                   <td className="px-3 py-2.5"><span className={`chip ${status.className}`}>{status.label}</span></td>
                 </tr>
@@ -545,7 +554,7 @@ function KpiPerformanceTable({ kpis, periodLabel }) {
         </table>
       </div>
       <p className="text-[10.5px] text-ink-muted mt-2">
-        The variance chart uses the same month-based pace as Progress. These detail columns use configured KPI milestones; “pp” denotes percentage points.
+        Expected pace is calculated from each KPI’s configured reporting milestone using its own target-performance rule. Pace variance is expected performance minus actual performance; a positive value means the KPI is behind pace. KPIs without a matching milestone have no pace or variance.
       </p>
     </details>
   );
@@ -556,34 +565,42 @@ function BehindPaceTable({ kpis, periodLabel }) {
     <section className="card mb-5" aria-labelledby="behind-pace-title">
       <div className="flex flex-wrap justify-between items-start gap-2 mb-3">
         <div>
-          <h3 id="behind-pace-title" className="font-display font-bold text-[14px]">KPIs behind expected pace</h3>
-          <p className="text-[11px] text-ink-muted mt-0.5">
-            All KPIs whose baseline-to-target progress is below the pace expected by {periodLabel}, ordered by largest gap.
+          <h3 id="behind-pace-title" className="font-display font-bold text-[13px]">KPIs behind expected pace</h3>
+          <p className="text-[10.5px] text-ink-muted mt-0.5">
+            Approved actuals with target performance below the expected pace for {periodLabel}, ordered by largest gap.
           </p>
         </div>
-        <span className="chip chip-rag-red">{kpis.length} behind pace</span>
+        <span className="chip chip-rag-red text-[10px]">{kpis.length} behind pace</span>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-[12px]">
-          <caption className="sr-only">KPIs with baseline progress behind expected calendar pace for {periodLabel}</caption>
+        <table className="w-full min-w-[980px] text-[11.5px]">
+          <caption className="sr-only">Approved KPI actuals with target performance below expected pace for {periodLabel}</caption>
           <thead>
-            <tr className="bg-sunken text-[10px] uppercase tracking-wide text-ink-secondary font-bold">
+            <tr className="bg-sunken text-[9.5px] uppercase tracking-wide text-ink-secondary font-bold">
               <th className="px-3 py-2.5 text-left">KPI / owner</th>
-              <th className="px-3 py-2.5 text-right">Actual progress</th>
+              <th className="px-3 py-2.5 text-right">Approved actual</th>
+              <th className="px-3 py-2.5 text-right">Scoring target</th>
+              <th className="px-3 py-2.5 text-right">Actual performance</th>
               <th className="px-3 py-2.5 text-right">Expected pace</th>
-              <th className="px-3 py-2.5 text-right">Variance</th>
+              <th className="px-3 py-2.5 text-right">Expected − actual</th>
               <th className="px-3 py-2.5 text-left">Status</th>
             </tr>
           </thead>
           <tbody>
-            <PaginatedRows items={kpis} colSpan={5} emptyMessage="No KPIs are behind expected pace for this period." renderRow={(kpi) => (
+            <PaginatedRows items={kpis} colSpan={7} emptyMessage="No approved KPIs are behind expected pace for this period." renderRow={(kpi) => (
               <tr key={kpi.id} className={`border-t border-line ${kpi.paceFlag === 'attention' ? 'bg-critical-soft/35' : 'bg-warning-soft/35'}`}>
                 <td className="px-3 py-2.5">
                   <div className="font-semibold">{kpi.name}</div>
-                  <div className="text-[10.5px] text-ink-muted">{kpi.ownerTier} · {kpi.ownerName}{kpi.ownerUnitName ? ` · ${kpi.ownerUnitName}` : ''}</div>
+                  <div className="text-[10px] text-ink-muted">{kpi.ownerTier} · {kpi.ownerName}{kpi.ownerUnitName ? ` · ${kpi.ownerUnitName}` : ''}</div>
                 </td>
-                <td className="px-3 py-2.5 text-right tabular-nums">{kpi.actualProgressPct == null ? '—' : `${kpi.actualProgressPct}%`}</td>
-                <td className="px-3 py-2.5 text-right tabular-nums">{kpi.progressExpectedPacePct == null ? '—' : `${kpi.progressExpectedPacePct}%`}</td>
+                <td className="px-3 py-2.5 text-right tabular-nums">
+                  {kpi.actual == null ? '—' : `${Number(kpi.actual).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${kpi.measure}`}
+                </td>
+                <td className="px-3 py-2.5 text-right tabular-nums">
+                  {kpi.target == null ? '—' : `${Number(kpi.target).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${kpi.measure}`}
+                </td>
+                <td className="px-3 py-2.5 text-right tabular-nums">{kpi.performancePct == null ? '—' : `${kpi.performancePct}%`}</td>
+                <td className="px-3 py-2.5 text-right tabular-nums">{kpi.performanceExpectedPacePct == null ? '—' : `${kpi.performanceExpectedPacePct}%`}</td>
                 <td className={`px-3 py-2.5 text-right tabular-nums font-bold ${kpi.paceFlag === 'attention' ? 'text-critical' : 'text-warning'}`}>
                   {kpi.paceVariancePct > 0 ? '+' : ''}{kpi.paceVariancePct} pts
                 </td>
@@ -672,9 +689,56 @@ function OrganisationUnitBreakdown({ data, childrenByParent, tierFilter, onHome,
   );
 }
 
+function ExpectedPaceCard({ expected, comparedExpected, actual, variance, behind, behindCount, notCalculableCount, notConfiguredCount, count, periodLabel, canConfigure, onConfigure }) {
+  const paceAlert = behind || behindCount > 0;
+  const status = variance == null
+    ? expected == null && notConfiguredCount > 0 ? 'No KPI reporting milestones configured'
+      : notCalculableCount > 0 ? 'Approved actuals cannot be compared'
+      : expected == null ? 'No pace data available' : 'Awaiting approved actuals'
+    : behind ? 'Overall behind expected pace'
+      : behindCount > 0 ? `${behindCount} KPIs behind expected pace`
+        : variance < 0 ? 'Overall ahead of expected pace' : 'Overall on expected pace';
+  const varianceLabel = variance == null
+    ? expected == null && notConfiguredCount > 0 ? 'No KPI reporting milestones are configured for this period'
+      : notCalculableCount > 0 ? 'Approved actuals cannot be compared with pace' : expected == null ? 'No pace data available' : 'Awaiting approved actuals'
+    : Math.abs(variance) < 0.1 ? 'Expected pace and actual performance are within 0.1 pts'
+      : `Expected pace (${comparedExpected == null ? '—' : `${comparedExpected.toFixed(1)}%`}) − actual performance (${actual == null ? '—' : `${actual.toFixed(1)}%`}) = ${variance > 0 ? '+' : ''}${variance} pts`;
+  return (
+    <div className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3 mb-4 ${paceAlert ? 'border-critical/40 bg-critical-soft pace-alert-pulse' : 'border-accent-500/25 bg-accent-50'}`}>
+      <div>
+        <p className="text-[10.5px] font-extrabold tracking-[0.12em] text-ink-secondary uppercase">KPI milestone expected pace · {periodLabel}</p>
+        <div className={`font-display text-[30px] leading-tight font-extrabold ${paceAlert ? 'text-critical' : 'text-accent-700'}`}>
+          {expected == null ? '—' : `${expected}%`}
+        </div>
+      </div>
+      <div className="text-right">
+        <p className={`font-display font-extrabold text-[14px] ${paceAlert ? 'text-critical' : variance == null ? 'text-ink-muted' : 'text-good'}`} role={paceAlert ? 'alert' : undefined}>
+          {paceAlert && <span aria-hidden="true">⚠ </span>}{status}
+        </p>
+        <p className="text-[11px] text-ink-secondary mt-0.5">
+          {varianceLabel}
+          {count > 0 ? ` · ${count} KPIs compared` : ''}
+          {notConfiguredCount > 0 ? ` · ${notConfiguredCount} without a milestone` : ''}
+        </p>
+        {expected == null && notConfiguredCount > 0 && canConfigure && onConfigure && (
+          <button type="button" className="btn btn-sm mt-2" onClick={onConfigure}>
+            Configure milestones in Settings
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PerformanceNodeCard({ node, onDrill }) {
   const status = STATUS[node.status] || STATUS.missing;
   const pct = node.averagePerformance;
+  const expectedPace = node.expectedPacePct;
+  const paceVariance = node.averageComparedExpectedPacePct == null || node.averagePacePerformancePct == null
+    ? null
+    : Math.round((node.averageComparedExpectedPacePct - node.averagePacePerformancePct) * 10) / 10;
+  const behindPace = node.isBehindPace === true;
+  const paceAlert = behindPace || node.behindPaceCount > 0;
   return (
     <button
       type="button"
@@ -692,6 +756,33 @@ function PerformanceNodeCard({ node, onDrill }) {
       </div>
       <div className="h-1.5 rounded-full bg-sunken overflow-hidden mt-2">
         <div className="h-full rounded-full" style={{ width: `${Math.min(100, Math.max(0, pct || 0))}%`, background: status.color }} />
+      </div>
+      <div className={`flex items-center justify-between gap-2 rounded-lg px-2.5 py-2 mt-2 ${paceAlert ? 'bg-critical-soft pace-alert-pulse' : 'bg-sunken'}`}>
+        <div>
+          <div className="text-[9.5px] font-bold uppercase tracking-wide text-ink-muted">Tier expected pace</div>
+          <div className={`font-display text-[20px] leading-tight font-extrabold ${paceAlert ? 'text-critical' : 'text-accent-700'}`}>
+            {expectedPace == null ? '—' : `${expectedPace}%`}
+          </div>
+        </div>
+        <div className={`text-right text-[10px] font-bold ${paceAlert ? 'text-critical' : paceVariance == null ? 'text-ink-muted' : 'text-good'}`}>
+          <div role={paceAlert ? 'alert' : undefined}>
+            {behindPace ? 'Overall behind pace'
+              : node.behindPaceCount > 0 ? `${node.behindPaceCount} KPIs behind pace`
+                : paceVariance == null
+                ? node.notCalculablePaceCount > 0 ? 'Actuals not comparable'
+                  : expectedPace == null && node.notConfiguredPaceCount > 0 ? 'No KPI milestones configured'
+                    : expectedPace == null ? 'No pace data' : 'Awaiting approved actual'
+                : paceVariance < 0 ? 'On / ahead of pace' : 'On expected pace'}
+          </div>
+          {paceVariance != null && (
+            <div className="mt-0.5">
+              {behindPace && Math.abs(paceVariance) < 0.1
+                ? '<0.1 pts below pace'
+                : `${paceVariance > 0 ? '+' : ''}${paceVariance} pts`}
+              {' · '}{node.paceKpiCount} compared
+            </div>
+          )}
+        </div>
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10.5px] text-ink-muted mt-2">
         <span>{node.achieved} on track</span>

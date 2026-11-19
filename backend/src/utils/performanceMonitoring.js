@@ -4,7 +4,7 @@ const {
   calculateBaselineProgress,
   classifyProgressVariance,
 } = require('./performanceAgainstTarget');
-const { consecutiveRedStreak } = require('./compliance');
+const { consecutiveProgressRedStreak } = require('./compliance');
 const { createPerformanceNotification } = require('./performanceNotifications');
 
 const DAY_MS = 86400000;
@@ -170,7 +170,7 @@ async function processEscalations(alert, kpi, path, settings, now, dueAt) {
     const history = await db.prepare(
       'SELECT * FROM kpi_values WHERE kpi_id = ? AND (year < ? OR (year = ? AND month <= ?)) ORDER BY year DESC, month DESC'
     ).all(kpi.id, alert.year, alert.year, alert.month);
-    const streak = consecutiveRedStreak(history, kpi, settings.ragAmber);
+    const streak = consecutiveProgressRedStreak(history, kpi, settings.ragAmber);
     if (streak >= settings.redEscalateProgramme) levelOneReason = `KPI has remained below the configured baseline-progress threshold for ${streak} consecutive reporting periods.`;
     if (streak >= settings.redEscalateVC) levelTwoReason = `KPI has remained below the configured baseline-progress threshold for ${streak} consecutive reporting periods.`;
   }
@@ -268,7 +268,7 @@ async function evaluateKpiPeriod(kpi, year, month, now, settings) {
       alert,
       null,
       `alert-${alert.id}-${severity}-${alert.detected_at}`,
-      `${severity === 'missing' ? 'Missing submission' : 'Performance alert'}: ${kpi.name}`,
+      `${severity === 'missing' ? 'Missing submission' : 'Progress pace alert'}: ${kpi.name}`,
       `${kpi.name} (${year}-${String(month).padStart(2, '0')}): ${details}`
     );
     if (existing) {

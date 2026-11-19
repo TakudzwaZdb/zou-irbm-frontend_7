@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { useConfirm } from '../context/ConfirmContext.jsx';
 import { api } from '../lib/api.js';
-import { byId, computeRag, computeVariance, hasPendingPreview, ownerName, valueStatus } from '../lib/scope.js';
+import { byId, computeRag, computeVariance, effectiveKpiValue, hasPendingPreview, ownerName, performanceScorePct, valueStatus } from '../lib/scope.js';
 import { ContributorsBreakdown } from './KpiCard.jsx';
 import PaginatedRows from './PaginatedRows.jsx';
 
@@ -27,6 +27,7 @@ export default function ApprovalsTable({ kpis, interactive }) {
   const [expandedId, setExpandedId] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [returnDraft, setReturnDraft] = useState({});
+  const [reviewDraft, setReviewDraft] = useState({});
   const [overrideDraft, setOverrideDraft] = useState({});
 
   function rowFor(kpi) {
@@ -52,7 +53,9 @@ export default function ApprovalsTable({ kpis, interactive }) {
     const isShared = kpi.owner_type === 'unit' && assignees.length > 0;
     const kpiContributions = isShared ? contributions.filter((c) => c.kpi_id === kpi.id) : [];
     const submitted = isShared ? current : valueRow?.entered_value;
-    return { valueRow, status, rag, variance, current, isShared, assignees, kpiContributions, submitted, isPreview };
+    const performancePct = performanceScorePct(kpi, submitted, 'monthly', period.month);
+    const reviewComment = valueRow?.review_comment || valueRow?.return_comment || '';
+    return { valueRow, status, rag, variance, current, isShared, assignees, kpiContributions, submitted, isPreview, performancePct, reviewComment };
   }
 
   async function run(kpi, fn, okMsg) {
@@ -62,7 +65,7 @@ export default function ApprovalsTable({ kpis, interactive }) {
     } catch (err) {
       toast(err.message, 'err');
       setBusyId(null);
-      return;
+      return false;
     }
     try {
       await Promise.all([reloadValues(), reloadPerfValues()]);
@@ -71,6 +74,7 @@ export default function ApprovalsTable({ kpis, interactive }) {
       toast(`${okMsg} Approval succeeded, but Overview refresh failed: ${err.message}`, 'err');
     }
     finally { setBusyId(null); }
+    return true;
   }
 
   function toggleExpand(id) { setExpandedId((cur) => (cur === id ? null : id)); }
@@ -88,16 +92,18 @@ export default function ApprovalsTable({ kpis, interactive }) {
             <th className="px-3 py-2.5 text-right">Target</th>
             <th className="px-3 py-2.5 text-right">Current</th>
             <th className="px-3 py-2.5 text-right min-w-[110px]">Submitted actual</th>
-            <th className="px-3 py-2.5">Score</th>
-            <th className="px-3 py-2.5">Pace</th>
+            <th className="px-3 py-2.5" title="Target-performance score; distinct from the progress score and pace">Performance</th>
+            <th className="px-3 py-2.5">Progress score</th>
+            <th className="px-3 py-2.5">Progress pace</th>
             <th className="px-3 py-2.5 min-w-[140px] max-w-[200px]">Note</th>
+            <th className="px-3 py-2.5 min-w-[190px]">CPU feedback</th>
             {interactive && (
               <th className="px-3 py-2.5 min-w-[190px] sticky right-0 bg-surface border-l border-line z-20">Decision</th>
             )}
           </tr>
         </thead>
         <tbody>
-          <PaginatedRows items={kpis} colSpan={interactive ? 10 : 9} emptyMessage="No KPIs to review." renderRow={(kpi) => {
+          <PaginatedRows items={kpis} colSpan={interactive ? 12 : 11} emptyMessage="No KPIs to review." renderRow={(kpi) => {
             const r = rowFor(kpi);
             const isOpen = expandedId === kpi.id;
             const canOverride = !!kpi.is_automated && hasPerm('apply_override');
@@ -128,6 +134,9 @@ export default function ApprovalsTable({ kpis, interactive }) {
                     {r.current != null ? r.current : '—'}{r.isPreview && <span className="text-ink-muted text-[10.5px]"> (if approved)</span>}
                   </td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{r.submitted != null ? `${r.submitted} ${kpi.measure}` : '—'}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums font-semibold">
+                    {r.performancePct == null ? '—' : `${(Math.round(r.performancePct * 10) / 10).toFixed(1)}%`}
+                  </td>
                   <td className="px-3 py-2.5"><span className={`chip text-[11px] px-2 py-0.5 ${r.rag.cls}`}>{r.rag.label}</span></td>
                   <td className="px-3 py-2.5">
                     {r.variance.flag === 'attention' && <span className="chip bg-critical text-white text-[10.5px] px-1.5 py-0.5" title={`${r.variance.actualPct}% actual vs ${r.variance.expectedPct}% expected pace`}>⚠ {r.variance.variance}pts behind</span>}
@@ -139,11 +148,37 @@ export default function ApprovalsTable({ kpis, interactive }) {
                   <td className="px-3 py-2.5 text-ink-secondary text-[11.8px] max-w-[200px] truncate" title={r.valueRow?.explanation || ''}>
                     {r.valueRow?.explanation || '—'}
                   </td>
+                  <td className="px-3 py-2.5 min-w-[190px]">
+                    {interactive && r.status === 'submitted' ? (
+                      <textarea
+                        rows={2}
+                        maxLength={2000}
+                        className="field-input w-full min-w-[190px] py-1.5"
+                        aria-label={`CPU feedback for ${kpi.name}`}
+                        placeholder="Optional feedback on approval"
+                        value={reviewDraft[kpi.id] ?? r.reviewComment}
+                        onChange={(event) => setReviewDraft((draft) => ({ ...draft, [kpi.id]: event.target.value }))}
+                      />
+                    ) : (
+                      <span className="text-ink-secondary text-[11.5px]" title={r.reviewComment}>
+                        {r.reviewComment || '—'}
+                      </span>
+                    )}
+                  </td>
                   {interactive && (
                     <td className="px-3 py-2.5 sticky right-0 bg-surface border-l border-line">
                       <div className="flex gap-1.5 flex-wrap items-center">
                         <button className="btn btn-sm btn-primary" disabled={busyId === kpi.id}
-                          onClick={() => run(kpi, () => api(`/kpis/${kpi.id}/approve`, { method: 'POST', body: { year: period.year, month: period.month } }), 'Approved.')}>
+                          onClick={() => run(kpi, () => api(`/kpis/${kpi.id}/approve`, {
+                            method: 'POST',
+                            body: { year: period.year, month: period.month, feedback: reviewDraft[kpi.id] ?? '' },
+                          }), 'Approved.').then((succeeded) => {
+                            if (succeeded) setReviewDraft((draft) => {
+                              const next = { ...draft };
+                              delete next[kpi.id];
+                              return next;
+                            });
+                          })}>
                           Approve
                         </button>
                         <button className="btn btn-sm btn-danger" onClick={() => toggleExpand(kpi.id)}>
@@ -158,14 +193,14 @@ export default function ApprovalsTable({ kpis, interactive }) {
                 </tr>
                 {isOpen && interactive && (
                   <tr className="border-b border-line bg-sunken/30">
-                    <td colSpan={10} className="px-3 py-3">
+                    <td colSpan={12} className="px-3 py-3">
                       <div className="space-y-3">
                         {r.valueRow?.explanation && (
                           <p className="text-[12.3px] text-ink-secondary">“{r.valueRow.explanation}” — submitter's note</p>
                         )}
                         <div className="space-y-1.5 max-w-lg">
                           <label className="field-label">Reason for returning this submission</label>
-                          <textarea rows={2} className="field-input" placeholder="Required to return"
+                          <textarea rows={2} maxLength={2000} className="field-input" placeholder="Required to return"
                             value={returnDraft[kpi.id] || ''} onChange={(e) => setReturnDraft((d) => ({ ...d, [kpi.id]: e.target.value }))} />
                           <button className="btn btn-sm btn-danger" disabled={busyId === kpi.id}
                             onClick={() => {
@@ -251,19 +286,24 @@ export function TeamApprovalsTable({ kpis }) {
           <tr className="border-b border-line text-left text-ink-muted text-[10.8px] uppercase tracking-wide">
             <th className="px-3 py-2.5 min-w-[220px]">KPI</th>
             <th className="px-3 py-2.5 text-right">Current</th>
-            <th className="px-3 py-2.5">Score</th>
-            <th className="px-3 py-2.5">Pace</th>
+            <th className="px-3 py-2.5 text-right" title="Target-performance score; distinct from the progress score and pace">Performance</th>
+            <th className="px-3 py-2.5">Progress score</th>
+            <th className="px-3 py-2.5">Progress pace</th>
             <th className="px-3 py-2.5">Team submissions</th>
             <th className="px-3 py-2.5 min-w-[110px] sticky right-0 bg-surface border-l border-line z-20" />
           </tr>
         </thead>
         <tbody>
-          <PaginatedRows items={kpis} colSpan={6} emptyMessage="No team submissions to review." renderRow={(kpi) => {
+          <PaginatedRows items={kpis} colSpan={7} emptyMessage="No team submissions to review." renderRow={(kpi) => {
             const valueRow = values[`${kpi.id}-${period.year}-${period.month}`];
-            const rag = computeRag(kpi, valueRow, settings);
+            const isPreview = hasPendingPreview(valueRow);
+            const effectiveRow = isPreview ? { ...valueRow, value: valueRow.preview_value } : valueRow;
+            const current = effectiveKpiValue(valueRow);
+            const rag = computeRag(kpi, effectiveRow, settings);
             // Same fix as the table above: pace for THIS KPI's actual
             // current period row, not an unrelated "performance lens" period.
-            const variance = computeVariance(kpi, valueRow, settings);
+            const variance = computeVariance(kpi, effectiveRow, settings);
+            const performancePct = performanceScorePct(kpi, current, 'monthly', period.month);
             const assignees = assignments.filter((a) => a.kpi_id === kpi.id).map((a) => byId(org.employees, a.employee_id)).filter(Boolean);
             const kpiContributions = contributions.filter((c) => c.kpi_id === kpi.id);
             const submittedCount = kpiContributions.filter((c) => c.status === 'submitted').length;
@@ -276,7 +316,12 @@ export function TeamApprovalsTable({ kpis }) {
                     <div className="font-semibold text-[12.8px] leading-snug">{kpi.name}</div>
                     <span className="chip chip-tag text-[10px] px-1.5 py-0.5 mt-1 inline-block">{kpi.type}</span>
                   </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{valueRow?.value != null ? valueRow.value : '—'}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums" title={isPreview ? 'Projected team total if pending contributions are approved' : undefined}>
+                    {current != null ? current : '—'}{isPreview && <span className="text-ink-muted text-[10px]"> (projected)</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums font-semibold">
+                    {performancePct == null ? '—' : `${(Math.round(performancePct * 10) / 10).toFixed(1)}%`}
+                  </td>
                   <td className="px-3 py-2.5"><span className={`chip text-[11px] px-2 py-0.5 ${rag.cls}`}>{rag.label}</span></td>
                   <td className="px-3 py-2.5">
                     {variance.flag === 'attention' && <span className="chip bg-critical text-white text-[10.5px] px-1.5 py-0.5">⚠ {variance.variance}pts behind</span>}
@@ -297,7 +342,7 @@ export function TeamApprovalsTable({ kpis }) {
                 </tr>
                 {isOpen && (
                   <tr className="border-b border-line bg-sunken/30">
-                    <td colSpan={6} className="px-3 py-3">
+                    <td colSpan={7} className="px-3 py-3">
                       <ContributorsBreakdown kpi={kpi} assignees={assignees} contributions={kpiContributions} />
                     </td>
                   </tr>

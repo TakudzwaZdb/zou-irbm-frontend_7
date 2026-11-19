@@ -127,6 +127,10 @@ export const NAV_CHILDREN = {
     { route: 'overviewPerformance', label: 'Performance' },
     { route: 'overview', label: 'Progress' },
   ],
+  compliance: [
+    { route: 'complianceProgress', label: 'Progress & Compliance' },
+    { route: 'compliancePerformance', label: 'Performance Escalations' },
+  ],
   reports: [
     { route: 'reportsPerformance', label: 'Performance' },
     { route: 'reports', label: 'Progress' },
@@ -135,6 +139,8 @@ export const NAV_CHILDREN = {
 
 const ROUTE_PARENTS = {
   overviewPerformance: 'overview',
+  complianceProgress: 'compliance',
+  compliancePerformance: 'compliance',
   reportsPerformance: 'reports',
 };
 

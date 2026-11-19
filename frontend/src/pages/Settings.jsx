@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
+import KpiMilestoneSettings from '../components/KpiMilestoneSettings.jsx';
 
 const SECTIONS = [
   {
@@ -229,7 +230,7 @@ export default function Settings() {
           <div>
             <h1 className="mb-1 text-2xl font-extrabold">Settings</h1>
             <p className="max-w-2xl text-[14px] leading-relaxed text-ink-secondary">
-              Configure KPI performance thresholds, submission timing, and escalation rules.
+              Configure monthly KPI expected pace milestones, performance thresholds, submission timing, and escalation rules.
             </p>
           </div>
           <div className="rounded-xl border border-line bg-surface px-4 py-2.5 shadow-sm">
@@ -240,6 +241,8 @@ export default function Settings() {
           </div>
         </div>
       </header>
+
+      <KpiMilestoneSettings />
 
       <div className="card mb-5 flex flex-wrap items-center justify-between gap-3 p-3.5 sm:p-4">
         <label className="relative min-w-[220px] flex-1 sm:max-w-xl">

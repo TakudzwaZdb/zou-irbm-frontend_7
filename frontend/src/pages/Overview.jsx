@@ -11,6 +11,7 @@ import RagBarChart from '../components/RagBarChart.jsx';
 import RagPieChart from '../components/RagPieChart.jsx';
 import VarianceChart from '../components/VarianceChart.jsx';
 import VarianceAlerts from '../components/VarianceAlerts.jsx';
+import MonthlyPerformancePaceSummary from '../components/MonthlyPerformancePaceSummary.jsx';
 import PeriodTypePicker from '../components/PeriodTypePicker.jsx';
 import { api } from '../lib/api.js';
 
@@ -111,6 +112,7 @@ export default function Overview() {
       )}
 
       {hasPerm('view_performance_alerts') && <PerformanceAlertSummary period={period} />}
+      <MonthlyPerformancePaceSummary period={period} orgNode={effectiveNode} />
 
       {effectiveNode
         ? <NodeView node={effectiveNode} onHome={clearSelNode} onSelect={selectNode} />

@@ -395,6 +395,7 @@ CREATE TABLE IF NOT EXISTS kpi_values (
   programme_approved_at TEXT,
   approved_at TEXT,
   return_comment TEXT,
+  review_comment TEXT,
   override_cleared_value REAL,
   override_cleared_note TEXT,
   override_cleared_at TEXT,
@@ -941,6 +942,7 @@ async function ensureSchema() {
   await pool.query('ALTER TABLE kpi_values ADD COLUMN IF NOT EXISTS evidence TEXT');
   await pool.query('ALTER TABLE kpi_values ADD COLUMN IF NOT EXISTS challenges TEXT');
   await pool.query('ALTER TABLE kpi_values ADD COLUMN IF NOT EXISTS corrective_actions TEXT');
+  await pool.query('ALTER TABLE kpi_values ADD COLUMN IF NOT EXISTS review_comment TEXT');
   await pool.query("ALTER TABLE kpis ADD COLUMN IF NOT EXISTS measurement_direction TEXT NOT NULL DEFAULT 'higher' CHECK(measurement_direction IN ('higher','lower'))");
   await pool.query('ALTER TABLE kpis ADD COLUMN IF NOT EXISTS weight REAL NOT NULL DEFAULT 1 CHECK(weight > 0)');
   await pool.query("ALTER TABLE kpi_templates ADD COLUMN IF NOT EXISTS measurement_direction TEXT NOT NULL DEFAULT 'higher' CHECK(measurement_direction IN ('higher','lower'))");

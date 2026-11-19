@@ -1,6 +1,6 @@
-const { calculateBaselineProgress } = require('./performanceAgainstTarget');
+const { calculateBaselineProgress, calculatePerformanceAgainstTarget } = require('./performanceAgainstTarget');
 
-function consecutiveRedStreak(rows, kpi, ragAmber) {
+function consecutiveStreak(rows, score, threshold) {
   const officialRows = rows
     .filter((row) =>
       (row.status === 'approved' || row.approved_at != null) &&
@@ -14,11 +14,9 @@ function consecutiveRedStreak(rows, kpi, ragAmber) {
     const period = Number(row.year) * 12 + Number(row.month);
     if (expectedPeriod != null && period !== expectedPeriod) break;
 
-    const actual = Number(row.override_value != null ? row.override_value : row.value);
-    if (!Number.isFinite(actual)) break;
-    const progress = calculateBaselineProgress(kpi, actual);
-    if (progress == null) break;
-    if (progress >= Number(ragAmber)) break;
+    const scorePct = score(row);
+    if (scorePct == null) break;
+    if (scorePct >= Number(threshold)) break;
 
     streak++;
     expectedPeriod = period - 1;
@@ -27,4 +25,23 @@ function consecutiveRedStreak(rows, kpi, ragAmber) {
   return streak;
 }
 
-module.exports = { consecutiveRedStreak };
+function actualValue(row) {
+  const actual = Number(row.override_value != null ? row.override_value : row.value);
+  return Number.isFinite(actual) ? actual : null;
+}
+
+function consecutiveProgressRedStreak(rows, kpi, ragAmber) {
+  return consecutiveStreak(rows, (row) => {
+    const actual = actualValue(row);
+    return actual == null ? null : calculateBaselineProgress(kpi, actual);
+  }, ragAmber);
+}
+
+function consecutivePerformanceStreak(rows, kpi, performanceThreshold) {
+  return consecutiveStreak(rows, (row) => {
+    const actual = actualValue(row);
+    return actual == null ? null : calculatePerformanceAgainstTarget(kpi, actual).performancePct;
+  }, performanceThreshold);
+}
+
+module.exports = { consecutiveProgressRedStreak, consecutivePerformanceStreak };

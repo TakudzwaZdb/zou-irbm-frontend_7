@@ -2,15 +2,14 @@ const express = require('express');
 const db = require('../db');
 const { requireAuth, requirePerm, requireAnyPerm, requireRole } = require('../middleware/auth');
 const { canReadKpi, isGlobalReader } = require('../utils/scope');
+const { isValidReportingPeriods } = require('../utils/reportingPeriods');
 const {
   calculatePerformanceAgainstTarget,
-  calculateBaselineProgress,
-  calculateProgressPace,
-  calculateTargetVariance,
-  calculateExpectedProgress,
+  calculatePerformancePace,
   calculateWeightedKpiScore,
   getReportingMilestone,
   classifyTargetPerformance,
+  summarizePace,
   summarizeKpis,
 } = require('../utils/performanceAgainstTarget');
 const { checkSubmissionWindow, wasLate, windowMessage, nowSqlString } = require('../utils/submissionWindow');
@@ -231,7 +230,8 @@ async function recomputeUnitTotal(kpiId, year, month) {
     const hasOfficialValue = existing.value != null && (existing.status === 'approved' || existing.approved_at != null);
     const nextStatus = existing.status === 'approved' ? 'submitted' : existing.status;
     if (hasOfficialValue) {
-      await db.prepare('UPDATE kpi_values SET status = ? WHERE id = ?').run(nextStatus, existing.id);
+      await db.prepare('UPDATE kpi_values SET status = ?, review_comment = NULL, return_comment = NULL WHERE id = ?')
+        .run(nextStatus, existing.id);
     } else {
       await db.prepare('UPDATE kpi_values SET value = ?, status = ? WHERE id = ?')
         .run(sum, nextStatus, existing.id);
@@ -342,7 +342,6 @@ router.get('/performance-target', async (req, res) => {
   const visibleKpiIds = new Set(visibleKpis.map((kpi) => kpi.id));
   const actualByKpi = new Map();
   const approvedRowsByKpi = new Map();
-  const paceActualByKpi = new Map();
   const latestValueRowByKpi = new Map();
   for (const row of valueRows) {
     if (!visibleKpiIds.has(row.kpi_id)) continue;
@@ -355,10 +354,6 @@ router.get('/performance-target', async (req, res) => {
     const approvedRows = approvedRowsByKpi.get(row.kpi_id) || [];
     approvedRows.push(row);
     approvedRowsByKpi.set(row.kpi_id, approvedRows);
-    const paceActual = paceActualByKpi.get(row.kpi_id);
-    if (!paceActual || Number(row.month) > Number(paceActual.month)) {
-      paceActualByKpi.set(row.kpi_id, { month: Number(row.month), actual });
-    }
     const previous = actualByKpi.get(row.kpi_id);
     if (!previous || row.month > previous.month) actualByKpi.set(row.kpi_id, { month: row.month, actual });
   }
@@ -429,7 +424,6 @@ router.get('/performance-target', async (req, res) => {
     const item = {
       kpi,
       actual: value ? value.actual : null,
-      actualMonth: value?.month ?? null,
       submissionStatus: latestValueRow?.status || null,
       returnComment: latestValueRow?.return_comment || null,
     };
@@ -482,6 +476,21 @@ router.get('/performance-target', async (req, res) => {
     }
   }
 
+  const performancePaceByKpi = new Map(visibleKpis.map((kpi) => {
+    const milestone = getReportingMilestone(kpi, periodType, periodIndex);
+    const calculationKpi = kpi.reporting_mode === 'period' && milestone
+      ? { ...kpi, target: milestone.expectedValue }
+      : kpi;
+    const actual = actualByKpi.get(kpi.id)?.actual ?? null;
+    const weight = Number(kpi.weight);
+    return [kpi.id, {
+      ...calculatePerformancePace(calculationKpi, actual, milestone?.expectedValue),
+      weight: Number.isFinite(weight) && weight > 0 ? weight : 0,
+    }];
+  }));
+  const nodePaceSummary = (node) => summarizePace(
+    [...node.kpis.keys()].map((id) => performancePaceByKpi.get(id)),
+  );
   const toResponseNode = (node) => ({
     key: node.key,
     kind: node.kind,
@@ -490,29 +499,18 @@ router.get('/performance-target', async (req, res) => {
     tier: node.tier,
     parentKey: displayKeys.has(node.parentKey) ? node.parentKey : null,
     ...summarizeKpis([...node.kpis.values()]),
+    ...nodePaceSummary(node),
   });
   const summaryNode = selectedNode || nodeByKey.get(rootKey);
-  const progressPaceByKpi = new Map();
-  const kpiDetails = [...summaryNode.kpis.values()].map(({ kpi, actual, actualMonth, submissionStatus, returnComment }) => {
+  const kpiDetails = [...summaryNode.kpis.values()].map(({ kpi, actual, submissionStatus, returnComment }) => {
     const milestone = getReportingMilestone(kpi, periodType, periodIndex);
     const calculationKpi = kpi.reporting_mode === 'period' && milestone
       ? { ...kpi, target: milestone.expectedValue }
       : kpi;
     const result = calculatePerformanceAgainstTarget(calculationKpi, actual);
     const performancePct = result.performancePct;
-    const expected = calculateExpectedProgress(kpi, actual, milestone);
-    const expectedPacePct = expected.expectedProgressPct;
-    const paceActual = paceActualByKpi.get(kpi.id);
-    const progressPace = calculateProgressPace(kpi, paceActual?.actual, paceActual?.month);
-    progressPaceByKpi.set(kpi.id, progressPace);
+    const performancePace = performancePaceByKpi.get(kpi.id);
     const weighted = calculateWeightedKpiScore(calculationKpi, actual);
-    const baselineKpi = kpi.reporting_mode !== 'period'
-      ? kpi
-      : milestone && isFiniteNumberInput(milestone.baseline)
-        ? { ...calculationKpi, baseline: Number(milestone.baseline) }
-        : null;
-    const baselineProgressPct = baselineKpi ? calculateBaselineProgress(baselineKpi, actual) : null;
-    const targetVariance = calculateTargetVariance(calculationKpi, actual);
     const owner = kpi.owner_type === 'sub' ? subById.get(kpi.owner_id)
       : kpi.owner_type === 'unit' ? unitById.get(kpi.owner_id)
         : employeeById.get(kpi.owner_id);
@@ -529,7 +527,6 @@ router.get('/performance-target', async (req, res) => {
       measure: kpi.measure,
       target: calculationKpi.target,
       annualTarget: kpi.target,
-      baseline: baselineKpi?.baseline ?? null,
       actual,
       weight: kpi.weight,
       weightedKpiContribution: weighted.weightedScore,
@@ -537,16 +534,6 @@ router.get('/performance-target', async (req, res) => {
       achievementRule: kpi.achievement_rule || 'ratio',
       measurementDirection: kpi.measurement_direction,
       performanceCalculationStatus: result.status,
-      baselineProgressPct: baselineProgressPct == null ? null : Math.round(baselineProgressPct * 10) / 10,
-      actualProgressPct: progressPace.actualProgressPct == null
-        ? null : Math.round(progressPace.actualProgressPct * 10) / 10,
-      targetVariance,
-      expectedValue: expected.expectedValue,
-      expectedProgressPct: expectedPacePct == null ? null : Math.round(expectedPacePct * 10) / 10,
-      performanceAgainstExpectedPct: expected.performanceAgainstExpectedPct == null
-        ? null : Math.round(expected.performanceAgainstExpectedPct * 10) / 10,
-      expectedVariance: expected.expectedVariance,
-      expectedCalculationStatus: expected.status,
       submissionStatus,
       returnComment,
       ownerTier: kpi.owner_type === 'sub' ? 'Sub-programme'
@@ -555,25 +542,16 @@ router.get('/performance-target', async (req, res) => {
       ownerUnitName: employeeUnit?.name || null,
       performancePct: performancePct == null ? null : Math.round(performancePct * 10) / 10,
       status,
-      expectedPacePct: expectedPacePct == null ? null : Math.round(expectedPacePct * 10) / 10,
-      progressExpectedPacePct: progressPace.expectedPacePct == null
-        ? null : Math.round(progressPace.expectedPacePct * 10) / 10,
-      paceVariancePct: progressPace.variance == null
-        ? null : Math.round(progressPace.variance * 10) / 10,
-      paceVarianceRawPct: progressPace.variance,
-      paceFlag: progressPace.flag,
+      performanceExpectedPacePct: performancePace.expectedPacePct == null
+        ? null : Math.round(performancePace.expectedPacePct * 10) / 10,
+      paceVariancePct: performancePace.variance == null
+        ? null : Math.round(performancePace.variance * 10) / 10,
+      paceVarianceRawPct: performancePace.variance,
+      paceFlag: performancePace.flag,
     };
   });
   const summary = summarizeKpis([...summaryNode.kpis.values()]);
-  const paceKpis = [...summaryNode.kpis.keys()]
-    .map((id) => progressPaceByKpi.get(id))
-    .filter((pace) => pace?.status === 'calculated');
-  summary.expectedPacePct = paceKpis.length
-    ? Math.round(paceKpis.reduce((sum, pace) => sum + pace.expectedPacePct, 0) / paceKpis.length * 10) / 10
-    : null;
-  summary.averagePaceVariancePct = paceKpis.length
-    ? Math.round(paceKpis.reduce((sum, pace) => sum + pace.variance, 0) / paceKpis.length * 10) / 10
-    : null;
+  Object.assign(summary, nodePaceSummary(summaryNode));
   const displayedNodes = allScopedNodes.filter((node) => displayKeys.has(node.key));
   const filteredNodes = tierFilter
     ? displayedNodes.filter((node) => `${node.kind}:${node.tier}` === tierFilter || node.kind === tierFilter)
@@ -592,6 +570,7 @@ router.get('/performance-target', async (req, res) => {
     kind: group.kind,
     tier: group.tier,
     ...summarizeKpis([...group.kpis.values()]),
+    ...summarizePace([...group.kpis.keys()].map((id) => performancePaceByKpi.get(id))),
   }));
   const availableYears = new Set([
     new Date().getFullYear(),
@@ -670,10 +649,11 @@ router.put('/bulk-value', requirePerm('data_entry'), async (req, res) => {
       if (existing) {
         await db.prepare(
           `UPDATE kpi_values SET entered_value = ?, status = ?, submitted_at = CASE WHEN ? THEN datetime('now') ELSE submitted_at END,
+            review_comment = CASE WHEN ? THEN NULL ELSE review_comment END,
             achievement_date = ?, evidence = ?, challenges = ?, corrective_actions = ?
            WHERE id = ?`
         ).run(
-          value, wasApproved ? 'submitted' : existing.status, wasApproved ? 1 : 0,
+          value, wasApproved ? 'submitted' : existing.status, wasApproved ? 1 : 0, wasApproved ? 1 : 0,
           req.body.achievementDate || null, req.body.evidence || null,
           req.body.challenges || null, req.body.correctiveActions || null,
           existing.id
@@ -723,7 +703,7 @@ router.post('/bulk-submit', requireAnyPerm('data_entry', 'submit_data_entries'),
   const submittedAt = nowSqlString(req);
   const applyAll = db.transaction(async () => {
     for (const { kpi, row } of prepared) {
-      await db.prepare('UPDATE kpi_values SET status = \'submitted\', submitted_at = ?, return_comment = NULL WHERE id = ?').run(submittedAt, row.id);
+      await db.prepare('UPDATE kpi_values SET status = \'submitted\', submitted_at = ?, return_comment = NULL, review_comment = NULL WHERE id = ?').run(submittedAt, row.id);
       await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
         req.user.id, 'submit', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} submitted for review (bulk submit, ${prepared.length} KPI${prepared.length > 1 ? 's' : ''} in this batch)${win.late ? ' — late, within the grace window.' : '.'}`
       );
@@ -1015,14 +995,9 @@ router.post('/', requirePerm('create_kpi'), async (req, res) => {
   if (!['sum', 'latest'].includes(periodAggregation)) {
     return res.status(400).json({ error: 'periodAggregation must be sum or latest.' });
   }
-  if (!Array.isArray(reportingPeriods) || reportingPeriods.some((milestone) =>
-    !milestone || typeof milestone !== 'object'
-      || typeof milestone.periodType !== 'string'
-      || milestone.periodIndex == null || !Number.isInteger(Number(milestone.periodIndex)) || Number(milestone.periodIndex) < 1
-      || milestone.expectedValue == null || !isFiniteNumberInput(milestone.expectedValue)
-  )) {
+  if (!isValidReportingPeriods(reportingPeriods)) {
     return res.status(400).json({
-      error: 'reportingPeriods must be an array of milestones with periodType, periodIndex, and numeric expectedValue.',
+      error: 'reportingPeriods must contain unique monthly, quarterly, biannual, or annual milestones with valid indexes and numeric expectedValue values.',
     });
   }
   if (req.body.allowableVariance != null
@@ -1203,6 +1178,25 @@ router.post('/configuration/weighting-allocations/:id/approve', requireRole('cpu
   res.json({ allocation: await db.prepare('SELECT * FROM weighting_allocations WHERE id = ?').get(allocation.id) });
 });
 
+router.patch('/:id/reporting-periods', requireAnyPerm('manage_settings', 'edit_kpi', 'create_kpi'), async (req, res) => {
+  const kpi = await getKpiOr404(req, res); if (!kpi) return;
+  if (!await inJurisdiction(req.user, kpi)
+      && !(isGlobalReader(req.user) && req.user.permissions?.includes('manage_settings'))) {
+    return res.status(403).json({ error: 'This KPI is outside your scope.' });
+  }
+  const reportingPeriods = req.body?.reportingPeriods;
+  if (!isValidReportingPeriods(reportingPeriods)) {
+    return res.status(400).json({
+      error: 'reportingPeriods must contain unique monthly, quarterly, biannual, or annual milestones with valid indexes and numeric expectedValue values.',
+    });
+  }
+  await db.prepare('UPDATE kpis SET reporting_periods = ? WHERE id = ?')
+    .run(JSON.stringify(reportingPeriods), kpi.id);
+  await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)')
+    .run(req.user.id, 'update_kpi_reporting_periods', 'kpi', kpi.id, JSON.stringify(reportingPeriods));
+  res.json({ kpi: await db.prepare('SELECT * FROM kpis WHERE id = ?').get(kpi.id) });
+});
+
 router.patch('/:id/targets', requirePerm('edit_targets'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
   if (!await inJurisdiction(req.user, kpi)) return res.status(403).json({ error: 'This KPI is outside your scope.' });
@@ -1232,14 +1226,44 @@ router.put('/:id', requireAnyPerm('create_kpi', 'edit_kpi'), async (req, res) =>
   const { name, type, measure, baseline, target } = req.body || {};
   const measurementDirection = req.body?.measurementDirection ?? kpi.measurement_direction ?? 'higher';
   const weight = req.body?.weight == null ? Number(kpi.weight ?? 1) : Number(req.body.weight);
+  const achievementRule = req.body?.achievementRule ?? kpi.achievement_rule ?? 'ratio';
+  const reportingMode = req.body?.reportingMode ?? kpi.reporting_mode ?? 'cumulative';
+  const periodAggregation = req.body?.periodAggregation ?? kpi.period_aggregation ?? 'latest';
+  const hasReportingPeriods = Object.prototype.hasOwnProperty.call(req.body || {}, 'reportingPeriods');
+  const reportingPeriods = req.body?.reportingPeriods;
   if (!name || !type || !measure || baseline == null || target == null) {
     return res.status(400).json({ error: 'name, type, measure, baseline, and target are all required.' });
   }
   if (!['higher', 'lower'].includes(measurementDirection)) return res.status(400).json({ error: 'measurementDirection must be higher or lower.' });
   if (!Number.isFinite(weight) || weight <= 0) return res.status(400).json({ error: 'weight must be a positive number.' });
+  if (!['ratio', 'exact_target', 'baseline_progress'].includes(achievementRule)) {
+    return res.status(400).json({ error: 'achievementRule must be ratio, exact_target, or baseline_progress.' });
+  }
+  if (!['cumulative', 'period'].includes(reportingMode)) {
+    return res.status(400).json({ error: 'reportingMode must be cumulative or period.' });
+  }
+  if (!['sum', 'latest'].includes(periodAggregation)) {
+    return res.status(400).json({ error: 'periodAggregation must be sum or latest.' });
+  }
+  if (hasReportingPeriods && !isValidReportingPeriods(reportingPeriods)) {
+    return res.status(400).json({
+      error: 'reportingPeriods must contain unique monthly, quarterly, biannual, or annual milestones with valid indexes and numeric expectedValue values.',
+    });
+  }
 
-  await db.prepare('UPDATE kpis SET name = ?, type = ?, measure = ?, baseline = ?, target = ?, measurement_direction = ?, weight = ? WHERE id = ?')
-    .run(name, type, measure, Number(baseline), Number(target), measurementDirection, weight, kpi.id);
+  const reportingPeriodsUpdate = hasReportingPeriods ? ', reporting_periods = ?' : '';
+  const updateParams = [
+    name, type, measure, Number(baseline), Number(target), measurementDirection, weight,
+    achievementRule, reportingMode, periodAggregation,
+  ];
+  if (hasReportingPeriods) updateParams.push(JSON.stringify(reportingPeriods));
+  updateParams.push(kpi.id);
+  await db.prepare(
+    `UPDATE kpis SET name = ?, type = ?, measure = ?, baseline = ?, target = ?,
+      measurement_direction = ?, weight = ?, achievement_rule = ?, reporting_mode = ?,
+      period_aggregation = ?${reportingPeriodsUpdate}
+     WHERE id = ?`
+  ).run(...updateParams);
   const changes = [];
   if (name !== kpi.name) changes.push(`name "${kpi.name}" → "${name}"`);
   if (type !== kpi.type) changes.push(`type "${kpi.type}" → "${type}"`);
@@ -1248,6 +1272,12 @@ router.put('/:id', requireAnyPerm('create_kpi', 'edit_kpi'), async (req, res) =>
   if (Number(target) !== kpi.target) changes.push(`target ${kpi.target} → ${target}`);
   if (measurementDirection !== kpi.measurement_direction) changes.push(`measurement direction ${kpi.measurement_direction} → ${measurementDirection}`);
   if (weight !== Number(kpi.weight)) changes.push(`weight ${kpi.weight} → ${weight}`);
+  if (achievementRule !== (kpi.achievement_rule || 'ratio')) changes.push(`achievement rule ${kpi.achievement_rule || 'ratio'} → ${achievementRule}`);
+  if (reportingMode !== (kpi.reporting_mode || 'cumulative')) changes.push(`reporting mode ${kpi.reporting_mode || 'cumulative'} → ${reportingMode}`);
+  if (periodAggregation !== (kpi.period_aggregation || 'latest')) changes.push(`period aggregation ${kpi.period_aggregation || 'latest'} → ${periodAggregation}`);
+  if (hasReportingPeriods && JSON.stringify(reportingPeriods) !== String(kpi.reporting_periods || '[]')) {
+    changes.push('reporting pace milestones updated');
+  }
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'edit_kpi', 'kpi', kpi.id, changes.length ? `KPI updated: ${changes.join('; ')}.` : 'KPI saved with no changes.'
   );
@@ -1324,9 +1354,10 @@ router.put('/:id/value', requirePerm('data_entry'), async (req, res) => {
   const wasApproved = existing && existing.status === 'approved';
   if (existing) {
     await db.prepare(
-      `UPDATE kpi_values SET entered_value = ?, status = ?, submitted_at = CASE WHEN ? THEN datetime('now') ELSE submitted_at END
+      `UPDATE kpi_values SET entered_value = ?, status = ?, submitted_at = CASE WHEN ? THEN datetime('now') ELSE submitted_at END,
+        review_comment = CASE WHEN ? THEN NULL ELSE review_comment END
        WHERE id = ?`
-    ).run(value, wasApproved ? 'submitted' : existing.status, wasApproved ? 1 : 0, existing.id);
+    ).run(value, wasApproved ? 'submitted' : existing.status, wasApproved ? 1 : 0, wasApproved ? 1 : 0, existing.id);
   } else {
     await db.prepare('INSERT INTO kpi_values (kpi_id, year, month, entered_value, status) VALUES (?, ?, ?, ?, \'draft\')').run(kpi.id, year, month, value);
   }
@@ -1353,7 +1384,7 @@ router.post('/:id/submit', requireAnyPerm('data_entry', 'submit_data_entries'), 
   const missing = kpi.is_automated ? row.value == null : row.entered_value == null;
   if (missing) return res.status(400).json({ error: 'Enter a value before submitting.' });
 
-  await db.prepare('UPDATE kpi_values SET status = \'submitted\', submitted_at = ?, return_comment = NULL WHERE id = ?').run(nowSqlString(req), row.id);
+  await db.prepare('UPDATE kpi_values SET status = \'submitted\', submitted_at = ?, return_comment = NULL, review_comment = NULL WHERE id = ?').run(nowSqlString(req), row.id);
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
     req.user.id, 'submit', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} submitted for review${win.late ? ' (late — within the grace window).' : '.'}`
   );
@@ -1365,7 +1396,14 @@ router.post('/:id/submit', requireAnyPerm('data_entry', 'submit_data_entries'), 
 // official until CPU approves the Unit's submission.
 router.post('/:id/approve', requireRole('cpu'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
-  const { year, month } = req.body || {};
+  const { year, month, feedback } = req.body || {};
+  if (feedback != null && typeof feedback !== 'string') {
+    return res.status(400).json({ error: 'feedback must be text.' });
+  }
+  const reviewComment = typeof feedback === 'string' ? feedback.trim() : '';
+  if (reviewComment.length > 2000) {
+    return res.status(400).json({ error: 'feedback must be 2000 characters or fewer.' });
+  }
   const row = await db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month);
   // Single stage, every tier alike: 'submitted' is the only pending status
   // now (see isApprover's own comment above for why the old sub-owned
@@ -1380,7 +1418,7 @@ router.post('/:id/approve', requireRole('cpu'), async (req, res) => {
   let detail = `${year}-${String(month).padStart(2, '0')} approved.`;
   if (!kpi.is_automated) {
     const actual = Number(row.entered_value);
-    await db.prepare('UPDATE kpi_values SET value = ?, status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(actual, row.id);
+    await db.prepare('UPDATE kpi_values SET value = ?, status = \'approved\', approved_at = datetime(\'now\'), review_comment = ? WHERE id = ?').run(actual, reviewComment || null, row.id);
     detail = `${year}-${String(month).padStart(2, '0')} approved with cumulative actual ${actual}.`;
   } else {
     const base = await previousOfficialValue(kpi.id, year, month, kpi.baseline);
@@ -1388,7 +1426,7 @@ router.post('/:id/approve', requireRole('cpu'), async (req, res) => {
       "SELECT value FROM kpi_contributions WHERE kpi_id = ? AND year = ? AND month = ? AND status = 'approved'"
     ).all(kpi.id, year, month);
     const actual = base + contributions.reduce((sum, contribution) => sum + Number(contribution.value || 0), 0);
-    await db.prepare('UPDATE kpi_values SET value = ?, status = \'approved\', approved_at = datetime(\'now\') WHERE id = ?').run(actual, row.id);
+    await db.prepare('UPDATE kpi_values SET value = ?, status = \'approved\', approved_at = datetime(\'now\'), review_comment = ? WHERE id = ?').run(actual, reviewComment || null, row.id);
     await cascadeRecomputeForward(kpi.id, Number(year), Number(month), req.user.id);
     detail = `${year}-${String(month).padStart(2, '0')} approved with automated cumulative actual ${actual}.`;
   }
@@ -1401,7 +1439,9 @@ router.post('/:id/approve', requireRole('cpu'), async (req, res) => {
 router.post('/:id/return', requireRole('cpu'), async (req, res) => {
   const kpi = await getKpiOr404(req, res); if (!kpi) return;
   const { year, month, comment } = req.body || {};
-  if (!comment) return res.status(400).json({ error: 'A reason is required when returning a submission.' });
+  if (typeof comment !== 'string' || !comment.trim()) return res.status(400).json({ error: 'A reason is required when returning a submission.' });
+  if (comment.trim().length > 2000) return res.status(400).json({ error: 'The return reason must be 2000 characters or fewer.' });
+  const returnComment = comment.trim();
   const row = await db.prepare('SELECT * FROM kpi_values WHERE kpi_id = ? AND year = ? AND month = ?').get(kpi.id, year, month);
   const pendingStatuses = ['submitted'];
   if (!row || !pendingStatuses.includes(row.status)) return res.status(400).json({ error: 'Nothing pending review for that period.' });
@@ -1412,9 +1452,9 @@ router.post('/:id/return', requireRole('cpu'), async (req, res) => {
   // rule every other return in this app already follows (never bounced to
   // an intermediate reviewer to pass along; there is no intermediate stage
   // in this cascade any more).
-  await db.prepare('UPDATE kpi_values SET status = \'draft\', return_comment = ? WHERE id = ?').run(comment, row.id);
+  await db.prepare('UPDATE kpi_values SET status = \'draft\', return_comment = ?, review_comment = ? WHERE id = ?').run(returnComment, returnComment, row.id);
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'return', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} returned: "${comment}"`
+    req.user.id, 'return', 'kpi', kpi.id, `${year}-${String(month).padStart(2, '0')} returned: "${returnComment}"`
   );
   res.json({ ok: true });
 });

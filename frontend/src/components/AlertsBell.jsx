@@ -15,7 +15,7 @@ const KIND_LABEL = {
   returned: 'Returned', 
   pending: 'Pending review', 
   offtrack: 'Off track',
-  performance: 'Performance workflow',
+  performance: 'Progress / submission workflow',
 };
 
 const getAlertSignature = (alert) => `${alert.id}|${alert.message}`;

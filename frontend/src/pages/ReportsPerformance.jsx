@@ -67,7 +67,7 @@ export default function ReportsPerformance({ setRoute }) {
       ...(data.nodes.length ? reportRows(data) : [['', 'No organisational units match the selected filters.']]),
       [],
       ['Section 2 | KPI Target Performance and Pace Detail'],
-      ['KPI', 'Owner tier', 'Owner', 'Actual', 'Target', 'Target performance %', 'Expected pace %', 'Pace variance (points)', 'Weight', 'Status'],
+      ['KPI', 'Owner tier', 'Owner', 'Actual', 'Target', 'Target performance %', 'Expected pace %', 'Pace variance (expected - actual, points)', 'Weight', 'Status'],
       ...((data.kpis || []).length ? data.kpis.map((kpi) => [
         kpi.name,
         kpi.ownerTier,
@@ -125,7 +125,7 @@ export default function ReportsPerformance({ setRoute }) {
       autoTable(doc, {
         startY: doc.lastAutoTable.finalY + 22,
         margin: { left: margin, right: margin },
-        head: [['KPI / owner', 'Actual', 'Target', 'Target performance', 'Expected pace', 'Pace variance', 'Weight', 'Status']],
+        head: [['KPI / owner', 'Actual', 'Target', 'Target performance', 'Expected pace', 'Pace variance (expected - actual)', 'Weight', 'Status']],
         body: (data.kpis || []).map((kpi) => [
           `${kpi.name}\n${[kpi.ownerTier, kpi.ownerName, kpi.ownerUnitName].filter(Boolean).join(' · ')}`,
           kpi.actual == null ? '—' : `${kpi.actual}${kpi.measure ? ` ${kpi.measure}` : ''}`,

@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requirePerm, requireAnyPerm } = require('../middleware/auth');
+const { isValidReportingPeriods } = require('../utils/reportingPeriods');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -80,13 +81,10 @@ router.post('/', requirePerm('create_kpi'), async (req, res) => {
   if (!['sum', 'latest'].includes(periodAggregation)) {
     return res.status(400).json({ error: 'periodAggregation must be sum or latest.' });
   }
-  if (!Array.isArray(reportingPeriods) || reportingPeriods.some((milestone) =>
-    !milestone || typeof milestone !== 'object'
-      || typeof milestone.periodType !== 'string'
-      || milestone.periodIndex == null || !Number.isInteger(Number(milestone.periodIndex)) || Number(milestone.periodIndex) < 1
-      || milestone.expectedValue == null || !Number.isFinite(Number(milestone.expectedValue))
-  )) {
-    return res.status(400).json({ error: 'reportingPeriods must contain milestones with periodType, periodIndex, and numeric expectedValue.' });
+  if (!isValidReportingPeriods(reportingPeriods)) {
+    return res.status(400).json({
+      error: 'reportingPeriods must contain unique monthly, quarterly, biannual, or annual milestones with valid indexes and numeric expectedValue values.',
+    });
   }
   const unit = await unitOr404(unitId, res); if (!unit) return;
 

@@ -47,6 +47,8 @@ const PAGES = {
   orgBuilder: OrganisationBuilder,
   planning: Planning,
   compliance: Compliance,
+  complianceProgress: Compliance,
+  compliancePerformance: Compliance,
   reports: Reports,
   reportsPerformance: ReportsPerformance,
   audit: Audit,
@@ -120,7 +122,7 @@ export default function App() {
   return (
     <Layout route={safeRoute} setRoute={setRoute}>
       <Suspense fallback={<div className="text-ink-muted text-[13px]">Loading…</div>}>
-        <Page setRoute={setRoute} />
+        <Page setRoute={setRoute} route={safeRoute} />
       </Suspense>
     </Layout>
   );

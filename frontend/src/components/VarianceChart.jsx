@@ -30,7 +30,7 @@ function makeOwnerTick(chartData) {
     const item = chartData[payload.index];
     return (
       <g transform={`translate(${x},${y})`}>
-        <text x={0} y={14} textAnchor="middle" fontSize={10.3} fill="var(--color-ink-secondary)">
+        <text x={0} y={14} textAnchor="middle" fontSize={9.6} fill="var(--color-ink-secondary)">
           {truncateLabel(item?.name, 15)}
         </text>
         {/* The owner is the whole point of this second line — bumped up in
@@ -38,7 +38,7 @@ function makeOwnerTick(chartData) {
             indistinguishable from surrounding chrome) so it reads as real,
             load-bearing information under every single bar, not a faint
             afterthought someone could miss entirely. */}
-        {item?.owner && <text x={0} y={28} textAnchor="middle" fontSize={10.5} fontWeight={700} fill="var(--color-accent-600)">
+        {item?.owner && <text x={0} y={28} textAnchor="middle" fontSize={9.8} fontWeight={700} fill="var(--color-accent-600)">
           {truncateLabel(item.owner, 18)}
         </text>}
         {/* Third line: which tier that owner is (Employee / Unit /
@@ -46,7 +46,7 @@ function makeOwnerTick(chartData) {
             that share both a name AND, in a large org, an owner's first
             initial-plus-surname (e.g. two different Employees each with
             their own "Vacuum Cleaning" duty KPI in two different Units). */}
-        {item?.ownerKind && <text x={0} y={40} textAnchor="middle" fontSize={8.8} fill="var(--color-ink-muted)">
+        {item?.ownerKind && <text x={0} y={40} textAnchor="middle" fontSize={8.2} fill="var(--color-ink-muted)">
           {item.ownerKind}
         </text>}
       </g>
@@ -54,11 +54,9 @@ function makeOwnerTick(chartData) {
   };
 }
 
-// Actual progress % vs the expected pace % for the same period (see
-// lib/scope.js's varianceRollup) — one grouped bar pair per KPI (or, on
-// Reports, per Programme). The gap between the two bars *is* the variance;
-// a KPI whose Actual bar falls short of Expected by more than 10 points is
-// colored critical, same threshold the attention alerts below use.
+// Actual performance % vs the expected pace % for the same period — one
+// grouped bar pair per KPI. The variance is expected pace minus actual
+// performance, so a positive gap means the KPI is behind pace.
 //
 // Every KPI passed in gets its own pair of bars — this never drops or
 // samples down to "fit" a fixed width. Once there are more KPIs than
@@ -68,7 +66,13 @@ function makeOwnerTick(chartData) {
 // the available width when there's room to spare, exactly as before, so a
 // short list still looks exactly like it always did.
 const MIN_SLOT_WIDTH = 112;
-export default function VarianceChart({ data, height = 280, maxValue = 100 }) {
+export default function VarianceChart({
+  data,
+  height = 280,
+  maxValue = 100,
+  actualLabel = 'Actual',
+  expectedLabel = 'Expected pace',
+}) {
   // `_uid` — a per-row value that is ALWAYS unique, even when two (or more)
   // KPIs share the exact same name (a real scenario: e.g. an "Employee"
   // duty-KPI template like "Vacuuming" or "Bin collection" assigned to
@@ -88,7 +92,15 @@ export default function VarianceChart({ data, height = 280, maxValue = 100 }) {
   // human-readable name is kept as a separate field and used everywhere a
   // label is actually displayed (the custom OwnerTick below, and the
   // Tooltip's labelFormatter), so nothing shown on screen changes.
-  const chartData = data.map((d, idx) => ({ ...d, actual: d.actual ?? 0, _uid: `${d.name ?? ''}__${idx}` }));
+  const chartData = data.map((d, idx) => ({ ...d, _uid: `${d.name ?? ''}__${idx}` }));
+  const plottedValues = chartData
+    .flatMap((item) => [item.actual, item.expected])
+    .filter((value) => value != null && Number.isFinite(Number(value)))
+    .map(Number);
+  const dataMin = plottedValues.length ? Math.min(...plottedValues) : 0;
+  const dataMax = plottedValues.length ? Math.max(...plottedValues) : 100;
+  const domainMin = dataMin < 0 ? Math.floor(dataMin / 10) * 10 : 0;
+  const domainMax = Math.ceil(Math.max(100, dataMax, Number(maxValue) || 0) / 10) * 10;
   const scrollRef = useRef(null);
 
   // Whether the chart is ACTUALLY wider than the card right now — measured
@@ -223,11 +235,11 @@ export default function VarianceChart({ data, height = 280, maxValue = 100 }) {
             <BarChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }} barGap={2} barCategoryGap="28%">
               <CartesianGrid vertical={false} stroke="var(--color-line)" />
               <XAxis dataKey="_uid" tick={OwnerTick} axisLine={{ stroke: 'var(--color-line)' }} tickLine={false} interval={0} height={54} />
-              <YAxis allowDecimals={false} domain={[0, maxValue]} tick={{ fontSize: 11, fill: 'var(--color-ink-muted)' }} axisLine={false} tickLine={false} width={30} unit="%" />
+              <YAxis allowDecimals={false} domain={[domainMin, domainMax]} tick={{ fontSize: 10, fill: 'var(--color-ink-muted)' }} axisLine={false} tickLine={false} width={30} unit="%" />
               <ReferenceLine y={100} stroke="var(--color-line-strong)" strokeDasharray="3 3" />
               <Tooltip
                 cursor={{ fill: 'var(--color-sunken)' }}
-                contentStyle={{ borderRadius: 8, border: '1px solid var(--color-line)', fontSize: 12.5, background: 'var(--color-surface)', color: 'var(--color-ink)' }}
+                contentStyle={{ borderRadius: 8, border: '1px solid var(--color-line)', fontSize: 11.5, background: 'var(--color-surface)', color: 'var(--color-ink)' }}
                 labelFormatter={(label, item) => {
                   // The real display name for this exact hovered row — never
                   // the raw axis `label`, which is now the internal `_uid`
@@ -239,16 +251,16 @@ export default function VarianceChart({ data, height = 280, maxValue = 100 }) {
                   return `${name} — ${owner}${ownerKind ? ` (${ownerKind})` : ''}`;
                 }}
                 formatter={(v, name, item) => {
-                  if (name === 'Actual') {
+                  if (name === actualLabel) {
                     const variance = item.payload.variance;
-                    return [`${v}% (variance ${variance == null ? '—' : (variance > 0 ? '+' : '') + variance}pts)`, 'Actual'];
+                    return [`${v}% (expected pace − actual: ${variance == null ? '—' : (variance > 0 ? '+' : '') + variance} pts)`, actualLabel];
                   }
-                  return [`${v}%`, 'Expected pace'];
+                  return [`${v}%`, expectedLabel];
                 }}
               />
-              <Legend wrapperStyle={{ fontSize: 11.5, paddingTop: 8, color: 'var(--color-ink-secondary)' }} iconType="circle" iconSize={8} />
-              <Bar dataKey="expected" name="Expected pace" fill="var(--color-ink-muted)" opacity={0.35} radius={[4, 4, 0, 0]} maxBarSize={26} />
-              <Bar dataKey="actual" name="Actual" radius={[4, 4, 0, 0]} maxBarSize={26}>
+              <Legend wrapperStyle={{ fontSize: 10.5, paddingTop: 8, color: 'var(--color-ink-secondary)' }} iconType="circle" iconSize={8} />
+              <Bar dataKey="expected" name={expectedLabel} fill="var(--color-ink-muted)" opacity={0.35} radius={[4, 4, 0, 0]} maxBarSize={26} />
+              <Bar dataKey="actual" name={actualLabel} radius={[4, 4, 0, 0]} maxBarSize={26}>
                 {chartData.map((d) => <Cell key={d._uid} fill={FLAG_COLOR[d.flag] || FLAG_COLOR.none} />)}
               </Bar>
             </BarChart>

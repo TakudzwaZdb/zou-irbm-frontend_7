@@ -53,17 +53,35 @@ test('a Sub-owned KPI submission becomes official only after CPU approval', asyn
   assert.equal(row.status, 'submitted');
   assert.equal(row.value, null);
   assert.equal(row.preview_value, 19, 'the pending score preview must use the submitted actual without adding baseline');
+  assert.equal(row.review_comment, null);
+
+  const invalidFeedback = await api.request(`/api/kpis/${kpiId}/approve`, {
+    method: 'POST', token: cpu, body: { year, month, feedback: { invalid: true } },
+  });
+  assert.equal(invalidFeedback.status, 400);
 
   // CPU approval immediately publishes the submitted actual.
-  const realApprove = await api.request(`/api/kpis/${kpiId}/approve`, { method: 'POST', token: cpu, body: { year, month } });
+  const feedback = 'Reviewed by CPU; supporting evidence is sufficient.';
+  const realApprove = await api.request(`/api/kpis/${kpiId}/approve`, {
+    method: 'POST', token: cpu, body: { year, month, feedback },
+  });
   assert.equal(realApprove.status, 200);
 
   values = await api.request(`/api/kpis/${kpiId}/values`, { token: programmeHead });
   row = values.body.values.find((v) => v.year === year && v.month === month);
   assert.equal(row.status, 'approved');
   assert.equal(row.value, 19, 'approval publishes the submitted cumulative actual without adding the baseline');
+  assert.equal(row.review_comment, feedback);
 
   // After approval, another CPU attempt is rejected because no review is pending.
   const cpuApproveAfter = await api.request(`/api/kpis/${kpiId}/approve`, { method: 'POST', token: cpu, body: { year, month } });
   assert.equal(cpuApproveAfter.status, 400);
+
+  // An amendment starts a fresh review cycle and must not show stale CPU feedback.
+  const amended = await api.request(`/api/kpis/${kpiId}/value`, {
+    method: 'PUT', token: rep, body: { year, month, value: 20 },
+  });
+  assert.equal(amended.status, 200);
+  assert.equal(amended.body.value.status, 'submitted');
+  assert.equal(amended.body.value.review_comment, null);
 });

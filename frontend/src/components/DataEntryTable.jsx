@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { api } from '../lib/api.js';
 import {
-  byId, computeRag, computeVariance, hasPendingPreview, ownerName, valueStatus,
+  byId, computeRag, computeVariance, hasPendingPreview, ownerName, performanceScorePct, valueStatus,
 } from '../lib/scope.js';
 import { readDraft, writeDraft, clearDraft, draftDiffersFrom, debounce } from '../lib/autosave.js';
 import { AssignmentManager } from './KpiCard.jsx';
@@ -268,15 +268,20 @@ export default function DataEntryTable({ kpis, interactive = true }) {
               <th className="px-3 py-2.5 text-right">Target</th>
               <th className="px-3 py-2.5 text-right">Current</th>
               <th className="px-3 py-2.5 min-w-[130px]">Submitted actual</th>
-              <th className="px-3 py-2.5">Score</th>
-              <th className="px-3 py-2.5">Pace</th>
+              <th className="px-3 py-2.5 text-right" title="Actual performance against this KPI's target, using its configured scoring rule">Performance</th>
+              <th className="px-3 py-2.5">Progress score</th>
+              <th className="px-3 py-2.5">Progress pace</th>
               <th className="px-3 py-2.5 min-w-[180px]">Notes</th>
             </tr>
           </thead>
           <tbody>
-            <PaginatedRows items={kpis} colSpan={interactive ? 10 : 9} emptyMessage="No KPIs in this reporting scope." renderRow={(kpi) => {
+            <PaginatedRows items={kpis} colSpan={interactive ? 11 : 10} emptyMessage="No KPIs in this reporting scope." renderRow={(kpi) => {
               const r = rowFor(kpi);
               const rowInteractive = interactive && canEdit && !r.locked;
+              const performanceActual = r.isShared ? r.current
+                : rowInteractive ? entryFor(kpi, r)
+                  : r.enteredValue ?? r.current;
+              const performancePct = performanceScorePct(kpi, performanceActual, 'monthly', period.month);
               const teamOpen = expandedTeamId === kpi.id;
               return (
                 <Fragment key={kpi.id}>
@@ -345,6 +350,9 @@ export default function DataEntryTable({ kpis, interactive = true }) {
                       <span className="tabular-nums">{r.enteredValue != null ? `${r.enteredValue} ${kpi.measure}` : '—'}</span>
                     )}
                   </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums font-semibold">
+                    {performancePct == null ? '—' : `${(Math.round(performancePct * 10) / 10).toFixed(1)}%`}
+                  </td>
                   <td className="px-3 py-2.5">
                     <span className={`chip text-[11px] px-2 py-0.5 ${r.rag.cls}`}>{r.rag.label}</span>
                   </td>
@@ -379,7 +387,7 @@ export default function DataEntryTable({ kpis, interactive = true }) {
                 </tr>
                 {teamOpen && (
                   <tr className="border-b border-line bg-sunken/30">
-                    <td colSpan={interactive ? 10 : 9} className="px-3 py-3">
+                    <td colSpan={interactive ? 11 : 10} className="px-3 py-3">
                       <AssignmentManager kpi={kpi} assignees={r.assignees} />
                     </td>
                   </tr>

@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext.jsx';
 import PerformanceAgainstTarget from '../components/PerformanceAgainstTarget.jsx';
 import { GLOBAL_REPORT_ROLES } from '../lib/scope.js';
 
-export default function OverviewPerformance() {
+export default function OverviewPerformance({ setRoute }) {
   const { user, hasPerm } = useApp();
   const [summaryName, setSummaryName] = useState('');
   const handleDataLoaded = useCallback((data) => {
@@ -26,7 +26,7 @@ export default function OverviewPerformance() {
         </div>
       </header>
       {allowed
-        ? <PerformanceAgainstTarget syncSelectedNode onDataLoaded={handleDataLoaded} />
+        ? <PerformanceAgainstTarget syncSelectedNode onDataLoaded={handleDataLoaded} onNavigate={setRoute} />
         : (
           <div role="alert" className="card text-[13px] text-ink-secondary">
             Institutional performance is not available to your account. Contact an administrator if you need access.

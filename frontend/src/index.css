@@ -8,6 +8,18 @@
   to { opacity: 1; transform: translate(-50%, 0); }
 }
 
+@keyframes pace-alert-pulse {
+  50% { box-shadow: 0 0 0 3px rgb(208 59 59 / 0.2); }
+}
+
+.pace-alert-pulse {
+  animation: pace-alert-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pace-alert-pulse { animation: none; }
+}
+
 @theme {
   --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-display: "Manrope", system-ui, sans-serif;
