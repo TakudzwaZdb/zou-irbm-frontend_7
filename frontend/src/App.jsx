@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { useApp } from './context/AppContext.jsx';
-import { currentNav, isRouteAvailable } from './lib/nav.js';
+import { currentNav, defaultRoute, isRouteAvailable } from './lib/nav.js';
 // Login and ForcedPasswordChange render before the route switch below even
 // exists (see the early returns further down) — they're what every signed-
 // out visitor sees first, so they stay ordinary eager imports rather than
@@ -60,7 +60,7 @@ const PAGES = {
 
 export default function App() {
   const { booting, user, hasPerm, restoreSelNode } = useApp();
-  const [route, setRouteState] = useState('overview');
+  const [route, setRouteState] = useState('overviewPerformance');
   const setRoute = useCallback((nextRoute) => {
     if (route === nextRoute) return;
     window.history.pushState({
@@ -81,7 +81,7 @@ export default function App() {
     if (user) {
       const saved = window.history.state?.zouApp;
       const sameUser = saved?.userId === user.id;
-      const nextRoute = sameUser && isRouteAvailable(saved.route, nav) ? saved.route : (nav[0] || 'overview');
+      const nextRoute = sameUser && isRouteAvailable(saved.route, nav) ? saved.route : defaultRoute(nav);
       const nextNode = sameUser ? saved.selNode || null : null;
       window.history.replaceState({ zouApp: { userId: user.id, route: nextRoute, selNode: nextNode } }, '', window.location.href);
       setRouteState(nextRoute);
@@ -117,7 +117,7 @@ export default function App() {
   // Everything else must actually be in the caller's nav — so if ICT admin
   // revokes, say, view_overview from someone mid-session, the default
   // 'overview' route state doesn't quietly keep rendering it anyway.
-  const safeRoute = route === 'profile' || isRouteAvailable(route, nav) ? route : (nav[0] || 'overview');
+  const safeRoute = route === 'profile' || isRouteAvailable(route, nav) ? route : defaultRoute(nav);
   const Page = PAGES[safeRoute] || Overview;
   return (
     <Layout route={safeRoute} setRoute={setRoute}>

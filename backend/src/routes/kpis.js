@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requirePerm, requireAnyPerm, requireRole } = require('../middleware/auth');
-const { canReadKpi, isGlobalReader } = require('../utils/scope');
+const { canReadKpi, isGlobalReader, hasPermission } = require('../utils/scope');
 const { isValidReportingPeriods } = require('../utils/reportingPeriods');
 const {
   calculatePerformanceAgainstTarget,
@@ -430,7 +430,7 @@ router.get('/performance-target', async (req, res) => {
     for (const key of new Set(path)) nodeByKey.get(key).kpis.set(kpi.id, item);
   }
 
-  const global = isGlobalReader(req.user);
+  const global = isGlobalReader(req.user) || hasPermission(req.user, 'view_institutional_performance');
   let rootKey = 'university:0';
   if (!global) {
     if (req.user.role === 'programme') rootKey = `programme:${req.user.scope_id}`;

@@ -42,7 +42,8 @@ export default function Overview() {
       document.removeEventListener('visibilitychange', refresh);
     };
   }, [reloadOverviewValues]);
-  const isGlobal = ['cpu', 'exec', 'vc', 'ictadmin', 'council'].includes(user.role);
+  const canViewInstitutional = hasPerm('view_institutional_performance');
+  const isGlobal = ['cpu', 'exec', 'vc', 'ictadmin', 'council'].includes(user.role) || canViewInstitutional;
   // The university-wide "All Programmes" rollup is no longer an automatic
   // consequence of holding one of the four "global" roles above — it's now
   // a real, revocable permission ICT admin grants/revokes per person (see
@@ -51,8 +52,6 @@ export default function Overview() {
   // permission revoked falls through to InstitutionalAccessRestricted below
   // instead of the aggregate; a scoped role is unaffected either way, since
   // `forced` already keeps them on their own place in the structure.
-  const canViewInstitutional = hasPerm('view_institutional_performance');
-
   // The node the drill-down is actually showing: whatever's explicitly
   // selected (clicked in the sidebar tree or a card below), falling back to
   // a scoped role's own place in the structure, or — for a global role with

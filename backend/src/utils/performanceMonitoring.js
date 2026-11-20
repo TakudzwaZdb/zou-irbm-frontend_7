@@ -4,8 +4,9 @@ const {
   calculateBaselineProgress,
   classifyProgressVariance,
 } = require('./performanceAgainstTarget');
-const { consecutiveProgressRedStreak } = require('./compliance');
+const { consecutivePerformanceStreak, consecutiveProgressRedStreak } = require('./compliance');
 const { createPerformanceNotification } = require('./performanceNotifications');
+const { targetPerformanceNotificationPlan } = require('./targetPerformanceNotifications');
 
 const DAY_MS = 86400000;
 const MONITOR_LOCK_ID = 7820142026;
@@ -92,6 +93,52 @@ async function notifyUsers(ids, alert, escalation, keySuffix, subject, body) {
       subject,
       body,
     });
+  }
+}
+
+async function notifyTargetPerformanceEscalations(kpi, year, month, settings) {
+  if (kpi.owner_type === 'employee') return;
+  const history = await db.prepare(
+    'SELECT * FROM kpi_values WHERE kpi_id = ? AND (year < ? OR (year = ? AND month <= ?)) ORDER BY year DESC, month DESC'
+  ).all(kpi.id, year, year, month);
+  const streak = consecutivePerformanceStreak(history, kpi, settings.ragAmber);
+  if (!streak) return;
+
+  const latestOfficial = history.find((row) =>
+    (row.status === 'approved' || row.approved_at != null)
+    && (row.override_value != null || row.value != null)
+  );
+  if (!latestOfficial) return;
+
+  let institutionalRecipientId = null;
+  if (streak >= settings.redEscalateVC) {
+    institutionalRecipientId = (await db.prepare(
+      `SELECT id FROM users
+       WHERE role IN ('vc', 'council', 'cpu') AND deleted_at IS NULL
+       ORDER BY CASE role WHEN 'vc' THEN 0 WHEN 'council' THEN 1 ELSE 2 END, id
+       LIMIT 1`
+    ).get())?.id ?? null;
+  }
+
+  const path = await ownerPath(kpi);
+  const notifications = targetPerformanceNotificationPlan(
+    kpi,
+    path,
+    streak,
+    settings,
+    { year: latestOfficial.year, month: latestOfficial.month },
+    institutionalRecipientId,
+  );
+  for (const notification of notifications) {
+    // eslint-disable-next-line no-await-in-loop
+    await notifyUsers(
+      notification.recipientIds,
+      null,
+      null,
+      notification.notificationKey,
+      notification.subject,
+      notification.body,
+    );
   }
 }
 
@@ -211,6 +258,8 @@ async function evaluateKpiPeriod(kpi, year, month, now, settings) {
       details = `Baseline progress is ${progress.toFixed(1)}%, versus ${expectedProgress.toFixed(1)}% expected (${variance.toFixed(1)} percentage points).`;
     }
   }
+
+  await notifyTargetPerformanceEscalations(kpi, year, month, settings);
 
   const existing = await db.prepare(
     'SELECT id, severity, status, detected_at, actual, baseline_progress, target_performance FROM performance_alerts WHERE kpi_id = ? AND year = ? AND month = ?'

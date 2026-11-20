@@ -110,6 +110,10 @@ export function overviewCapDepth(user) {
 export function canDrillToKind(user, kind) {
   return OVERVIEW_KIND_DEPTH[kind] <= overviewCapDepth(user);
 }
+
+export function hasInstitutionalPerformanceAccess(user) {
+  return user?.permissions?.includes('view_institutional_performance') || false;
+}
 export function subsOfProgramme(org, programmeId) { return org.subs.filter((s) => s.programme_id === programmeId); }
 export function unitsOfSub(org, subId) { return org.units.filter((u) => u.sub_id === subId); }
 export function employeesOfUnit(org, unitId) { return org.employees.filter((i) => i.unit_id === unitId); }
@@ -192,6 +196,7 @@ export function nodeAncestryChain(org, kind, id) {
 // Employee's own record. Global roles (cpu/exec/vc/ictadmin) have none —
 // their default is "All Programmes", driven entirely by selNode.
 export function defaultNodeForRole(user) {
+  if (hasInstitutionalPerformanceAccess(user)) return null;
   if (user.role === 'employee') return { kind: user.scope_type || 'employee', id: user.scope_id };
   if (user.role === 'unithead') return { kind: 'unit', id: user.scope_id };
   if (user.role === 'rep') return { kind: 'sub', id: user.scope_id };
@@ -277,7 +282,7 @@ export function reachableOrgSlice(org, root) {
 // self-served.
 export function availableReportKinds(user) {
   const canPickStaff = user.role !== 'employee';
-  if (GLOBAL_REPORT_ROLES.includes(user.role)) {
+  if (GLOBAL_REPORT_ROLES.includes(user.role) || hasInstitutionalPerformanceAccess(user)) {
     return canPickStaff ? ['overall', 'programme', 'sub', 'unit', 'employee'] : ['overall', 'programme', 'sub', 'unit'];
   }
   const order = ['programme', 'sub', 'unit', 'employee'];

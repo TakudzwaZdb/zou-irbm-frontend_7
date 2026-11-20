@@ -127,10 +127,7 @@ export const NAV_CHILDREN = {
     { route: 'overviewPerformance', label: 'Performance' },
     { route: 'overview', label: 'Progress' },
   ],
-  compliance: [
-    { route: 'complianceProgress', label: 'Progress & Compliance' },
-    { route: 'compliancePerformance', label: 'Performance Escalations' },
-  ],
+  compliance: [],
   reports: [
     { route: 'reportsPerformance', label: 'Performance' },
     { route: 'reports', label: 'Progress' },
@@ -146,6 +143,11 @@ const ROUTE_PARENTS = {
 
 export function isRouteAvailable(route, nav) {
   return nav.includes(route) || (ROUTE_PARENTS[route] != null && nav.includes(ROUTE_PARENTS[route]));
+}
+
+export function defaultRoute(nav) {
+  const first = nav[0] || 'overview';
+  return first === 'overview' ? 'overviewPerformance' : first;
 }
 
 export function currentNav(user, hasPerm) {

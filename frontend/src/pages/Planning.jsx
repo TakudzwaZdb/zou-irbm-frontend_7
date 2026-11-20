@@ -725,7 +725,9 @@ function CpuPlanReviewTable({ proposals, cycleYear, reload }) {
       <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
         <div>
           <h2 className="font-display font-bold text-[15px]">Plan approvals — {cycleYear}</h2>
-          <p className="text-[11.8px] text-ink-secondary mt-1">{waiting} awaiting CPU approval · select a plan row to review details</p>
+          <p className="text-[11.8px] text-ink-secondary mt-1">
+            {waiting} awaiting CPU approval · read each plan before approving or returning it
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <span className="chip chip-st-submitted">{waiting} pending</span>
@@ -786,6 +788,7 @@ function CpuPlanReviewTable({ proposals, cycleYear, reload }) {
 }
 
 function FragmentCpuPlanRow({ proposal, expanded, selected, busy, onToggle, onSelect, cycleYear, reload }) {
+  const detailId = `cpu-plan-detail-${proposal.id}`;
   return (
     <>
       <tr className="hover:bg-sunken/60">
@@ -794,30 +797,37 @@ function FragmentCpuPlanRow({ proposal, expanded, selected, busy, onToggle, onSe
             checked={selected} disabled={proposal.status !== 'submitted' || busy} onChange={onSelect} />
         </td>
         <td className="px-3 py-2 align-top">
-          <button type="button" className="text-left font-semibold text-accent-700 hover:underline" aria-expanded={expanded} onClick={onToggle}>
-            {proposal.plan_title || 'Untitled plan'} <span className="text-ink-muted">{expanded ? '−' : '+'}</span>
-          </button>
+          <div className="flex flex-col items-start gap-1.5">
+            <span className="font-semibold">{proposal.plan_title || 'Untitled plan'}</span>
+            <button
+              type="button"
+              className="btn btn-sm border-accent-500 text-accent-700 hover:bg-accent-50"
+              aria-expanded={expanded}
+              aria-controls={detailId}
+              onClick={onToggle}
+            >
+              {expanded ? 'Close plan' : 'Read plan'}
+            </button>
+          </div>
         </td>
         <td className="px-3 py-2 align-top">{proposal.ownerType}: {proposal.ownerName}</td>
         <td className="px-3 py-2 align-top"><span className={`chip chip-st-${proposal.status}`}>{STATUS_LABEL[proposal.status]}</span></td>
         <td className="px-3 py-2 align-top whitespace-nowrap font-semibold tabular-nums">{fmtMoney(proposal.budget)}</td>
         <td className="px-3 py-2 align-top max-w-[360px] whitespace-pre-wrap break-words" title={proposal.targets || ''}>{proposal.targets || '—'}</td>
       </tr>
-      {expanded && (
-        <tr className="bg-sunken/40">
-          <td colSpan="6" className="px-4 py-3">
-            <div className="grid gap-3 md:grid-cols-2 text-[12.5px]">
-              <div className="md:col-span-2"><b>Plan narrative:</b><p className="mt-1 whitespace-pre-wrap">{proposal.narrative || '—'}</p></div>
-              <div><b>Targets / outcomes:</b><p className="mt-1 whitespace-pre-wrap">{proposal.targets || '—'}</p></div>
-              <div><b>Budget:</b> {fmtMoney(proposal.budget)}</div>
-              {proposal.submitted_at && <div className="text-ink-muted">Submitted: {proposal.submitted_at}</div>}
-              {proposal.status === 'submitted' && (
-                <div className="md:col-span-2"><CpuPlanItemActions proposal={proposal} cycleYear={cycleYear} reload={reload} /></div>
-              )}
-            </div>
-          </td>
-        </tr>
-      )}
+      <tr id={detailId} hidden={!expanded} className="bg-sunken/40">
+        <td colSpan="6" className="px-4 py-3">
+          {expanded && <div className="grid gap-3 md:grid-cols-2 text-[12.5px]">
+            <div className="md:col-span-2"><b>Plan narrative:</b><p className="mt-1 whitespace-pre-wrap">{proposal.narrative || '—'}</p></div>
+            <div><b>Targets / outcomes:</b><p className="mt-1 whitespace-pre-wrap">{proposal.targets || '—'}</p></div>
+            <div><b>Budget:</b> {fmtMoney(proposal.budget)}</div>
+            {proposal.submitted_at && <div className="text-ink-muted">Submitted: {proposal.submitted_at}</div>}
+            {proposal.status === 'submitted' && (
+              <div className="md:col-span-2"><CpuPlanItemActions proposal={proposal} cycleYear={cycleYear} reload={reload} /></div>
+            )}
+          </div>}
+        </td>
+      </tr>
     </>
   );
 }

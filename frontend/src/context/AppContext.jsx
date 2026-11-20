@@ -224,6 +224,49 @@ export function AppProvider({ children }) {
     }
   }, [period, perfPeriod, loadValuesForPeriod, loadContributionsForPeriod, loadSubmissionWindow, loadPerfValues, reloadUser]);
 
+  const previousInstitutionalAccess = useRef(null);
+  useEffect(() => {
+    if (!user) {
+      previousInstitutionalAccess.current = null;
+      return;
+    }
+
+    const granted = user.permissions?.includes('view_institutional_performance') || false;
+    if (previousInstitutionalAccess.current == null) {
+      previousInstitutionalAccess.current = granted;
+      return;
+    }
+    if (previousInstitutionalAccess.current === granted) return;
+
+    previousInstitutionalAccess.current = granted;
+    clearSelNode();
+    refreshAll().catch((error) => {
+      console.error('Failed to reload Overview data after an institutional-access change.', error);
+    });
+  }, [user, clearSelNode, refreshAll]);
+
+  useEffect(() => {
+    if (!user) return undefined;
+    let refreshingPermissions = false;
+    const refreshPermissions = () => {
+      if (document.visibilityState === 'hidden' || refreshingPermissions) return;
+      refreshingPermissions = true;
+      reloadUser()
+        .catch((error) => {
+          console.error('Failed to refresh current-user permissions.', error);
+        })
+        .finally(() => { refreshingPermissions = false; });
+    };
+    const timer = window.setInterval(refreshPermissions, 30_000);
+    window.addEventListener('focus', refreshPermissions);
+    document.addEventListener('visibilitychange', refreshPermissions);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshPermissions);
+      document.removeEventListener('visibilitychange', refreshPermissions);
+    };
+  }, [user?.id, reloadUser]);
+
   const changePeriod = useCallback((p) => {
     setPeriod(p);
     loadValuesForPeriod(p);

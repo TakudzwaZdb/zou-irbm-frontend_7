@@ -80,7 +80,7 @@ async function isAssignedEmployee(user, kpi) {
 
 // Can this user see this KPI (and by extension its values/contributions)?
 async function canReadKpi(user, kpi) {
-  if (isGlobalReader(user)) return true;
+  if (isGlobalReader(user) || hasPermission(user, 'view_institutional_performance')) return true;
   if (hasPermission(user, 'submit_data_entries')) {
     const scopeType = assignedScopeType(user);
     if (scopeType === 'programme') return (await kpiProgrammeId(kpi)) === user.scope_id;
@@ -192,6 +192,6 @@ async function canReadProgramme(user, programmeId) {
 }
 
 module.exports = {
-  isGlobalReader, canReadKpi, canReadSub, canReadUnit, canReadProgramme,
+  isGlobalReader, hasPermission, canReadKpi, canReadSub, canReadUnit, canReadProgramme,
   kpiSubId, kpiProgrammeId, unitSubId, employeeUnitId, subProgrammeId, isAssignedEmployee,
 };

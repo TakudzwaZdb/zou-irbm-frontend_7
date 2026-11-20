@@ -83,9 +83,9 @@ export default function ApprovalsTable({ kpis, interactive }) {
 
   return (
     <div className="card p-0 overflow-x-auto max-h-[65vh] overflow-y-auto">
-      <table className="w-full text-[12.3px] border-collapse">
+      <table className="w-full text-[0.76875rem] border-collapse">
         <thead className="sticky top-0 z-10 bg-surface">
-          <tr className="border-b border-line text-left text-ink-muted text-[10.8px] uppercase tracking-wide">
+          <tr className="border-b border-line text-left text-ink-muted text-[0.675rem] uppercase tracking-wide">
             <th className="px-3 py-2.5 min-w-[220px]">KPI</th>
             <th className="px-3 py-2.5">Status</th>
             <th className="px-3 py-2.5 text-right">Baseline</th>
@@ -112,18 +112,18 @@ export default function ApprovalsTable({ kpis, interactive }) {
               <Fragment key={kpi.id}>
                 <tr className="border-b border-line last:border-b-0 align-top">
                   <td className="px-3 py-2.5">
-                    <div className="font-semibold text-[12.8px] leading-snug">{kpi.name}</div>
+                    <div className="font-semibold text-[0.8rem] leading-snug">{kpi.name}</div>
                     <div className="flex gap-1 flex-wrap mt-1 items-center">
-                      <span className="chip chip-tag text-[10px] px-1.5 py-0.5">{ownerName(org, kpi)}</span>
-                      <span className="chip chip-tag text-[10px] px-1.5 py-0.5">{kpi.type}</span>
-                      {!!kpi.is_automated && <span className="chip chip-tag text-[10px] px-1.5 py-0.5">Automated</span>}
-                      {r.isShared && <span className="chip bg-accent-50 text-accent-600 text-[10px] px-1.5 py-0.5">Team ({r.assignees.length})</span>}
+                      <span className="chip chip-tag text-[0.625rem] px-1.5 py-0.5">{ownerName(org, kpi)}</span>
+                      <span className="chip chip-tag text-[0.625rem] px-1.5 py-0.5">{kpi.type}</span>
+                      {!!kpi.is_automated && <span className="chip chip-tag text-[0.625rem] px-1.5 py-0.5">Automated</span>}
+                      {r.isShared && <span className="chip bg-accent-50 text-accent-600 text-[0.625rem] px-1.5 py-0.5">Team ({r.assignees.length})</span>}
                     </div>
                   </td>
                   <td className="px-3 py-2.5">
-                    <span className={`chip chip-st-${r.status} text-[10.8px] px-2 py-0.5`}>{STATUS_LABEL[r.status]}</span>
+                    <span className={`chip chip-st-${r.status} text-[0.675rem] px-2 py-0.5`}>{STATUS_LABEL[r.status]}</span>
                     {r.valueRow?.late && ['submitted', 'approved'].includes(r.status) && (
-                      <span className="chip bg-warning-soft text-warning text-[10px] px-1.5 py-0.5 ml-1" title="Submitted after month-end, inside the late-submission grace window">
+                      <span className="chip bg-warning-soft text-warning text-[0.625rem] px-1.5 py-0.5 ml-1" title="Submitted after month-end, inside the late-submission grace window">
                         Late
                       </span>
                     )}
@@ -131,21 +131,21 @@ export default function ApprovalsTable({ kpis, interactive }) {
                   <td className="px-3 py-2.5 text-right tabular-nums">{kpi.baseline}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{kpi.target} <span className="text-ink-muted">{kpi.measure}</span></td>
                   <td className="px-3 py-2.5 text-right tabular-nums" title={r.isPreview ? 'Projected total if approved as-is' : undefined}>
-                    {r.current != null ? r.current : '—'}{r.isPreview && <span className="text-ink-muted text-[10.5px]"> (if approved)</span>}
+                    {r.current != null ? r.current : '—'}{r.isPreview && <span className="text-ink-muted text-[0.65625rem]"> (if approved)</span>}
                   </td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{r.submitted != null ? `${r.submitted} ${kpi.measure}` : '—'}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums font-semibold">
                     {r.performancePct == null ? '—' : `${(Math.round(r.performancePct * 10) / 10).toFixed(1)}%`}
                   </td>
-                  <td className="px-3 py-2.5"><span className={`chip text-[11px] px-2 py-0.5 ${r.rag.cls}`}>{r.rag.label}</span></td>
+                  <td className="px-3 py-2.5"><span className={`chip text-[0.6875rem] px-2 py-0.5 ${r.rag.cls}`}>{r.rag.label}</span></td>
                   <td className="px-3 py-2.5">
-                    {r.variance.flag === 'attention' && <span className="chip bg-critical text-white text-[10.5px] px-1.5 py-0.5" title={`${r.variance.actualPct}% actual vs ${r.variance.expectedPct}% expected pace`}>⚠ {r.variance.variance}pts behind</span>}
-                    {r.variance.flag === 'behind' && <span className="chip chip-rag-amber text-[10.5px] px-1.5 py-0.5" title={`${r.variance.actualPct}% actual vs ${r.variance.expectedPct}% expected pace`}>{r.variance.variance}pts behind</span>}
-                    {r.variance.flag === 'ahead' && <span className="chip chip-rag-green text-[10.5px] px-1.5 py-0.5">+{r.variance.variance}pts ahead</span>}
-                    {r.variance.flag === 'on-pace' && <span className="text-ink-muted text-[11px]" title={`${r.variance.actualPct}% actual vs ${r.variance.expectedPct}% expected pace`}>On pace</span>}
-                    {r.variance.flag === 'none' && <span className="text-ink-muted text-[11px]">—</span>}
+                    {r.variance.flag === 'attention' && <span className="chip bg-critical text-white text-[0.65625rem] px-1.5 py-0.5" title={`${r.variance.actualPct}% actual vs ${r.variance.expectedPct}% expected pace`}>⚠ {r.variance.variance}pts behind</span>}
+                    {r.variance.flag === 'behind' && <span className="chip chip-rag-amber text-[0.65625rem] px-1.5 py-0.5" title={`${r.variance.actualPct}% actual vs ${r.variance.expectedPct}% expected pace`}>{r.variance.variance}pts behind</span>}
+                    {r.variance.flag === 'ahead' && <span className="chip chip-rag-green text-[0.65625rem] px-1.5 py-0.5">+{r.variance.variance}pts ahead</span>}
+                    {r.variance.flag === 'on-pace' && <span className="text-ink-muted text-[0.6875rem]" title={`${r.variance.actualPct}% actual vs ${r.variance.expectedPct}% expected pace`}>On pace</span>}
+                    {r.variance.flag === 'none' && <span className="text-ink-muted text-[0.6875rem]">—</span>}
                   </td>
-                  <td className="px-3 py-2.5 text-ink-secondary text-[11.8px] max-w-[200px] truncate" title={r.valueRow?.explanation || ''}>
+                  <td className="px-3 py-2.5 text-ink-secondary text-[0.7375rem] max-w-[200px] truncate" title={r.valueRow?.explanation || ''}>
                     {r.valueRow?.explanation || '—'}
                   </td>
                   <td className="px-3 py-2.5 min-w-[190px]">
@@ -160,7 +160,7 @@ export default function ApprovalsTable({ kpis, interactive }) {
                         onChange={(event) => setReviewDraft((draft) => ({ ...draft, [kpi.id]: event.target.value }))}
                       />
                     ) : (
-                      <span className="text-ink-secondary text-[11.5px]" title={r.reviewComment}>
+                      <span className="text-ink-secondary text-[0.71875rem]" title={r.reviewComment}>
                         {r.reviewComment || '—'}
                       </span>
                     )}
@@ -185,7 +185,7 @@ export default function ApprovalsTable({ kpis, interactive }) {
                           {isOpen ? 'Close' : 'Return…'}
                         </button>
                         {hasExpandable && !isOpen && (
-                          <button className="text-[11px] text-accent-600 hover:underline" onClick={() => toggleExpand(kpi.id)}>Review ▾</button>
+                          <button className="text-[0.6875rem] text-accent-600 hover:underline" onClick={() => toggleExpand(kpi.id)}>Review ▾</button>
                         )}
                       </div>
                     </td>
@@ -196,7 +196,7 @@ export default function ApprovalsTable({ kpis, interactive }) {
                     <td colSpan={12} className="px-3 py-3">
                       <div className="space-y-3">
                         {r.valueRow?.explanation && (
-                          <p className="text-[12.3px] text-ink-secondary">“{r.valueRow.explanation}” — submitter's note</p>
+                          <p className="text-[0.76875rem] text-ink-secondary">“{r.valueRow.explanation}” — submitter's note</p>
                         )}
                         <div className="space-y-1.5 max-w-lg">
                           <label className="field-label">Reason for returning this submission</label>
@@ -281,9 +281,9 @@ export function TeamApprovalsTable({ kpis }) {
 
   return (
     <div className="card p-0 overflow-x-auto max-h-[65vh] overflow-y-auto">
-      <table className="w-full text-[12.3px] border-collapse">
+      <table className="w-full text-[0.76875rem] border-collapse">
         <thead className="sticky top-0 z-10 bg-surface">
-          <tr className="border-b border-line text-left text-ink-muted text-[10.8px] uppercase tracking-wide">
+          <tr className="border-b border-line text-left text-ink-muted text-[0.675rem] uppercase tracking-wide">
             <th className="px-3 py-2.5 min-w-[220px]">KPI</th>
             <th className="px-3 py-2.5 text-right">Current</th>
             <th className="px-3 py-2.5 text-right" title="Target-performance score; distinct from the progress score and pace">Performance</th>
@@ -313,29 +313,29 @@ export function TeamApprovalsTable({ kpis }) {
               <Fragment key={kpi.id}>
                 <tr className="border-b border-line last:border-b-0 align-top">
                   <td className="px-3 py-2.5">
-                    <div className="font-semibold text-[12.8px] leading-snug">{kpi.name}</div>
-                    <span className="chip chip-tag text-[10px] px-1.5 py-0.5 mt-1 inline-block">{kpi.type}</span>
+                    <div className="font-semibold text-[0.8rem] leading-snug">{kpi.name}</div>
+                    <span className="chip chip-tag text-[0.625rem] px-1.5 py-0.5 mt-1 inline-block">{kpi.type}</span>
                   </td>
                   <td className="px-3 py-2.5 text-right tabular-nums" title={isPreview ? 'Projected team total if pending contributions are approved' : undefined}>
-                    {current != null ? current : '—'}{isPreview && <span className="text-ink-muted text-[10px]"> (projected)</span>}
+                    {current != null ? current : '—'}{isPreview && <span className="text-ink-muted text-[0.625rem]"> (projected)</span>}
                   </td>
                   <td className="px-3 py-2.5 text-right tabular-nums font-semibold">
                     {performancePct == null ? '—' : `${(Math.round(performancePct * 10) / 10).toFixed(1)}%`}
                   </td>
-                  <td className="px-3 py-2.5"><span className={`chip text-[11px] px-2 py-0.5 ${rag.cls}`}>{rag.label}</span></td>
+                  <td className="px-3 py-2.5"><span className={`chip text-[0.6875rem] px-2 py-0.5 ${rag.cls}`}>{rag.label}</span></td>
                   <td className="px-3 py-2.5">
-                    {variance.flag === 'attention' && <span className="chip bg-critical text-white text-[10.5px] px-1.5 py-0.5">⚠ {variance.variance}pts behind</span>}
-                    {variance.flag === 'behind' && <span className="chip chip-rag-amber text-[10.5px] px-1.5 py-0.5">{variance.variance}pts behind</span>}
-                    {variance.flag === 'ahead' && <span className="chip chip-rag-green text-[10.5px] px-1.5 py-0.5">+{variance.variance}pts ahead</span>}
-                    {variance.flag === 'on-pace' && <span className="text-ink-muted text-[11px]" title={`${variance.actualPct}% actual vs ${variance.expectedPct}% expected pace`}>On pace</span>}
-                    {variance.flag === 'none' && <span className="text-ink-muted text-[11px]">—</span>}
+                    {variance.flag === 'attention' && <span className="chip bg-critical text-white text-[0.65625rem] px-1.5 py-0.5">⚠ {variance.variance}pts behind</span>}
+                    {variance.flag === 'behind' && <span className="chip chip-rag-amber text-[0.65625rem] px-1.5 py-0.5">{variance.variance}pts behind</span>}
+                    {variance.flag === 'ahead' && <span className="chip chip-rag-green text-[0.65625rem] px-1.5 py-0.5">+{variance.variance}pts ahead</span>}
+                    {variance.flag === 'on-pace' && <span className="text-ink-muted text-[0.6875rem]" title={`${variance.actualPct}% actual vs ${variance.expectedPct}% expected pace`}>On pace</span>}
+                    {variance.flag === 'none' && <span className="text-ink-muted text-[0.6875rem]">—</span>}
                   </td>
                   <td className="px-3 py-2.5">
-                    <span className="chip chip-tag text-[10.8px] px-2 py-0.5">{approvedCount} of {assignees.length} approved</span>
-                    {submittedCount > 0 && <span className="text-accent-600 font-semibold text-[11.5px] ml-1.5">· {submittedCount} awaiting review</span>}
+                    <span className="chip chip-tag text-[0.675rem] px-2 py-0.5">{approvedCount} of {assignees.length} approved</span>
+                    {submittedCount > 0 && <span className="text-accent-600 font-semibold text-[0.71875rem] ml-1.5">· {submittedCount} awaiting review</span>}
                   </td>
                   <td className="px-3 py-2.5 sticky right-0 bg-surface border-l border-line">
-                    <button className="text-[11px] text-accent-600 hover:underline" onClick={() => setExpandedId(isOpen ? null : kpi.id)}>
+                    <button className="text-[0.6875rem] text-accent-600 hover:underline" onClick={() => setExpandedId(isOpen ? null : kpi.id)}>
                       {isOpen ? 'Hide team ▴' : 'Review team ▾'}
                     </button>
                   </td>
@@ -379,14 +379,14 @@ export function FeedbackTable({ kpis }) {
 
   return (
     <div className="mt-4">
-      <button className="text-[12.3px] font-semibold text-accent-600 hover:underline flex items-center gap-1.5" onClick={() => setVisible((v) => !v)}>
+      <button className="text-[0.76875rem] font-semibold text-accent-600 hover:underline flex items-center gap-1.5" onClick={() => setVisible((v) => !v)}>
         {visible ? '▾' : '▸'} Return feedback ({withFeedback.length}) {visible ? '— hide' : '— show'}
       </button>
       {visible && (
         <div className="card p-0 overflow-x-auto max-h-[50vh] overflow-y-auto mt-2">
-          <table className="w-full text-[12.3px] border-collapse">
+          <table className="w-full text-[0.76875rem] border-collapse">
             <thead className="sticky top-0 z-10 bg-surface">
-              <tr className="border-b border-line text-left text-ink-muted text-[10.8px] uppercase tracking-wide">
+              <tr className="border-b border-line text-left text-ink-muted text-[0.675rem] uppercase tracking-wide">
                 <th className="px-3 py-2.5 min-w-[180px]">KPI</th>
                 <th className="px-3 py-2.5 min-w-[140px]">Owner</th>
                 <th className="px-3 py-2.5 min-w-[280px]">Feedback</th>

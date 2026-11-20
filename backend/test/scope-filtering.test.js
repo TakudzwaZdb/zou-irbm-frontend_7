@@ -39,6 +39,36 @@ test('a global oversight role still sees everything (no regression on legitimate
   assert.equal(asCpu.body.kpis.length, asIctadmin.body.kpis.length, 'CPU (a global reader) must see the same full KPI list ICT admin does');
 });
 
+test('role-granted institutional performance access unlocks all-programme KPI views only', async () => {
+  const { token: ictadmin } = await api.login('l.chikomo@zou.ac.zw');
+  const { token: unitHead } = await api.login('s.chikonzo@zou.ac.zw');
+  const [allBefore, scopedBefore] = await Promise.all([
+    api.request('/api/kpis', { token: ictadmin }),
+    api.request('/api/kpis', { token: unitHead }),
+  ]);
+  assert.ok(scopedBefore.body.kpis.length < allBefore.body.kpis.length);
+
+  const grant = await api.request(
+    '/api/users/roles/unithead/permissions/view_institutional_performance/grant',
+    { method: 'POST', token: ictadmin },
+  );
+  assert.equal(grant.status, 200);
+
+  const [allAfter, grantedKpis, grantedValues, performance, plans] = await Promise.all([
+    api.request('/api/kpis', { token: ictadmin }),
+    api.request('/api/kpis', { token: unitHead }),
+    api.request('/api/kpis/values?year=2026&month=1', { token: unitHead }),
+    api.request(`/api/kpis/performance-target?cycleYear=${new Date().getFullYear()}&periodType=monthly&periodIndex=1`, { token: unitHead }),
+    api.request(`/api/plans?year=${new Date().getFullYear() + 1}`, { token: unitHead }),
+  ]);
+  assert.equal(grantedKpis.body.kpis.length, allAfter.body.kpis.length);
+  assert.equal(grantedValues.status, 200);
+  assert.equal(performance.status, 200);
+  assert.equal(performance.body.rootKey, 'university:0');
+  assert.ok(plans.body.units.length < (await api.request(`/api/plans?year=${new Date().getFullYear() + 1}`, { token: ictadmin })).body.units.length,
+    'institutional performance visibility must not grant university-wide plan access');
+});
+
 test('scope narrows correctly at every tier: programme > sub-rep > unit head', async () => {
   const { token: ictadmin } = await api.login('l.chikomo@zou.ac.zw');
   const { token: programmeHead } = await api.login('s.chitiyo@zou.ac.zw'); // Programme Head, scope_id = 1

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext.jsx';
-import { currentNav, NAV_CHILDREN, NAV_ITEMS } from '../lib/nav.js';
+import { currentNav, isRouteAvailable, NAV_CHILDREN, NAV_ITEMS } from '../lib/nav.js';
 import { avatarClass, initialsOf, ROLE_LABEL } from '../lib/scope.js';
 import AlertsBell from './AlertsBell.jsx';
 import LiveIndicator from './LiveIndicator.jsx';
@@ -165,11 +165,11 @@ export default function Layout({ route, setRoute, children }) {
             {nav.map((k) => {
               const item = NAV_ITEMS[k];
               const children = NAV_CHILDREN[k] || [];
-              const active = route === k || children.some((child) => child.route === route);
+              const active = isRouteAvailable(route, [k]);
               return (
                 <div key={k}>
                   <button
-                    onClick={() => { setRoute(k); setSidebarOpen(false); }}
+                    onClick={() => { setRoute(k === 'overview' ? 'overviewPerformance' : k); setSidebarOpen(false); }}
                     aria-current={route === k ? 'page' : undefined}
                     aria-expanded={children.length ? active : undefined}
                     className={`flex w-full items-center gap-2.5 px-2.5 py-2.5 border-l-2 rounded-lg text-[14px] font-semibold text-left

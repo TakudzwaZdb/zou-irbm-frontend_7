@@ -5,15 +5,15 @@
 //   2. Target-performance escalation: has a KPI's performance against its
 //      target remained below threshold for several reporting periods?
 // Progress-pace alerts are handled separately by performanceMonitoring.
-// Both escalate up the org hierarchy (Programme Head, then VC/Council) once
-// they cross the trigger thresholds in Settings. There is no email/notification
-// engine behind this — like the rest of the app's "alerts", it is a live view
-// computed from real rows, surfaced for a person to act on.
+// Target-performance threshold crossings also generate durable notifications
+// in performanceMonitoring, following the configured Programme and
+// institutional escalation thresholds.
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { isGlobalReader, canReadSub, canReadKpi } = require('../utils/scope');
 const { consecutivePerformanceStreak } = require('../utils/compliance');
+const { matchesComplianceSub } = require('../utils/complianceFilters');
 const { calculatePerformanceAgainstTarget } = require('../utils/performanceAgainstTarget');
 
 const router = express.Router();
@@ -62,11 +62,11 @@ router.get('/', async (req, res) => {
   const ownerType = req.query.ownerType == null ? '' : String(req.query.ownerType);
   const ownerId = req.query.ownerId == null ? null : Number(req.query.ownerId);
   if ((ownerType || ownerId != null) && (
-    !['programme', 'sub', 'unit'].includes(ownerType)
+    !['programme', 'sub', 'unit', 'employee'].includes(ownerType)
     || !Number.isSafeInteger(ownerId)
     || ownerId < 1
   )) {
-    return res.status(400).json({ error: 'A valid ownerType and ownerId are required for performance filtering.' });
+    return res.status(400).json({ error: 'A valid ownerType and ownerId are required for organisation filtering.' });
   }
   const settings = await getSettings();
 
@@ -80,11 +80,25 @@ router.get('/', async (req, res) => {
   // their own branch (see utils/scope.js).
   const seesWholeOrg = isGlobalReader(req.user);
   const allSubs = await db.prepare(
-    `SELECT s.id, s.name, p.name AS programme_name FROM subs s JOIN programmes p ON p.id = s.programme_id
+    `SELECT s.id, s.name, s.programme_id, p.name AS programme_name FROM subs s JOIN programmes p ON p.id = s.programme_id
      WHERE s.deleted_at IS NULL AND p.deleted_at IS NULL ORDER BY p.id, s.id`
   ).all();
+  let selectedSubId = null;
+  if (ownerType === 'sub') selectedSubId = ownerId;
+  if (ownerType === 'unit') {
+    selectedSubId = (await db.prepare('SELECT sub_id FROM units WHERE id = ? AND deleted_at IS NULL').get(ownerId))?.sub_id ?? null;
+  }
+  if (ownerType === 'employee') {
+    selectedSubId = (await db.prepare(
+      `SELECT u.sub_id FROM employees e JOIN units u ON u.id = e.unit_id
+       WHERE e.id = ? AND e.deleted_at IS NULL AND u.deleted_at IS NULL`
+    ).get(ownerId))?.sub_id ?? null;
+  }
   const subs = [];
-  for (const sub of allSubs) { if (seesWholeOrg || await canReadSub(req.user, sub.id)) subs.push(sub); }
+  for (const sub of allSubs) {
+    if (!matchesComplianceSub(sub, ownerType, ownerId, selectedSubId)) continue;
+    if (seesWholeOrg || await canReadSub(req.user, sub.id)) subs.push(sub);
+  }
 
   const subRows = [];
   for (const sub of subs) {
@@ -131,6 +145,8 @@ router.get('/', async (req, res) => {
   } else if (ownerType === 'unit') {
     kpiQuery += " AND k.owner_type = 'unit' AND k.owner_id = ?";
     kpiParams.push(ownerId);
+  } else if (ownerType === 'employee') {
+    kpiQuery += ' AND 1 = 0';
   }
   kpiQuery += ' ORDER BY k.id';
   const allKpis = await db.prepare(kpiQuery).all(...kpiParams);

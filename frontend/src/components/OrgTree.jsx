@@ -67,18 +67,18 @@ export default function OrgTree({ setRoute, onNavigate }) {
   function visibleSubs(programmeId) {
     const subs = subsOfProgramme(org, programmeId);
     if (user.role === 'employee' && forced?.kind === 'programme') return subs;
-    if (['rep', 'unithead', 'employee'].includes(user.role)) return subs.filter((s) => s.id === ownSubId);
+    if (forced && ['rep', 'unithead', 'employee'].includes(user.role)) return subs.filter((s) => s.id === ownSubId);
     return subs;
   }
   function visibleUnits(subId) {
     const units = unitsOfSub(org, subId);
     if (user.role === 'employee' && ['programme', 'sub'].includes(forced?.kind)) return units;
-    if (['unithead', 'employee'].includes(user.role)) return units.filter((u) => u.id === ownUnitId);
+    if (forced && ['unithead', 'employee'].includes(user.role)) return units.filter((u) => u.id === ownUnitId);
     return units;
   }
   function visibleEmployees(unitId) {
     const inds = employeesOfUnit(org, unitId);
-    if (user.role === 'employee' && forced?.kind === 'employee') return inds.filter((i) => i.id === forced.id);
+    if (forced && user.role === 'employee' && forced.kind === 'employee') return inds.filter((i) => i.id === forced.id);
     return inds;
   }
 

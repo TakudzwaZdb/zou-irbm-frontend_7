@@ -2,6 +2,8 @@ const express = require('express');
 const db = require('../db');
 const { requireAuth, requirePerm, requireAnyPerm } = require('../middleware/auth');
 const { canReadKpi } = require('../utils/scope');
+const { appendAlertOwnerFilter } = require('../utils/performanceAlertFilters');
+const { correctiveActionPermissionError } = require('../utils/performanceAlertPermissions');
 const { createPerformanceNotification } = require('../utils/performanceNotifications');
 
 const router = express.Router();
@@ -27,7 +29,13 @@ async function getVisibleAlert(req, res, alertId) {
   const alert = await db.prepare(
     `SELECT a.*, k.name AS kpi_name, k.owner_type, k.owner_id, k.measure, k.weight,
             p.name AS programme_name, s.name AS sub_name, u.name AS unit_name, e.name AS employee_name,
-            CASE k.owner_type WHEN 'sub' THEN s.name WHEN 'unit' THEN u.name ELSE e.name END AS owner_name
+            CASE k.owner_type
+              WHEN 'university' THEN 'University'
+              WHEN 'programme' THEN p.name
+              WHEN 'sub' THEN s.name
+              WHEN 'unit' THEN u.name
+              WHEN 'employee' THEN e.name
+            END AS owner_name
      FROM performance_alerts a
      JOIN kpis k ON k.id = a.kpi_id
      LEFT JOIN employees e ON k.owner_type = 'employee' AND e.id = k.owner_id
@@ -36,7 +44,7 @@ async function getVisibleAlert(req, res, alertId) {
      LEFT JOIN subs s ON (k.owner_type = 'sub' AND s.id = k.owner_id)
                        OR (k.owner_type = 'unit' AND s.id = u.sub_id)
                        OR (k.owner_type = 'employee' AND s.id = u.sub_id)
-     LEFT JOIN programmes p ON p.id = s.programme_id
+     LEFT JOIN programmes p ON (k.owner_type = 'programme' AND p.id = k.owner_id) OR p.id = s.programme_id
      WHERE a.id = ? AND k.deleted_at IS NULL`
   ).get(id);
   if (!alert) {
@@ -164,27 +172,20 @@ router.get('/', requirePerm('view_performance_alerts'), async (req, res) => {
     params.push(status);
     filterSql += ` AND a.status = $${params.length}`;
   }
-  if (ownerType && ownerId == null) {
-    if (ownerType === 'programme') {
-      return res.status(400).json({ error: 'Select a Programme to filter its alerts.' });
-    }
-    params.push(ownerType);
-    filterSql += ` AND k.owner_type = $${params.length}`;
+  if (ownerType === 'programme' && ownerId == null) {
+    return res.status(400).json({ error: 'Select a Programme to filter its alerts.' });
   }
-  if (ownerId != null) {
-    params.push(ownerId);
-    const scopeColumn = {
-      programme: 'p.id',
-      sub: 's.id',
-      unit: 'u.id',
-      employee: 'e.id',
-    }[ownerType];
-    filterSql += ` AND ${scopeColumn} = $${params.length}`;
-  }
+  filterSql += appendAlertOwnerFilter(ownerType, ownerId, params);
   const result = await db.pool.query(
     `SELECT a.*, k.name AS kpi_name, k.owner_type, k.owner_id, k.measure, k.weight,
             p.name AS programme_name, s.name AS sub_name, u.name AS unit_name, e.name AS employee_name,
-            CASE k.owner_type WHEN 'sub' THEN s.name WHEN 'unit' THEN u.name ELSE e.name END AS owner_name
+            CASE k.owner_type
+              WHEN 'university' THEN 'University'
+              WHEN 'programme' THEN p.name
+              WHEN 'sub' THEN s.name
+              WHEN 'unit' THEN u.name
+              WHEN 'employee' THEN e.name
+            END AS owner_name
      FROM performance_alerts a
      JOIN kpis k ON k.id = a.kpi_id
      LEFT JOIN employees e ON k.owner_type = 'employee' AND e.id = k.owner_id
@@ -193,7 +194,7 @@ router.get('/', requirePerm('view_performance_alerts'), async (req, res) => {
      LEFT JOIN subs s ON (k.owner_type = 'sub' AND s.id = k.owner_id)
                        OR (k.owner_type = 'unit' AND s.id = u.sub_id)
                        OR (k.owner_type = 'employee' AND s.id = u.sub_id)
-     LEFT JOIN programmes p ON p.id = s.programme_id
+     LEFT JOIN programmes p ON (k.owner_type = 'programme' AND p.id = k.owner_id) OR p.id = s.programme_id
      WHERE a.year = $1 AND a.month = $2 AND k.deleted_at IS NULL ${filterSql}
      ORDER BY CASE a.severity WHEN 'red' THEN 0 WHEN 'missing' THEN 1 ELSE 2 END, a.updated_at DESC`,
     params
@@ -227,10 +228,6 @@ router.get('/', requirePerm('view_performance_alerts'), async (req, res) => {
       ).then((r) => r.rows),
       db.pool.query(
         `SELECT DISTINCT u.id, u.name, u.title, u.role, u.scope_type, u.scope_id,
-                (
-                  EXISTS (SELECT 1 FROM user_permissions up WHERE up.user_id = u.id AND up.permission_key = 'manage_corrective_actions')
-                  OR EXISTS (SELECT 1 FROM role_permissions rp WHERE rp.role_key = u.role AND rp.permission_key = 'manage_corrective_actions')
-                ) AS can_manage_corrective_actions,
                 COALESCE(NULLIF(TRIM(u.title), ''), NULLIF(TRIM(e.role_title), ''),
                   CASE u.role
                     WHEN 'cpu' THEN 'Corporate Planning Unit reviewer'
@@ -288,9 +285,7 @@ router.get('/', requirePerm('view_performance_alerts'), async (req, res) => {
     }
     const correctiveActions = (actionsByAlert.get(alert.id) || []).map((action) => ({
       ...action,
-      reviewers: reviewers.filter((reviewer) => reviewer.id !== action.created_by
-        && (reviewer.can_manage_corrective_actions || reviewer.id === action.responsible_user_id))
-        .map(({ can_manage_corrective_actions, ...reviewer }) => reviewer),
+      reviewers: reviewers.filter((reviewer) => reviewer.id !== action.created_by),
     }));
     decoratedAlerts.push({
       ...alert,
@@ -550,7 +545,7 @@ router.post('/:id/actions', requirePerm('manage_corrective_actions'), async (req
   res.status(201).json({ actionId: inserted.id });
 });
 
-router.patch('/actions/:id', requireAnyPerm('manage_corrective_actions', 'data_entry'), async (req, res) => {
+router.patch('/actions/:id', requireAnyPerm('manage_corrective_actions', 'approve_corrective_actions', 'data_entry'), async (req, res) => {
   const id = positiveId(req.params.id);
   if (id == null) return res.status(400).json({ error: 'Corrective action id must be a positive integer.' });
   const action = await db.prepare('SELECT * FROM corrective_action_plans WHERE id = ?').get(id);
@@ -558,14 +553,6 @@ router.patch('/actions/:id', requireAnyPerm('manage_corrective_actions', 'data_e
   const alert = await getVisibleAlert(req, res, action.alert_id);
   if (!alert) return;
   const { status, outcome, evidence } = req.body || {};
-  const canManage = req.user.permissions.includes('manage_corrective_actions');
-  const isResponsible = action.responsible_user_id === req.user.id;
-  if (!canManage && !isResponsible) {
-    return res.status(403).json({ error: 'Only the corrective action owner or an authorised manager may update this plan.' });
-  }
-  if (!canManage && !['in_progress', 'completed'].includes(status)) {
-    return res.status(403).json({ error: 'The assigned person may only start or complete this action plan.' });
-  }
   const allowedNext = {
     draft: ['submitted'],
     submitted: ['approved', 'rejected'],
@@ -577,12 +564,8 @@ router.patch('/actions/:id', requireAnyPerm('manage_corrective_actions', 'data_e
   if (!allowedNext[action.status]?.includes(status)) {
     return res.status(400).json({ error: `Cannot change a ${action.status} plan to ${status || 'the requested state'}.` });
   }
-  if (['approved', 'rejected'].includes(status) && !req.user.permissions.includes('approve_corrective_actions')) {
-    return res.status(403).json({ error: 'You do not have permission to approve or reject corrective action plans.' });
-  }
-  if (['approved', 'rejected'].includes(status) && action.created_by === req.user.id) {
-    return res.status(403).json({ error: 'A corrective action plan must be reviewed by someone other than its creator.' });
-  }
+  const permissionError = correctiveActionPermissionError(action, status, req.user);
+  if (permissionError) return res.status(403).json({ error: permissionError });
   if (status === 'completed' && (!outcome || !String(outcome).trim())) {
     return res.status(400).json({ error: 'Record the outcome before completing a corrective action plan.' });
   }

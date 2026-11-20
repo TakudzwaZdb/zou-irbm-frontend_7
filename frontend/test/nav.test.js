@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { currentNav, isRouteAvailable, NAV_CHILDREN } from '../src/lib/nav.js';
+import { currentNav, defaultRoute, isRouteAvailable, NAV_CHILDREN } from '../src/lib/nav.js';
 
 test('CPU and ICT Admin can navigate to Compliance & Escalations', () => {
   const hasPerm = () => true;
@@ -16,13 +16,20 @@ test('Performance appears before Progress in overview and reports tabs', () => {
   }
 });
 
-test('Compliance & Escalations exposes separate progress and performance destinations', () => {
+test('Overview defaults to Performance while Progress remains available', () => {
+  const nav = currentNav({ role: 'unithead' }, () => true);
+
+  assert.equal(defaultRoute(nav), 'entry');
+  assert.ok(isRouteAvailable('overviewPerformance', nav));
+  assert.ok(isRouteAvailable('overview', nav));
+  assert.equal(defaultRoute(['overview', 'reports']), 'overviewPerformance');
+});
+
+test('Compliance & Escalations is one destination while older links remain routable', () => {
   const nav = currentNav({ role: 'cpu' }, () => true);
 
-  assert.deepEqual(
-    NAV_CHILDREN.compliance.map((child) => child.route),
-    ['complianceProgress', 'compliancePerformance'],
-  );
+  assert.deepEqual(NAV_CHILDREN.compliance, []);
+  assert.ok(nav.includes('compliance'));
   assert.ok(isRouteAvailable('complianceProgress', nav));
   assert.ok(isRouteAvailable('compliancePerformance', nav));
 });

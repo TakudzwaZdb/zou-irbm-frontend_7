@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   canManagePlanOwner,
+  availableReportKinds,
   computeRag,
   computeVariance,
+  defaultNodeForRole,
   expectedPacePct,
   institutionalRollup,
   isOwner,
@@ -30,6 +32,20 @@ test('scope breadcrumb uses the assigned scope for custom and non-canonical role
   assert.deepEqual(scopeBreadcrumb(org, { role: 'auditor', scope_type: 'unit', scope_id: 30 }), expected);
   assert.deepEqual(scopeBreadcrumb(org, { role: 'programme', scope_type: 'unit', scope_id: 30 }), expected);
   assert.equal(scopeBreadcrumb(org, { role: 'auditor', scope_type: null, scope_id: null }), null);
+});
+
+test('institutional-performance permission gives scoped roles an all-programmes read view', () => {
+  const scopedUser = { role: 'unithead', scope_type: 'unit', scope_id: 30, overview_limit: null };
+  assert.deepEqual(defaultNodeForRole(scopedUser), { kind: 'unit', id: 30 });
+  assert.deepEqual(defaultNodeForRole({
+    ...scopedUser,
+    permissions: ['view_institutional_performance'],
+  }), null);
+  assert.deepEqual(availableReportKinds(scopedUser), ['unit', 'employee']);
+  assert.deepEqual(
+    availableReportKinds({ ...scopedUser, permissions: ['view_institutional_performance'] }),
+    ['overall', 'programme', 'sub', 'unit', 'employee'],
+  );
 });
 
 test('submission permission allows a scoped manager to submit only matching KPI ownership', () => {

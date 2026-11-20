@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   nodeOwnKpis, performanceRollup, varianceRollup, ownerName, ownerKindLabel,
   subsOfProgramme, unitsOfSub, employeesOfUnit,
-  reachableOrgSlice, availableReportKinds, GLOBAL_REPORT_ROLES, defaultNodeForRole,
+  reachableOrgSlice, availableReportKinds, GLOBAL_REPORT_ROLES, defaultNodeForRole, hasInstitutionalPerformanceAccess,
 } from '../lib/scope.js';
 import { employeePosition } from '../lib/orgDisplay.js';
 import PaginatedRows from './PaginatedRows.jsx';
@@ -49,7 +49,7 @@ function reportOwnerLabel(org, kpi) {
 // real, citable document about just this one person or unit".
 export default function FocusedReportSection({ org, kpis, perfValues, settings, user, periodLabel }) {
   const kinds = availableReportKinds(user);
-  const isGlobal = GLOBAL_REPORT_ROLES.includes(user.role);
+  const isGlobal = GLOBAL_REPORT_ROLES.includes(user.role) || hasInstitutionalPerformanceAccess(user);
   const root = isGlobal ? null : defaultNodeForRole(user);
   const slice = reachableOrgSlice(org, root);
   const [kind, setKind] = useState(kinds[0] || 'overall');
