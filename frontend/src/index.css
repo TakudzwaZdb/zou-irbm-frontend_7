@@ -20,6 +20,20 @@
   .pace-alert-pulse { animation: none; }
 }
 
+:root {
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
 @theme {
   --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-display: "Manrope", system-ui, sans-serif;
@@ -171,6 +185,13 @@
     font-size-adjust: 0.62;
     line-height: 1.55;
     @apply bg-page text-ink antialiased;
+  }
+  select {
+    color-scheme: inherit;
+  }
+  option {
+    color: var(--color-ink);
+    background-color: var(--color-surface);
   }
   table {
     width: 100%;

@@ -546,6 +546,37 @@ export function expectedPacePct(asOfMonth) {
   return (m / 12) * 100;
 }
 
+export function calculateExpectedPace(kpi, elapsedMonths, totalMonths = 12) {
+  const baseline = Number(kpi?.baseline);
+  const target = Number(kpi?.target);
+  const elapsed = Number(elapsedMonths);
+  const total = Number(totalMonths);
+  if (!Number.isFinite(baseline) || !Number.isFinite(target) || !Number.isFinite(elapsed) || !Number.isFinite(total) || total <= 0) return null;
+  const elapsedClamped = Math.max(0, Math.min(total, elapsed));
+  if (kpi?.achievement_rule === 'exact_target') return null;
+  if (kpi?.measurement_direction === 'lower') {
+    return baseline - ((baseline - target) * elapsedClamped / total);
+  }
+  return baseline + ((target - baseline) * elapsedClamped / total);
+}
+
+export function calculatePerformanceAgainstPace(kpi, actual, expectedPace) {
+  const value = Number(actual);
+  const pace = Number(expectedPace);
+  if (!Number.isFinite(value) || !Number.isFinite(pace)) {
+    return { performancePct: null, variance: Number.isFinite(value) ? value - pace : null, status: 'not_calculable' };
+  }
+  if (kpi?.achievement_rule === 'exact_target') {
+    return { performancePct: value === pace ? 100 : 0, variance: value - pace, status: 'calculated' };
+  }
+  if (kpi?.measurement_direction === 'lower') {
+    if (pace <= 0 || value <= 0) return { performancePct: null, variance: pace - value, status: 'not_calculable' };
+    return { performancePct: pace / value * 100, variance: pace - value, status: 'calculated' };
+  }
+  if (pace <= 0 || value < 0) return { performancePct: null, variance: value - pace, status: 'not_calculable' };
+  return { performancePct: value / pace * 100, variance: value - pace, status: 'calculated' };
+}
+
 // The threshold this app treats as needing attention: variance of -10 or
 // worse (10+ points behind the pace expected as of the value's own month).
 // Symmetric ±10 is the "normal" band — running 10+ points AHEAD of pace is
@@ -594,8 +625,7 @@ export function computeVariance(kpi, valueRow, settings) {
 // baseline to target would put you by this month.
 export function expectedValueForMonth(kpi, month) {
   const m = Math.max(0, Math.min(12, Number(month) || 0));
-  const base = Number(kpi.baseline), tgt = Number(kpi.target);
-  return base + (tgt - base) * (m / 12);
+  return calculateExpectedPace(kpi, m, 12);
 }
 
 // The automated "assumed baseline" for judging THIS month's own

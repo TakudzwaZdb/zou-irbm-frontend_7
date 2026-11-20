@@ -1,4 +1,4 @@
-import { performanceScorePct } from './scope.js';
+import { performanceScorePct, expectedValueForMonth } from './scope.js';
 import { parseReportingPeriods } from './reportingPeriods.js';
 
 function numericValue(value) {
@@ -34,10 +34,16 @@ function findMilestone(kpi, periodType, periodIndex) {
   const monthly = periods.find((period) => (
     period?.periodType === 'monthly' && Number(period.periodIndex) === month
   )) || null;
+  if (monthly) {
+    return { milestone: monthly, invalid: false, source: 'monthly' };
+  }
+  if (kpi?.achievement_rule === 'exact_target') {
+    return { milestone: null, invalid: false, source: null };
+  }
   return {
-    milestone: monthly,
+    milestone: { periodType, periodIndex, expectedValue: expectedValueForMonth(kpi, month) },
     invalid: false,
-    source: monthly ? 'monthly' : null,
+    source: 'automated',
   };
 }
 

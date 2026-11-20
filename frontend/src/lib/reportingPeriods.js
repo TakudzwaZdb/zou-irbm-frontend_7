@@ -39,3 +39,20 @@ export function withMonthlyMilestones(existing, monthlyValues) {
   });
   return [...otherPeriods, ...monthlyPeriods];
 }
+
+export function automatedMonthlyMilestones(kpiOrBaseline, target, measurementDirection) {
+  const kpi = typeof kpiOrBaseline === 'object'
+    ? kpiOrBaseline
+    : { baseline: kpiOrBaseline, target, measurement_direction: measurementDirection };
+  const baseline = kpi?.baseline == null ? Number.NaN : Number(kpi.baseline);
+  const annualTarget = kpi?.target == null ? Number.NaN : Number(kpi.target);
+  if (!Number.isFinite(baseline) || !Number.isFinite(annualTarget)) return Array(MONTH_COUNT).fill('');
+  return Array.from({ length: MONTH_COUNT }, (_, index) => {
+    const month = index + 1;
+    if (kpi?.achievement_rule === 'exact_target') return '';
+    const value = kpi?.measurement_direction === 'lower'
+      ? baseline - ((baseline - annualTarget) * (month / MONTH_COUNT))
+      : baseline + ((annualTarget - baseline) * (month / MONTH_COUNT));
+    return String(value);
+  });
+}

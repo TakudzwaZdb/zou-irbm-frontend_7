@@ -171,12 +171,47 @@ function getReportingMilestone(kpi, periodType, periodIndex) {
       ? JSON.parse(kpi.reporting_periods)
       : kpi.reporting_periods;
   } catch {
-    return null;
+    milestones = [];
   }
-  if (!Array.isArray(milestones)) return null;
-  return milestones.find((milestone) =>
-    milestone && milestone.periodType === periodType && Number(milestone.periodIndex) === Number(periodIndex)
-  ) || null;
+  if (Array.isArray(milestones)) {
+    const exact = milestones.find((milestone) =>
+      milestone && milestone.periodType === periodType && Number(milestone.periodIndex) === Number(periodIndex)
+    );
+    if (exact) return exact;
+
+    const index = Number(periodIndex);
+    let endMonth = null;
+    if (periodType === 'monthly' && Number.isInteger(index) && index >= 1 && index <= 12) endMonth = index;
+    if (periodType === 'quarterly' && index >= 1 && index <= 4) endMonth = index * 3;
+    if (periodType === 'biannual' && index >= 1 && index <= 2) endMonth = index * 6;
+    if (periodType === 'annual' && index === 1) endMonth = 12;
+    if (endMonth != null) {
+      const monthly = milestones.find((milestone) =>
+        milestone?.periodType === 'monthly' && Number(milestone.periodIndex) === endMonth
+      );
+      if (monthly) return monthly;
+    }
+  }
+
+  if (kpi?.achievement_rule === 'exact_target') return null;
+  const baseline = numericValue(kpi?.baseline);
+  const target = numericValue(kpi?.target);
+  if (baseline == null || target == null) return null;
+  const index = Number(periodIndex);
+  let endMonth = null;
+  if (periodType === 'monthly' && Number.isInteger(index) && index >= 1 && index <= 12) endMonth = index;
+  if (periodType === 'quarterly' && index >= 1 && index <= 4) endMonth = index * 3;
+  if (periodType === 'biannual' && index >= 1 && index <= 2) endMonth = index * 6;
+  if (periodType === 'annual' && index === 1) endMonth = 12;
+  if (endMonth == null) return null;
+  const expectedValue = calculateExpectedPace(kpi, endMonth, 12);
+  if (expectedValue == null) return null;
+  return {
+    periodType,
+    periodIndex: index,
+    expectedValue,
+    automated: true,
+  };
 }
 
 function classifyProgressVariance(progress, expectedProgress, warningGap, criticalGap) {
@@ -206,6 +241,38 @@ function classifyTargetPace(performancePct, expectedPacePct) {
     : variance > 0 ? 'behind'
       : variance <= -10 ? 'ahead' : 'on-pace';
   return { variance, flag };
+}
+
+function calculateExpectedPace(kpi, elapsedMonths, totalMonths = 12) {
+  const baseline = numericValue(kpi?.baseline);
+  const target = numericValue(kpi?.target);
+  const elapsed = numericValue(elapsedMonths);
+  const total = numericValue(totalMonths);
+  if (baseline == null || target == null || elapsed == null || total == null || total <= 0) return null;
+  const elapsedClamped = Math.max(0, Math.min(total, elapsed));
+  const direction = kpi?.measurement_direction === 'lower' ? 'lower' : 'higher';
+  const achievementRule = kpi?.achievement_rule || 'ratio';
+  if (achievementRule === 'exact_target') return null;
+  if (direction === 'lower') {
+    return baseline - ((baseline - target) * elapsedClamped / total);
+  }
+  return baseline + ((target - baseline) * elapsedClamped / total);
+}
+
+function calculatePerformanceAgainstPace(kpi, actual, expectedPace) {
+  const value = numericValue(actual);
+  const pace = numericValue(expectedPace);
+  if (value == null || pace == null) return { performancePct: null, variance: value == null ? null : value - pace, status: value == null ? 'missing' : 'not_calculable' };
+  const rule = kpi?.achievement_rule || 'ratio';
+  if (rule === 'exact_target') {
+    return { performancePct: value === pace ? 100 : 0, variance: value - pace, status: 'calculated' };
+  }
+  if (kpi?.measurement_direction === 'lower') {
+    if (pace <= 0 || value <= 0) return { performancePct: null, variance: value - pace, status: 'not_calculable' };
+    return { performancePct: pace / value * 100, variance: pace - value, status: 'calculated' };
+  }
+  if (pace <= 0 || value < 0) return { performancePct: null, variance: value - pace, status: 'not_calculable' };
+  return { performancePct: value / pace * 100, variance: value - pace, status: 'calculated' };
 }
 
 function weightedPaceAverage(paces, valueFor) {
@@ -392,6 +459,8 @@ function calculateOverallSeniorManagerPerformance(resultsDelivery, budgetPerform
 
 module.exports = {
   calculatePerformanceAgainstTarget,
+  calculateExpectedPace,
+  calculatePerformanceAgainstPace,
   classifyTargetPerformance,
   calculateBaselineProgress,
   calculateProgressPace,

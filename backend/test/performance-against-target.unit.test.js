@@ -5,9 +5,10 @@ const {
   calculateBaselineProgress,
   calculateProgressPace,
   calculatePerformancePace,
+  calculateExpectedPace,
   calculateTargetVariance,
-  calculateExpectedProgress,
   getReportingMilestone,
+  calculateExpectedProgress,
   classifyProgressVariance,
   classifyTargetPace,
   summarizePace,
@@ -109,6 +110,29 @@ test('performance pace uses KPI-specific milestone performance instead of a unif
   assert.equal(noMilestone.expectedPacePct, null);
   assert.equal(noMilestone.variance, null);
   assert.equal(noMilestone.status, 'not_configured');
+});
+
+test('reporting milestones fall back to automated straight-line pace', () => {
+  const kpi = { baseline: 0, target: 100, reporting_periods: [] };
+  assert.equal(getReportingMilestone(kpi, 'monthly', 3).expectedValue, 25);
+  assert.equal(getReportingMilestone(kpi, 'quarterly', 1).expectedValue, 25);
+  assert.equal(getReportingMilestone(kpi, 'biannual', 1).expectedValue, 50);
+  assert.equal(getReportingMilestone(kpi, 'annual', 1).expectedValue, 100);
+  assert.equal(getReportingMilestone(kpi, 'quarterly', 5), null);
+
+  const lower = { baseline: 30, target: 10, reporting_periods: [] };
+  assert.equal(getReportingMilestone(lower, 'quarterly', 1).expectedValue, 25);
+});
+
+test('central expected pace calculation matches November known examples', () => {
+  const uptime = { baseline: 96.5, target: 99.5, measurement_direction: 'higher' };
+  const students = { baseline: 55, target: 90, measurement_direction: 'higher' };
+  const enrolment = { baseline: 14200, target: 16000, measurement_direction: 'higher' };
+  assert.equal(calculateExpectedPace(uptime, 11, 12).toFixed(2), '99.25');
+  assert.equal(calculateExpectedPace(students, 11, 12).toFixed(2), '87.08');
+  assert.equal(calculateExpectedPace(enrolment, 11, 12), 15850);
+  const lower = { baseline: 30, target: 10, measurement_direction: 'lower' };
+  assert.equal(calculateExpectedPace(lower, 11, 12), 11.666666666666668);
 
   const firstTier = calculatePerformancePace({ target: 100 }, 64, 80);
   const secondTier = calculatePerformancePace({ target: 200 }, 128, 140);

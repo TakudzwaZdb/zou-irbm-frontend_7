@@ -93,3 +93,18 @@ test('annual performance uses December monthly milestone and reports invalid sch
   assert.equal(result.summary.invalidScheduleCount, 1);
   assert.equal(result.summary.notConfiguredPaceCount, 0);
 });
+
+test('pace is automated from baseline and target when no milestone is configured', () => {
+  const automaticKpi = kpi(1, []);
+  const result = configuredPaceForPeriod(
+    [detail(1)],
+    [automaticKpi],
+    'quarterly',
+    1
+  );
+
+  assert.equal(result.kpis[0].performanceExpectedPacePct, 25);
+  assert.equal(result.kpis[0].expectedPaceUsesMonthlyFallback, false);
+  assert.equal(result.kpis[0].expectedPaceConfigured, true);
+  assert.equal(result.summary.notConfiguredPaceCount, 0);
+});
