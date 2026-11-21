@@ -128,13 +128,13 @@ test('permission grants are catalog-valid, returned immediately, and live on the
 });
 
 test('role changes reject an occupied post by name but allow the Employee role', async () => {
-  const { token } = await api.login('l.chikomo@zou.ac.zw');
+  const { token } = await api.login('gorerazas@zou.ac.zw');
   const directory = await api.request('/api/users', { token });
   assert.equal(directory.status, 200);
   const occupier = directory.body.users
     .filter((user) => user.role === 'unithead' && user.scope_type === 'unit')
     .sort((a, b) => a.id - b.id)[0];
-  const target = directory.body.users.find((user) => user.role === 'employee' && user.id !== occupier?.id);
+  const target = directory.body.users.find((user) => user.role === 'employee' && user.scope_type === 'employee' && user.id !== occupier?.id);
   assert.ok(occupier && target, 'expected a Unit Head and a separate Employee account');
 
   const occupied = await api.request(`/api/users/${target.id}/role`, {
@@ -201,6 +201,69 @@ test('role changes reject an occupied post by name but allow the Employee role',
   assert.equal(restoredAfterBulk.status, 200);
   assert.equal(restoredAfterBulk.body.user.scope_type, 'employee');
   assert.equal(restoredAfterBulk.body.user.scope_id, target.scope_id);
+});
+
+test('scope-only changes preserve the role and user-specific permissions', async () => {
+  const { token } = await api.login('gorerazas@zou.ac.zw');
+  const directory = await api.request('/api/users', { token });
+  const target = directory.body.users.find((user) => user.role === 'employee' && user.scope_type === 'employee');
+  const org = await api.request('/api/org', { token });
+  assert.ok(target && org.body.units.length, 'expected a scoped Employee and an active Unit');
+  const originalScope = { scopeType: target.scope_type, scopeId: target.scope_id };
+
+  const grant = await api.request(`/api/users/${target.id}/permissions/view_audit/grant`, {
+    method: 'POST', token,
+  });
+  assert.equal(grant.status, 200);
+
+  const moved = await api.request(`/api/users/${target.id}/scope`, {
+    method: 'PATCH',
+    token,
+    body: { scopeType: 'unit', scopeId: org.body.units[0].id },
+  });
+  assert.equal(moved.status, 200);
+  assert.equal(moved.body.user.role, target.role);
+  assert.equal(moved.body.user.scope_type, 'unit');
+  assert.equal(moved.body.user.scope_id, org.body.units[0].id);
+
+  const afterMove = await api.request('/api/users', { token });
+  const movedUser = afterMove.body.users.find((user) => user.id === target.id);
+  assert.ok(movedUser.directPermissions.includes('view_audit'));
+
+  const cleared = await api.request(`/api/users/${target.id}/scope`, {
+    method: 'PATCH', token, body: { scopeType: null, scopeId: null },
+  });
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.body.user.role, target.role);
+  assert.equal(cleared.body.user.scope_type, null);
+  assert.equal(cleared.body.user.scope_id, null);
+  const afterClear = await api.request('/api/users', { token });
+  assert.ok(afterClear.body.users.find((user) => user.id === target.id).directPermissions.includes('view_audit'));
+
+  const roleChangedWithoutScope = await api.request(`/api/users/${target.id}/role`, {
+    method: 'PATCH', token, body: { role: 'ictadmin' },
+  });
+  assert.equal(roleChangedWithoutScope.status, 200);
+  assert.equal(roleChangedWithoutScope.body.user.scope_type, null);
+  assert.equal(roleChangedWithoutScope.body.user.scope_id, null);
+  const roleRestoredWithoutScope = await api.request('/api/users/assign-role', {
+    method: 'POST', token, body: { userIds: [target.id], role: 'employee' },
+  });
+  assert.equal(roleRestoredWithoutScope.status, 200);
+  assert.equal(roleRestoredWithoutScope.body.assigned, 1);
+  const afterRoleRestore = await api.request('/api/users', { token });
+  const restoredRoleUser = afterRoleRestore.body.users.find((user) => user.id === target.id);
+  assert.equal(restoredRoleUser.role, 'employee');
+  assert.equal(restoredRoleUser.scope_type, null);
+  assert.equal(restoredRoleUser.scope_id, null);
+
+  const restored = await api.request(`/api/users/${target.id}/scope`, {
+    method: 'PATCH', token, body: originalScope,
+  });
+  assert.equal(restored.status, 200);
+  assert.equal(restored.body.user.role, target.role);
+  assert.equal(restored.body.user.scope_type, originalScope.scopeType);
+  assert.equal(restored.body.user.scope_id, originalScope.scopeId);
 });
 
 test('sign out everywhere immediately invalidates the token that called it', async () => {

@@ -25,6 +25,19 @@ test('Overview defaults to Performance while Progress remains available', () => 
   assert.equal(defaultRoute(['overview', 'reports']), 'overviewPerformance');
 });
 
+test('every role can reach both Overview views when granted view_overview', () => {
+  const roles = ['employee', 'unithead', 'rep', 'programme', 'cpu', 'ictadmin', 'exec', 'vc', 'council', 'manager'];
+  for (const role of roles) {
+    const nav = currentNav({ role }, (permission) => permission === 'view_overview');
+    assert.ok(isRouteAvailable('overviewPerformance', nav), `${role} should be able to open Overview Performance`);
+    assert.ok(isRouteAvailable('overview', nav), `${role} should be able to open Overview Progress`);
+  }
+
+  const revoked = currentNav({ role: 'unithead' }, () => false);
+  assert.equal(isRouteAvailable('overviewPerformance', revoked), false);
+  assert.equal(isRouteAvailable('overview', revoked), false);
+});
+
 test('Compliance & Escalations is one destination while older links remain routable', () => {
   const nav = currentNav({ role: 'cpu' }, () => true);
 

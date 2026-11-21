@@ -405,6 +405,11 @@ export function AppProvider({ children }) {
     await Promise.all([loadValuesForPeriod(period), loadPerfValues(perfPeriod)]);
   }, [period, perfPeriod, loadValuesForPeriod, loadPerfValues]);
 
+  const reloadKpis = useCallback(async () => {
+    const r = await api('/kpis');
+    setKpis(r.kpis);
+  }, []);
+
   const value = {
     booting, user, loginError, login, verifyMfa, logout, logoutEverywhere, completePasswordChange, completeAzureLogin, reportAzureLoginError, hasPerm, refreshUser,
     org, kpis, settings, values, period, changePeriod,
@@ -414,7 +419,7 @@ export function AppProvider({ children }) {
     hiddenKpiIds, hideKpi, unhideKpi,
     contributions, reloadContributions: () => loadContributionsForPeriod(period),
     selNode, selectNode, clearSelNode, restoreSelNode,
-    perfPeriod, perfValues, changePerfPeriod, reloadPerfValues, reloadOverviewValues,
+    perfPeriod, perfValues, changePerfPeriod, reloadPerfValues, reloadOverviewValues, reloadKpis,
     refreshAll, quickRefresh, quickSyncing,
     reloadCore: () => loadCore(period),
     reloadValues: () => Promise.all([loadValuesForPeriod(period), loadContributionsForPeriod(period), loadSubmissionWindow(period)]),

@@ -12,25 +12,14 @@ import { ROLE_LABEL, UNIT_KIND_OPTIONS } from './Users.jsx';
 import PaginatedRows from '../components/PaginatedRows.jsx';
 
 // Organisation scope is a property of the PERSON, not the role (see
-// routes/users.js's PATCH /:id/role) — a role no longer declares or
-// requires one, so there's nothing here to pick when creating a role.
-// Every role can optionally be given a Programme/Sub-programme/Unit or
-// individual Employee scope. The built-in Employee role still requires
-// some scope to be selected.
+// routes/users.js's role and scope endpoints) — all roles may optionally
+// be given a Programme/Sub-programme/Unit or individual Employee scope.
 const GENERAL_SCOPE_TYPE_OPTIONS = [
   { key: 'programme', label: 'Programme' },
   { key: 'sub', label: 'Sub-programme' },
   { key: 'unit', label: 'Unit / Department / Faculty / Region' },
   { key: 'employee', label: 'Employee' },
 ];
-// Only the built-in Employee role still needs a specific organisation scope
-// picked for every person holding it — see PATCH /:id/role. No other role
-// declares a required scope any more, so this is the only key the bulk
-// "Assign Roles to Users" modal ever needs to exclude (a scoped Employee
-// account can only be set up through the single-person "Assign role"
-// modal, never bulk).
-const BULK_EXCLUDED_ROLE_KEYS = new Set(['employee']);
-
 export default function Permissions() {
   const toast = useToast();
   const confirm = useConfirm();
@@ -44,36 +33,24 @@ export default function Permissions() {
   const [selectedUsers, setSelectedUsers] = useState([]);
 
   const [q, setQ] = useState('');
-  // Its own dedicated, always-visible search bar right on the "Assign Roles
-  // to Users" table below — separate from the page-header search above
-  // (which now only searches Roles), so filtering the Users table doesn't
-  // depend on a search box that's visually anchored to a different table.
   const [userSearch, setUserSearch] = useState('');
-  // Keep the Roles table visible so built-in/custom roles and their grants
-  // are immediately discoverable; the larger Users list stays collapsed.
-  const [rolesOpen, setRolesOpen] = useState(true);
+  const [permissionSearch, setPermissionSearch] = useState('');
+  const [permissionTableOpen, setPermissionTableOpen] = useState(false);
+  const [rolesOpen, setRolesOpen] = useState(false);
   const [usersOpen, setUsersOpen] = useState(false);
 
   const [assignRole, setAssignRole] = useState('');
   const [assigning, setAssigning] = useState(false);
-  // Whether the bulk (multi-user, global-role-only) variant of the "Assign
-  // role & scope" modal is open — see openAssignForSelection() below, the
-  // ONE button above the table that opens either this or the single-person
-  // scopeManageUser modal depending on how many rows are checked.
+  // Whether the bulk role-only modal is open — see openAssignForSelection()
+  // below, which chooses this or the single-person role modal.
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false);
 
-  // Per-person role assignment — moved here from Users.jsx (see that
-  // file's own header note; it now shows role and scope read-only). This
-  // is the ONE place the built-in Employee role can actually be assigned:
-  // the bulk "Assign Roles to Users" control below excludes it, since
-  // Employee needs its own Programme/Sub/Unit/individual-employee-record
-  // scope picked in the same action — see roleDraft/scopeDraft and
-  // applyRoleAndScope() below. Every other role's scope is changed
-  // separately, independent of role — see changeScopeUser just below.
-  const [scopeManageUser, setScopeManageUser] = useState(null);
+  // Per-person role assignment is independent of the separate scope editor
+  // below.
+  const [roleManageUser, setRoleManageUser] = useState(null);
   // The user whose row was clicked to open the standalone "Change scope"
   // popup (see openChangeScope/applyScopeChange below) — entirely separate
-  // from scopeManageUser above: this one only ever changes scope, never
+  // from roleManageUser above: this one only ever changes scope, never
   // role, and works for every user in the table, not just the ones
   // selected via checkbox.
   const [changeScopeUser, setChangeScopeUser] = useState(null);
@@ -165,9 +142,8 @@ export default function Permissions() {
     );
   }
 
-  // The single-person "Assign role" modal can assign any role and its
-  // optional scope together. The bulk modal excludes Employee because it
-  // requires a different scope picked for each person.
+  // Single-person and bulk role assignment change only role. Scope is
+  // managed independently from the user's row.
 
   /*
    * =========================================================
@@ -224,6 +200,19 @@ export default function Permissions() {
         .includes(needle);
     });
   }, [users, userSearch, org]);
+
+  const filteredPermissions = useMemo(() => {
+    const needle = permissionSearch.trim().toLowerCase();
+    if (!needle) return catalog;
+
+    return catalog.filter((permission) =>
+      [permission?.label, permission?.key, permission?.group]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(needle)
+    );
+  }, [catalog, permissionSearch]);
 
   /*
    * =========================================================
@@ -369,11 +358,13 @@ export default function Permissions() {
 
   function openRole(role) {
     const key = getRoleKey(role);
-    setSelectedRoleId((current) =>
-      current === key
-        ? null
-        : key
-    );
+    if (selectedRoleId === key) {
+      setSelectedRoleId(null);
+      return;
+    }
+    setPermissionSearch('');
+    setPermissionTableOpen(false);
+    setSelectedRoleId(key);
   }
 
   /*
@@ -387,7 +378,7 @@ export default function Permissions() {
       if (event.key === 'Escape') {
         setSelectedRoleId(null);
         setShowCreateRole(false);
-        setScopeManageUser(null);
+        setRoleManageUser(null);
         setChangeScopeUser(null);
         setBulkAssignOpen(false);
       }
@@ -606,79 +597,62 @@ export default function Permissions() {
    * =========================================================
    * ASSIGN ROLE (per person or in bulk)
    *
-   * A single-person assignment updates role and scope together, while a
-   * bulk assignment changes roles and preserves each person's scope.
+   * Role assignment changes the role only. Scope is edited separately.
    * =========================================================
    */
 
-  function openScopeManage(user) {
-    setScopeManageUser(user);
+  function openRoleManage(user) {
+    setRoleManageUser(user);
     setRoleDraft((draft) => ({ ...draft, [user.id]: user.role }));
-    setScopeDraft((draft) => ({ ...draft, [user.id]: { type: user.scope_type || '', id: user.scope_id || '' } }));
-    const unit = org.units.find((item) => item.id === Number(user.scope_id));
-    setUnitKindDraft((draft) => ({ ...draft, [user.id]: unit?.kind || 'All organisation units' }));
   }
 
-  function closeScopeManage() {
-    setScopeManageUser(null);
+  function closeRoleManage() {
+    setRoleManageUser(null);
   }
 
   // The "Assign role" button above the table (see openAssignForSelection)
-  // routes here when exactly one row is checked — needed so the Employee
-  // role's inline scope picker (see above) can target a specific person.
+  // routes here when exactly one row is checked.
   // More than one checked opens the bulk modal instead (see
-  // setBulkAssignOpen below), which excludes Employee entirely.
-  function openScopeManageForSelection() {
+  // setBulkAssignOpen below); both role flows are independent of scope.
+  function openRoleManageForSelection() {
     if (selectedUsers.length !== 1) return;
     const user = (users || []).find((u) => u.id === selectedUsers[0]);
-    if (user) openScopeManage(user);
+    if (user) openRoleManage(user);
   }
 
-  // The ONE "Assign role" button above the table opens whichever modal fits
-  // how many rows are checked: exactly one → the per-person role modal
-  // above (Employee's inline scope picker only makes sense for one person
-  // at a time); more than one → the bulk modal below, which excludes
-  // Employee (BULK_EXCLUDED_ROLE_KEYS) since there's no single sensible
-  // scope for a batch of different people.
+  // The ONE "Assign role" button above the table opens the per-person role
+  // modal for one selection or the bulk role-only modal for multiple users.
   function openAssignForSelection() {
     if (selectedUsers.length === 0) return;
     if (selectedUsers.length === 1) {
-      openScopeManageForSelection();
+      openRoleManageForSelection();
     } else {
       setAssignRole('');
       setBulkAssignOpen(true);
     }
   }
 
-  // Scope is independent of role, so choosing a role never changes the
-  // current scope selection.
+  // Role drafts are independent of the separately edited scope.
   function updateRoleDraft(userId, newRole) {
     setRoleDraft((draft) => ({ ...draft, [userId]: newRole }));
   }
 
-  async function applyRoleAndScope(user) {
+  async function applyRole(user) {
     const role = roleDraft[user.id] || user.role;
     const roleChanged = role !== user.role;
-    const scope = scopeDraft[user.id] || { type: user.scope_type || '', id: user.scope_id || '' };
-    const scopeChanged = String(scope.type || '') !== String(user.scope_type || '')
-      || String(scope.id || '') !== String(user.scope_id || '');
-    if (!roleChanged && !scopeChanged) return;
+    if (!roleChanged) return;
     const roleName = ROLE_LABEL[role] || role;
-    const scopeName = scopeLabel(scope.type, scope.id, org);
     if (!(await confirm({
-      title: roleChanged ? `Change ${user.name}'s role to ${roleName}?` : `Update ${user.name}'s organisation scope?`,
-      message: roleChanged
-        ? `Scope: ${scopeName || 'No scope'}.`
-        : `Their role (${getUserRoleName(user)}) will not change. Scope: ${scopeName || 'No scope'}.`,
-      confirmLabel: roleChanged ? 'Apply changes' : 'Change scope',
+      title: `Change ${user.name}'s role to ${roleName}?`,
+      message: `Their organisation scope will remain unchanged.`,
+      confirmLabel: 'Change role',
     }))) return;
     setScopeBusyId(user.id);
     try {
-      const body = { role, scopeType: scope.type || null, scopeId: scope.id ? Number(scope.id) : null };
-      await api(`/users/${user.id}/role`, { method: 'PATCH', body });
-      toast(roleChanged ? `${user.name}'s role changed to ${roleName}.` : `${user.name}'s organisation scope updated.`);
+      await api(`/users/${user.id}/role`, { method: 'PATCH', body: { role } });
+      toast(`${user.name}'s role changed to ${roleName}.`);
       await load();
-      setScopeManageUser(null);
+      setRoleManageUser(null);
       setSelectedUsers([]);
     } catch (error) {
       toast(error.message, 'err');
@@ -693,10 +667,8 @@ export default function Permissions() {
    *
    * Opened by clicking anywhere on a user's row in the table (not the
    * checkbox — that's for the separate "Assign role" flow above). Works
-   * for EVERY user regardless of role: PATCH /:id/role is sent the
-   * person's CURRENT role unchanged plus the new scope, so this never
-   * touches their role or their individually granted permissions (see
-   * that route's own header note on why a scope-only request is safe).
+   * for EVERY user regardless of role. It calls PATCH /:id/scope, which
+   * accepts only the new scope and leaves role and permissions untouched.
    * =========================================================
    */
 
@@ -723,7 +695,7 @@ export default function Permissions() {
     }))) return;
     setScopeBusyId(user.id);
     try {
-      await api(`/users/${user.id}/role`, { method: 'PATCH', body: { role: user.role, scopeType: scope.type || null, scopeId: scope.id ? Number(scope.id) : null } });
+      await api(`/users/${user.id}/scope`, { method: 'PATCH', body: { scopeType: scope.type || null, scopeId: scope.id ? Number(scope.id) : null } });
       toast(`${user.name}'s organisation scope updated.`);
       await load();
       setChangeScopeUser(null);
@@ -758,116 +730,114 @@ export default function Permissions() {
    */
 
   return (
-    <div>
+    <div className="space-y-5 pb-2">
 
       {/* =====================================================
           PAGE HEADER
           ===================================================== */}
 
-      <div className="flex justify-between gap-4 flex-wrap items-start mb-5">
+      <header className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">
+        <div className="border-l-4 border-accent-500 p-5 sm:p-6">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div className="max-w-2xl">
+              <p className="mb-2 text-[10px] font-extrabold uppercase tracking-[0.16em] text-accent-700">
+                Administration · Access control
+              </p>
+              <h1 className="font-display text-[25px] font-extrabold leading-tight sm:text-[30px]">
+                Roles &amp; permissions
+              </h1>
+              <p className="mt-2 max-w-[68ch] text-[13px] leading-relaxed text-ink-secondary">
+                Manage role permissions and account assignments.
+              </p>
+            </div>
+          </div>
 
-        <div>
-
-          <h1 className="text-xl font-bold mb-0.5">
-            Roles and Permissions
-          </h1>
-
-          <p className="text-[13px] text-ink-secondary max-w-[62ch]">
-            Permissions are assigned to roles only — users receive access through the role assigned to their
-            account. For one person, "Assign role" lets you set the role and organisation scope together; click
-            any person's row to change only their scope. See the Users page for the plain, view-only account directory.
-          </p>
-
+          <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <SummaryTile label="Role catalogue" value={roles?.length ?? '—'} />
+            <SummaryTile label="Accounts" value={users?.length ?? '—'} />
+            <SummaryTile label="Custom roles" value={roles ? roles.filter((role) => !role.built_in).length : '—'} />
+            <SummaryTile label="Available permissions" value={catalog.length} />
+          </div>
         </div>
-
-        {/* Roles only now — the Users table below has its own dedicated
-            search bar right on it (see userSearch), so this one no longer
-            needs to double up on both. */}
-        <input
-          className="field-input w-auto min-w-[220px]"
-          placeholder="Search roles…"
-          aria-label="Search roles"
-          value={q}
-          onChange={(event) =>
-            setQ(event.target.value)
-          }
-        />
-
-      </div>
+      </header>
 
       {/* =====================================================
           ROLES
           ===================================================== */}
 
-      <div className="card overflow-hidden mb-4">
-
-        <button
-          type="button"
-          className="w-full flex items-center justify-between text-left"
-          onClick={() =>
-            setRolesOpen(
-              (open) => !open
-            )
-          }
-          aria-expanded={rolesOpen}
-        >
-
-          <span className="font-display font-bold text-[14px] flex items-center gap-2">
-            Roles
-
-            <span className="chip">
-              {filteredRoles?.length || 0}
+      <section className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm" aria-labelledby="role-catalogue-heading">
+        <div className="flex flex-col gap-3 border-b border-line px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+          <button
+            type="button"
+            className="group flex min-w-0 items-center gap-3 text-left"
+            onClick={() => setRolesOpen((open) => !open)}
+            aria-expanded={rolesOpen}
+            aria-controls="role-catalogue-content"
+          >
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent-50 text-accent-700" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" stroke="currentColor" strokeWidth="1.8">
+                <path d="M12 3 19 6v5c0 4.5-2.9 7.6-7 10-4.1-2.4-7-5.5-7-10V6l7-3Z" />
+                <path d="m9 12 2 2 4-4" />
+              </svg>
             </span>
-          </span>
-
-          <span className="text-accent-600 font-semibold text-[12px]">
-            {rolesOpen
-              ? 'Hide role list'
-              : 'View role catalogue'}
-          </span>
-
-        </button>
+            <span className="min-w-0">
+              <span id="role-catalogue-heading" className="block font-display text-[16px] font-extrabold">Role catalogue</span>
+              <span className="mt-0.5 block text-[11px] text-ink-muted">Review assigned users and the permissions each role grants.</span>
+            </span>
+            <span className="chip ml-1">{filteredRoles?.length || 0}</span>
+          </button>
+          <div className="flex items-center gap-2 sm:shrink-0">
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => setShowCreateRole(true)}>
+              <span aria-hidden="true">+</span> Create role
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => setRolesOpen((open) => !open)}
+              aria-expanded={rolesOpen}
+              aria-controls="role-catalogue-content"
+            >
+              {rolesOpen ? 'Collapse roles' : 'Browse roles'}
+            </button>
+          </div>
+        </div>
 
         {rolesOpen && (
-          <>
-
-            <p className="text-[12px] text-ink-muted mt-1">
-              Select a role row to review its assigned users and permission grants.
-            </p>
-
-            {/* =================================================
-                CREATE ROLE — trigger only; the form itself is the
-                popup modal rendered near the other modals below.
-                ================================================= */}
-
-            <div className="mt-3 flex justify-end">
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                onClick={() => setShowCreateRole(true)}
-              >
-                + Create role
-              </button>
-            </div>
+          <div id="role-catalogue-content" className="px-4 pb-4 pt-3 sm:px-5 sm:pb-5">
 
             {/* FIXED HEADER + SCROLLABLE TABLE */}
-            <div className="mt-2 overflow-auto max-h-[400px] rounded-lg border border-line">
+            <div className="overflow-hidden rounded-xl border border-line bg-surface">
+              <div className="border-b border-line bg-sunken/70 p-3">
+                <label htmlFor="role-search" className="mb-1.5 block text-[10px] font-extrabold uppercase tracking-[0.1em] text-ink-muted">
+                  Find a role
+                </label>
+                <input
+                  id="role-search"
+                  type="search"
+                  className="field-input w-full bg-surface sm:max-w-md"
+                  placeholder="Search roles…"
+                  aria-label="Search roles in this table"
+                  value={q}
+                  onChange={(event) => setQ(event.target.value)}
+                />
+              </div>
 
-              <table className="w-full text-left text-[12px]">
+              <div className="max-h-[440px] overflow-auto">
+                <table className="w-full min-w-[540px] text-left text-[12.5px]">
 
-                <thead className="bg-sunken border-b border-line sticky top-0 z-10">
+                <thead className="sticky top-0 z-10 border-b border-line-strong bg-sunken text-[10px] uppercase tracking-[0.1em] text-ink-muted">
 
                   <tr>
 
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">
+                    <th className="px-4 py-3 font-extrabold whitespace-nowrap">
                       Role
                     </th>
 
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">
+                    <th className="px-4 py-3 font-extrabold whitespace-nowrap">
                       Users
                     </th>
 
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">
+                    <th className="px-4 py-3 font-extrabold whitespace-nowrap">
                       Permissions
                     </th>
 
@@ -883,6 +853,9 @@ export default function Permissions() {
                         getRolePermissions(
                           role
                         );
+                      const permissionCoverage = catalog.length
+                        ? Math.round((permissions.length / catalog.length) * 100)
+                        : 0;
 
                       const isSelected =
                         selectedRoleId ===
@@ -921,39 +894,43 @@ export default function Permissions() {
                           aria-label={`Manage permissions for ${getRoleName(
                             role
                           )}`}
-                          className={`border-b border-line last:border-b-0 cursor-pointer transition-colors ${
+                          className={`border-b border-line border-l-2 last:border-b-0 cursor-pointer transition-colors focus:outline-none focus-visible:bg-accent-50 ${
                             isSelected
-                              ? 'bg-sunken'
-                              : 'hover:bg-sunken'
+                              ? 'border-l-accent-500 bg-accent-50'
+                              : 'border-l-transparent hover:bg-sunken/70'
                           }`}
                         >
 
-                          <td className="px-3 py-2.5">
-
-                            <div className="font-semibold">
-                              {getRoleName(
-                                role
-                              )}
-                            </div>
-
-                            <div className="text-ink-muted">
-                              {getRoleKey(
-                                role
-                              )}
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-3">
+                              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-line bg-sunken text-[11px] font-extrabold uppercase text-ink-secondary" aria-hidden="true">
+                                {getRoleName(role).slice(0, 1)}
+                              </span>
+                              <span className="min-w-0">
+                                <span className="block font-bold text-ink">{getRoleName(role)}</span>
+                                <span className="mt-0.5 block text-[10.5px] text-ink-muted">{getRoleKey(role)}{role.built_in ? ' · Built-in' : ' · Custom'}</span>
+                              </span>
                             </div>
 
                           </td>
 
-                          <td className="px-3 py-2.5 text-ink-secondary">
-                            {role.user_count ??
-                              role.users_count ??
-                              0}
+                          <td className="px-4 py-3 text-ink-secondary">
+                            <span className="inline-flex min-w-8 justify-center rounded-lg bg-sunken px-2.5 py-1 font-bold tabular-nums">
+                              {role.user_count ?? role.users_count ?? 0}
+                            </span>
                           </td>
 
-                          <td className="px-3 py-2.5">
-                            {permissions.length}{' '}
-                            of{' '}
-                            {catalog.length}
+                          <td className="px-4 py-3">
+                            <div className="flex min-w-[150px] items-center gap-3">
+                              <div className="min-w-[74px]">
+                                <span className="font-bold tabular-nums text-ink">{permissions.length}</span>
+                                <span className="text-ink-muted"> / {catalog.length}</span>
+                                <span className="block text-[9.5px] font-semibold uppercase tracking-wide text-ink-muted">permissions</span>
+                              </div>
+                              <div role="img" className="h-1.5 min-w-14 flex-1 overflow-hidden rounded-full bg-sunken" aria-label={`${permissionCoverage}% of available permissions granted`}>
+                                <div className="h-full rounded-full bg-accent-500 transition-[width]" style={{ width: `${permissionCoverage}%` }} />
+                              </div>
+                            </div>
                           </td>
 
                         </tr>
@@ -962,14 +939,15 @@ export default function Permissions() {
 
                 </tbody>
 
-              </table>
+                </table>
+              </div>
 
             </div>
 
-          </>
+          </div>
         )}
 
-      </div>
+      </section>
 
       {/* =====================================================
           CREATE ROLE MODAL
@@ -992,7 +970,7 @@ export default function Permissions() {
           onMouseDown={() => setShowCreateRole(false)}
         >
           <div
-            className="bg-surface border border-line rounded-xl shadow-xl w-full max-w-lg p-4"
+            className="w-full max-w-lg rounded-2xl border border-line bg-surface p-5 shadow-2xl"
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="flex items-start justify-between gap-3 mb-3">
@@ -1014,9 +992,7 @@ export default function Permissions() {
               Systems Administrator, and the rest) can't be created here —
               only removed if they're custom (see the roles table below). A
               new role starts with no permissions granted — open it from
-              the roles table once it appears to grant some. Organisation
-              scope is selected per person while assigning the role, or
-              changed later by clicking that person's row.
+              the roles table once it appears to grant some.
             </p>
 
             <form
@@ -1087,106 +1063,93 @@ export default function Permissions() {
           ASSIGN ROLES TO USERS
           ===================================================== */}
 
-      <div className="card overflow-hidden">
-
-        <button
-          type="button"
-          className="w-full flex items-center justify-between text-left"
-          onClick={() =>
-            setUsersOpen(
-              (open) => !open
-            )
-          }
-          aria-expanded={usersOpen}
-        >
-
-          <span className="font-display font-bold text-[14px] flex items-center gap-2">
-
-            Assign Roles to Users
-
-            <span className="chip">
-              {selectedUsers.length}{' '}
-              selected
+      <section className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm" aria-labelledby="accounts-heading">
+        <div className="flex flex-col gap-3 border-b border-line px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sunken text-ink-secondary" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" stroke="currentColor" strokeWidth="1.8">
+                <circle cx="9" cy="8" r="3" />
+                <path d="M3.5 19v-1.3A4.7 4.7 0 0 1 8.2 13h1.6a4.7 4.7 0 0 1 4.7 4.7V19H3.5Z" />
+                <path d="M16 5.3a3 3 0 0 1 0 5.8M17 13.2a4.6 4.6 0 0 1 3.5 4.5V19h-3" />
+              </svg>
             </span>
-
-          </span>
-
-          <span className="text-accent-600 font-semibold text-[12px]">
-            {usersOpen
-              ? 'Hide account list'
-              : 'View account list'}
-          </span>
-
-        </button>
+            <span className="min-w-0">
+              <span id="accounts-heading" className="block font-display text-[16px] font-extrabold">Assign roles to users</span>
+              <span className="mt-0.5 block text-[11px] text-ink-muted">Select accounts to assign a role.</span>
+            </span>
+            <span className="chip ml-1">{users?.length ?? '—'} accounts</span>
+          </div>
+          <div className="flex items-center gap-2 sm:shrink-0">
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => setUsersOpen((open) => !open)}
+              aria-expanded={usersOpen}
+              aria-controls="user-assignment-content"
+            >
+              {usersOpen ? 'Collapse accounts' : 'Browse accounts'}
+            </button>
+          </div>
+        </div>
 
         {usersOpen && (
-          <>
-
-            <p className="text-[12px] text-ink-muted mt-1">
-              Assign a role to one or more accounts. Single-account changes can include a scope update; bulk assignments preserve each account's existing scope.
-            </p>
-
+          <div id="user-assignment-content" className="px-4 pb-4 pt-4 sm:px-5 sm:pb-5">
             {/* =================================================
                 ONE ACTION BUTTON — the "assign a role" flow lives behind
                 this single button: it reads selectedUsers and opens either
-                the single-person modal (scopeManageUser) or the bulk modal
+                the single-person role modal or the bulk modal
                 (bulkAssignOpen) — see openAssignForSelection() above.
-                Single-person assignments include a scope picker; bulk
-                assignments preserve each person's current scope.
+                Single-person and bulk role assignments preserve each
+                person's current scope.
                 ================================================= */}
-
-            <div className="mt-3 mb-3 flex items-center gap-2 flex-wrap">
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={selectedUsers.length === 0}
-                onClick={openAssignForSelection}
-              >
-                Assign role{selectedUsers.length ? ` (${selectedUsers.length})` : ''}
-              </button>
-
-              {selectedUsers.length > 0 && (
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={clearSelection}
-                >
-                  Clear Selection
-                </button>
-              )}
-            </div>
-
-            {/* =================================================
-                USERS TABLE — its own visible search bar, right on the
-                table it filters, separate from the page-header search
-                above (which only searches Roles now — see userSearch).
-                ================================================= */}
-
-            <div className="mb-2">
-              <label htmlFor="assign-role-user-search" className="block text-[11px] font-semibold mb-1">
-                Search users
-              </label>
-              <input
-                id="assign-role-user-search"
-                type="search"
-                className="field-input w-full"
-                placeholder="Search by name, email, role, or organisation scope…"
-                aria-label="Search users in this table"
-                value={userSearch}
-                onChange={(event) => setUserSearch(event.target.value)}
-              />
-            </div>
 
             {/* FIXED HEADER + SCROLLABLE TABLE */}
-            <div className="overflow-auto max-h-[500px] rounded-lg border border-line">
+            <div className="overflow-hidden rounded-xl border border-line bg-surface">
+              <div className="flex flex-col gap-2 border-b border-line bg-sunken/70 p-3 sm:flex-row sm:items-center">
+                <div className="min-w-0 flex-1 sm:max-w-md">
+                  <label htmlFor="assign-role-user-search" className="mb-1.5 block text-[10px] font-extrabold uppercase tracking-[0.1em] text-ink-muted">
+                    Find an account
+                  </label>
+                  <input
+                    id="assign-role-user-search"
+                    type="search"
+                    className="field-input w-full bg-surface"
+                    placeholder="Name, email, role, or scope…"
+                    aria-label="Search users in this table"
+                    value={userSearch}
+                    onChange={(event) => setUserSearch(event.target.value)}
+                  />
+                </div>
+                <div className="flex shrink-0 flex-nowrap items-center gap-2 sm:ml-auto">
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm h-9 min-w-[138px] justify-center gap-2 px-3 whitespace-nowrap shadow-sm"
+                    disabled={selectedUsers.length === 0}
+                    onClick={openAssignForSelection}
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                      <circle cx="9" cy="8" r="3" />
+                      <path d="M3.5 19v-1.3A4.7 4.7 0 0 1 8.2 13h1.6a4.7 4.7 0 0 1 4.7 4.7V19H3.5Z" />
+                      <path d="M19 8v6M22 11h-6" />
+                    </svg>
+                    <span>Assign role{selectedUsers.length ? ` (${selectedUsers.length})` : ''}</span>
+                  </button>
+                  {selectedUsers.length > 0 && (
+                    <button type="button" className="btn btn-sm h-9 px-3 whitespace-nowrap" onClick={clearSelection}>
+                      Clear selection
+                    </button>
+                  )}
+                </div>
+              </div>
 
-              <table className="w-full text-left text-[12px]">
+              <div className="max-h-[560px] overflow-auto">
+                <table className="w-full min-w-[620px] text-left text-[12.5px]">
 
-                <thead className="bg-sunken border-b border-line sticky top-0 z-10">
+                <thead className="sticky top-0 z-10 border-b border-line-strong bg-sunken text-[10px] uppercase tracking-[0.1em] text-ink-muted">
 
                   <tr>
 
-                    <th className="px-3 py-2 w-[45px] whitespace-nowrap">
+                    <th className="w-[52px] px-4 py-3 whitespace-nowrap">
 
                       <input
                         type="checkbox"
@@ -1201,23 +1164,16 @@ export default function Permissions() {
 
                     </th>
 
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">
-                      User
+                    <th className="px-4 py-3 font-extrabold whitespace-nowrap">
+                      Account
                     </th>
 
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">
-                      Email
-                    </th>
-
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">
+                    <th className="px-4 py-3 font-extrabold whitespace-nowrap">
                       Current Role
                     </th>
 
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">
+                    <th className="px-4 py-3 font-extrabold whitespace-nowrap">
                       Organisation scope
-                      <span className="block font-normal normal-case text-[10.5px] text-ink-muted">
-                        Click a row to change
-                      </span>
                     </th>
 
                   </tr>
@@ -1226,7 +1182,7 @@ export default function Permissions() {
 
                 <tbody>
 
-                  <PaginatedRows items={filteredUsers || []} colSpan={5} emptyMessage="No users found." renderRow={(user) => {
+                  <PaginatedRows items={filteredUsers || []} colSpan={4} emptyMessage="No users found." renderRow={(user) => {
 
                       const checked =
                         selectedUsers.includes(
@@ -1247,14 +1203,14 @@ export default function Permissions() {
                           role="button"
                           tabIndex={0}
                           aria-label={`Change organisation scope for ${user.name}`}
-                          className={`border-b border-line last:border-b-0 cursor-pointer transition-colors ${
+                          className={`border-b border-line last:border-b-0 cursor-pointer transition-colors focus:outline-none focus-visible:bg-accent-50 ${
                             checked
-                              ? 'bg-sunken'
-                              : 'hover:bg-sunken'
+                              ? 'bg-accent-50'
+                              : 'hover:bg-sunken/70'
                           }`}
                         >
 
-                          <td className="px-3 py-2.5" onClick={(event) => event.stopPropagation()}>
+                          <td className="px-4 py-3" onClick={(event) => event.stopPropagation()}>
 
                             <input
                               type="checkbox"
@@ -1269,22 +1225,32 @@ export default function Permissions() {
 
                           </td>
 
-                          <td className="px-3 py-2.5 font-semibold">
-                            {user.name}
+                          <td className="px-4 py-3">
+                            <span className="flex items-center gap-3">
+                              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-50 text-[11px] font-extrabold uppercase text-accent-700" aria-hidden="true">
+                                {user.name?.trim().charAt(0) || '?'}
+                              </span>
+                              <span className="min-w-0">
+                                <span className="block font-bold text-ink">{user.name}</span>
+                                <span className="mt-0.5 block truncate text-[10.5px] font-normal text-ink-muted">{user.email}</span>
+                              </span>
+                            </span>
                           </td>
 
-                          <td className="px-3 py-2.5 text-ink-muted">
-                            {user.email}
+                          <td className="px-4 py-3">
+                            <span className="inline-flex rounded-lg border border-line bg-sunken px-2.5 py-1 text-[11px] font-bold text-ink-secondary">
+                              {getUserRoleName(user)}
+                            </span>
                           </td>
 
-                          <td className="px-3 py-2.5 text-ink-secondary">
-                            {getUserRoleName(
-                              user
-                            )}
-                          </td>
-
-                          <td className="px-3 py-2.5 text-ink-secondary">
-                            {breadcrumb?.join(' › ') || 'No scope'}
+                          <td className="max-w-[320px] whitespace-normal break-words px-4 py-3 text-[11.5px] leading-relaxed text-ink-secondary">
+                            <span className="flex items-center justify-between gap-3">
+                              <span className="min-w-0">{breadcrumb?.join(' › ') || 'No scope'}</span>
+                              <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-accent-100 bg-accent-50 px-2 py-1 text-[10px] font-bold text-accent-700">
+                                Change scope
+                                <span aria-hidden="true">→</span>
+                              </span>
+                            </span>
                           </td>
 
                         </tr>
@@ -1293,7 +1259,8 @@ export default function Permissions() {
 
                 </tbody>
 
-              </table>
+                </table>
+              </div>
 
             </div>
 
@@ -1305,10 +1272,10 @@ export default function Permissions() {
                 </p>
               )}
 
-          </>
+          </div>
         )}
 
-      </div>
+      </section>
 
       {/* =====================================================
           ROLE PERMISSIONS MODAL
@@ -1326,36 +1293,34 @@ export default function Permissions() {
         >
 
           <div
-            className="bg-surface border border-line rounded-xl shadow-xl w-full max-w-xl max-h-[85vh] overflow-y-auto p-4"
+            className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-line bg-surface p-5 shadow-2xl"
             onMouseDown={(event) =>
               event.stopPropagation()
             }
           >
 
-            <div className="flex items-start justify-between gap-3 mb-3">
-
-              <div>
-
-                <h2
-                  id="permissions-dialog-title"
-                  className="font-display font-bold text-[16px]"
-                >
-                  Permissions for{' '}
-                  {getRoleName(
-                    selectedRole
-                  )}
-                </h2>
-
-                <p className="text-[12px] text-ink-muted">
-                  Role:{' '}
-                  {getRoleKey(
-                    selectedRole
-                  )}
-                </p>
-
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3 border-b border-line pb-4">
+              <div className="flex items-start gap-3">
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent-50 text-lg font-extrabold uppercase text-accent-700" aria-hidden="true">
+                  {getRoleName(selectedRole).slice(0, 1)}
+                </span>
+                <div>
+                  <p className="mb-1 text-[9.5px] font-extrabold uppercase tracking-[0.14em] text-accent-700">Role permissions</p>
+                  <h2 id="permissions-dialog-title" className="font-display text-[18px] font-extrabold leading-tight">
+                    {getRoleName(selectedRole)}
+                  </h2>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    <span className="rounded-md border border-line bg-sunken px-2 py-0.5 font-mono text-[10px] font-semibold text-ink-secondary">
+                      {getRoleKey(selectedRole)}
+                    </span>
+                    <span className="rounded-md bg-sunken px-2 py-0.5 text-[10px] font-bold text-ink-muted">
+                      {selectedRole.built_in ? 'Built-in role' : 'Custom role'}
+                    </span>
+                  </div>
+                </div>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2">
 
                 {!selectedRole.built_in && (
                   <button
@@ -1384,49 +1349,64 @@ export default function Permissions() {
 
             </div>
 
-            {selectedRole.built_in && (
-              <p className="text-[11px] text-ink-muted mb-3">
-                Built-in roles can't be deleted — authorization and navigation depend on their keys.
-              </p>
-            )}
-
-            <div className="flex items-center justify-between gap-2 mb-3 pb-3 border-b border-line">
-
-              <span className="text-[12px] text-ink-muted">
-                Permissions belong to this role.
-                Users assigned to this role inherit
-                them automatically.
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-sunken/70 px-4 py-3">
+              <div>
+                <p className="text-[12px] font-bold text-ink">Role-based access</p>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-ink-muted">
+                  Assigned users inherit these permissions automatically.
+                  {selectedRole.built_in ? ' Built-in role keys are protected.' : ''}
+                </p>
+              </div>
+              <span className="rounded-lg border border-line bg-surface px-3 py-1.5 text-[11px] font-bold tabular-nums text-ink-secondary">
+                {getRolePermissions(selectedRole).length} <span className="font-medium text-ink-muted">of {catalog.length} granted</span>
               </span>
-
-              <span className="chip">
-                {
-                  getRolePermissions(
-                    selectedRole
-                  ).length
-                }{' '}
-                granted
-              </span>
-
             </div>
 
             {/* FIXED HEADER + SCROLLABLE PERMISSIONS TABLE */}
-            <div className="overflow-auto max-h-[500px] rounded-lg border border-line">
+            <div id="role-permissions-table" className="overflow-hidden rounded-xl border border-line">
+              <div className="flex flex-col gap-2 border-b border-line bg-sunken/70 p-3 sm:flex-row sm:items-end">
+                <div className="min-w-0 flex-1">
+                  <label htmlFor="permission-search" className="mb-1.5 block text-[10px] font-extrabold uppercase tracking-[0.1em] text-ink-muted">
+                    Find a permission
+                  </label>
+                  <input
+                    id="permission-search"
+                    type="search"
+                    className="field-input w-full bg-surface"
+                    placeholder="Search permissions…"
+                    aria-label="Search permissions in this table"
+                    value={permissionSearch}
+                    onChange={(event) => setPermissionSearch(event.target.value)}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-sm shrink-0"
+                  onClick={() => setPermissionTableOpen((open) => !open)}
+                  aria-expanded={permissionTableOpen}
+                  aria-controls="role-permissions-table-content"
+                >
+                  {permissionTableOpen ? 'Collapse permissions' : 'Show permissions'}
+                </button>
+              </div>
 
-              <table className="w-full text-left text-[12px]">
+              {permissionTableOpen && (
+                <div id="role-permissions-table-content" className="max-h-[500px] overflow-auto">
+                  <table className="w-full min-w-[560px] text-left text-[12px]">
 
-                <thead className="bg-sunken border-b border-line sticky top-0 z-10">
+                <thead className="sticky top-0 z-10 border-b border-line-strong bg-sunken text-[10px] uppercase tracking-[0.1em] text-ink-muted">
 
                   <tr>
 
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">
+                    <th className="px-4 py-3 font-extrabold whitespace-nowrap">
                       Permission
                     </th>
 
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">
+                    <th className="px-4 py-3 font-extrabold whitespace-nowrap">
                       Group
                     </th>
 
-                    <th className="px-3 py-2 font-bold whitespace-nowrap">
+                    <th className="px-4 py-3 font-extrabold whitespace-nowrap">
                       Status
                     </th>
 
@@ -1436,7 +1416,11 @@ export default function Permissions() {
 
                 <tbody>
 
-                  <PaginatedRows items={catalog} colSpan={3} emptyMessage="No permissions are available." renderRow={(permission) => {
+                  <PaginatedRows
+                    items={filteredPermissions}
+                    colSpan={3}
+                    emptyMessage={permissionSearch.trim() ? 'No permissions match your search.' : 'No permissions are available.'}
+                    renderRow={(permission) => {
 
                       const enabled =
                         getRolePermissions(
@@ -1450,47 +1434,55 @@ export default function Permissions() {
                           key={
                             permission.key
                           }
-                          className="border-b border-line last:border-b-0"
+                          className="border-b border-line last:border-b-0 transition-colors hover:bg-sunken/70"
                         >
 
-                          <td className="px-3 py-2 text-ink-secondary">
-                            {permission.label}
+                          <td className="px-4 py-3 text-ink-secondary">
+                            <span className="font-semibold">{permission.label}</span>
+                            <span className="mt-0.5 block font-mono text-[9.5px] text-ink-muted">{permission.key}</span>
                           </td>
 
-                          <td className="px-3 py-2 text-ink-muted">
-                            {permission.group}
+                          <td className="px-4 py-3 text-ink-muted">
+                            <span className="rounded-md bg-sunken px-2 py-1 text-[10px] font-semibold">{permission.group}</span>
                           </td>
 
-                          <td className="px-3 py-2">
+                          <td className="px-4 py-3">
 
                             <button
                               type="button"
+                              role="switch"
+                              aria-checked={enabled}
+                              aria-label={`${enabled ? 'Revoke' : 'Grant'} ${permission.label} permission`}
                               onClick={() =>
                                 togglePermission(
                                   selectedRole,
                                   permission
                                 )
                               }
-                              className={`rounded-md border px-2 py-1 text-[11px] font-semibold ${
+                              className={`inline-flex min-w-[104px] items-center justify-between gap-2 rounded-full border px-2 py-1 text-[10px] font-bold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2 ${
                                 enabled
-                                  ? 'bg-good-soft text-good border-transparent'
-                                  : 'bg-sunken text-ink-muted border-line'
+                                  ? 'border-good/30 bg-good-soft text-good'
+                                  : 'border-line bg-sunken text-ink-muted'
                               }`}
                             >
-                              {enabled
-                                ? 'Granted'
-                                : 'Not granted'}
+                              <span>{enabled ? 'Granted' : 'Not granted'}</span>
+                              <span className={`relative h-4 w-7 rounded-full transition-colors ${enabled ? 'bg-good' : 'bg-line-strong'}`} aria-hidden="true">
+                                <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-transform ${enabled ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                              </span>
                             </button>
 
                           </td>
 
                         </tr>
                       );
-                  }} />
+                    }}
+                  />
 
-                </tbody>
+                  </tbody>
 
-              </table>
+                  </table>
+                </div>
+              )}
 
             </div>
 
@@ -1500,55 +1492,44 @@ export default function Permissions() {
       )}
 
       {/* =====================================================
-          ASSIGN ROLE MODAL — per-person role and scope
+          ASSIGN ROLE MODAL — per-person role only
 
           This is the ONE place any role, including the built-in Employee
-          role, is actually assigned to a person — the bulk "Assign Roles
-          to Users" control above deliberately excludes Employee (see
-          BULK_EXCLUDED_ROLE_KEYS). This single-person modal updates role
-          and scope together, and allows scope-only changes too. Employee
-          still requires a scope. Escape, the backdrop, and Close all
+          role, is assigned to a person. Scope is edited through its
+          separate row action. Escape, the backdrop, and Close all
           dismiss it without saving.
           ===================================================== */}
 
-      {scopeManageUser && (() => {
-        const draftRole = roleDraft[scopeManageUser.id] || scopeManageUser.role;
-        const roleChanged = draftRole !== scopeManageUser.role;
-        const isEmployee = draftRole === 'employee';
-        const currentScope = scopeDraft[scopeManageUser.id] || { type: scopeManageUser.scope_type || '', id: scopeManageUser.scope_id || '' };
-        const scopeChanged = String(currentScope.type || '') !== String(scopeManageUser.scope_type || '')
-          || String(currentScope.id || '') !== String(scopeManageUser.scope_id || '');
-        const missingRequiredScope = isEmployee && !currentScope.id;
+      {roleManageUser && (() => {
+        const draftRole = roleDraft[roleManageUser.id] || roleManageUser.role;
+        const roleChanged = draftRole !== roleManageUser.role;
         return (
         <div
           className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
           role="dialog"
           aria-modal="true"
-          aria-labelledby="scope-manage-dialog-title"
-          onMouseDown={closeScopeManage}
+          aria-labelledby="role-manage-dialog-title"
+          onMouseDown={closeRoleManage}
         >
           <div
-            className="bg-surface border border-line rounded-xl shadow-xl w-full max-w-lg p-4"
+            className="w-full max-w-lg rounded-2xl border border-line bg-surface p-5 shadow-2xl"
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="flex items-start justify-between gap-3 mb-3">
               <div>
-                <h2 id="scope-manage-dialog-title" className="font-display font-bold text-[16px]">
-                  Assign role for {scopeManageUser.name}
+                <h2 id="role-manage-dialog-title" className="font-display font-bold text-[16px]">
+                  Assign role to {roleManageUser.name}
                 </h2>
                 <p className="text-[12px] text-ink-muted">
-                  Currently {getUserRoleName(scopeManageUser)} · {scopeManageUser.email}
+                  Currently {getUserRoleName(roleManageUser)} · {roleManageUser.email}
                 </p>
               </div>
-              <button type="button" className="btn btn-sm" onClick={closeScopeManage}>Close</button>
+              <button type="button" className="btn btn-sm" onClick={closeRoleManage}>Close</button>
             </div>
 
             <div className="space-y-1 mb-3">
               <label className="field-label">Role</label>
-              {/* Clickable, not a dropdown — every role including Employee
-                  (this modal only ever targets one person, so Employee's
-                  own scope requirement is always fine here; the bulk modal
-                  below is the one that filters it out). */}
+              {/* This modal changes role only. */}
               <div className="flex flex-wrap gap-1.5" role="group" aria-label="Choose a role">
                 {(roles || []).map((role) => {
                   const key = getRoleKey(role);
@@ -1557,9 +1538,9 @@ export default function Permissions() {
                     <button
                       key={role.id || key}
                       type="button"
-                      disabled={scopeBusyId === scopeManageUser.id}
+                      disabled={scopeBusyId === roleManageUser.id}
                       aria-pressed={isSelected}
-                      onClick={() => updateRoleDraft(scopeManageUser.id, key)}
+                      onClick={() => updateRoleDraft(roleManageUser.id, key)}
                       className={`rounded-md border px-2.5 py-1 text-[11.5px] font-semibold transition-colors ${
                         isSelected
                           ? 'bg-accent-50 text-accent-600 border-accent-600'
@@ -1573,28 +1554,13 @@ export default function Permissions() {
               </div>
             </div>
 
-            <ScopePicker
-              user={scopeManageUser}
-              org={org}
-              scopeDraft={scopeDraft}
-              setScopeDraft={setScopeDraft}
-              unitKindDraft={unitKindDraft}
-              setUnitKindDraft={setUnitKindDraft}
-              disabled={scopeBusyId === scopeManageUser.id}
-            />
-            {missingRequiredScope && (
-              <p className="text-[11.5px] text-critical mt-2">
-                Employee needs an organisation scope — pick one above before applying.
-              </p>
-            )}
-
             <div className="flex justify-end mt-3">
               <button
                 className="btn btn-sm btn-primary"
-                disabled={(!roleChanged && !scopeChanged) || missingRequiredScope || scopeBusyId === scopeManageUser.id}
-                onClick={() => applyRoleAndScope(scopeManageUser)}
+                disabled={!roleChanged || scopeBusyId === roleManageUser.id}
+                onClick={() => applyRole(roleManageUser)}
               >
-                {scopeBusyId === scopeManageUser.id ? 'Applying…' : 'Apply'}
+                {scopeBusyId === roleManageUser.id ? 'Applying…' : 'Apply role'}
               </button>
             </div>
           </div>
@@ -1606,12 +1572,9 @@ export default function Permissions() {
           CHANGE SCOPE MODAL — scope only, independent of role
 
           Opened by clicking a user's row in the table below (see
-          openChangeScope). Works for every user in the system regardless
-          of role — the only role-specific behavior is which scope types
-          ScopePicker offers (Employee is offered only when this person's
-          CURRENT role is 'employee'; everyone else gets Programme/Sub-
-          programme/Unit or "No scope"). Escape, the backdrop, and Close
-          all dismiss it without saving.
+          openChangeScope). Works for every user regardless of role;
+          changing scope leaves their role and permissions untouched.
+          Escape, the backdrop, and Close all dismiss it without saving.
           ===================================================== */}
 
       {changeScopeUser && (() => {
@@ -1627,7 +1590,7 @@ export default function Permissions() {
           onMouseDown={closeChangeScope}
         >
           <div
-            className="bg-surface border border-line rounded-xl shadow-xl w-full max-w-lg p-4"
+            className="w-full max-w-lg rounded-2xl border border-line bg-surface p-5 shadow-2xl"
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="flex items-start justify-between gap-3 mb-3">
@@ -1653,16 +1616,10 @@ export default function Permissions() {
               disabled={scopeBusyId === changeScopeUser.id}
             />
 
-            {changeScopeUser.role === 'employee' && !currentScope.id && (
-              <p className="text-[11.5px] text-critical mt-2">
-                Employee accounts must keep an organisation scope — pick one above before applying.
-              </p>
-            )}
-
             <div className="flex justify-end mt-3">
               <button
                 className="btn btn-sm btn-primary"
-                disabled={!scopeChanged || (changeScopeUser.role === 'employee' && !currentScope.id) || scopeBusyId === changeScopeUser.id}
+                disabled={!scopeChanged || scopeBusyId === changeScopeUser.id}
                 onClick={() => applyScopeChange(changeScopeUser)}
               >
                 {scopeBusyId === changeScopeUser.id ? 'Applying…' : 'Apply'}
@@ -1678,12 +1635,8 @@ export default function Permissions() {
 
           The other half of the "Assign role" button above the table —
           opens instead of the single-person modal above when more than one
-          row is checked. Every role except the built-in Employee role (the
-          chips below filter out BULK_EXCLUDED_ROLE_KEYS): Employee needs
-          its own Programme/Sub/Unit/individual-employee-record scope
-          picked per person, which doesn't make sense as one pick for a
-          whole batch — check just one person for that instead. This bulk
-          form has no scope field at all and never touches scope — each
+          row is checked. This bulk form has no scope field and never
+          touches scope — each
           selected person keeps whatever organisation scope they already
           had (see routes/users.js's POST /assign-role); change scope by
           clicking a person's row individually, entirely separately.
@@ -1701,7 +1654,7 @@ export default function Permissions() {
           onMouseDown={() => setBulkAssignOpen(false)}
         >
           <div
-            className="bg-surface border border-line rounded-xl shadow-xl w-full max-w-lg p-4"
+            className="w-full max-w-lg rounded-2xl border border-line bg-surface p-5 shadow-2xl"
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="flex items-start justify-between gap-3 mb-3">
@@ -1710,8 +1663,7 @@ export default function Permissions() {
                   Assign role to {selectedUsers.length} people
                 </h2>
                 <p className="text-[12px] text-ink-muted">
-                  Changes role only — everyone keeps their current organisation scope. Employee isn't offered here
-                  at all — check just one person and click their row afterwards to change scope.
+                  Changes role only — everyone keeps their current organisation scope.
                 </p>
               </div>
               <button type="button" className="btn btn-sm" onClick={() => setBulkAssignOpen(false)}>Close</button>
@@ -1720,9 +1672,7 @@ export default function Permissions() {
             <div className="space-y-1 mb-3">
               <label className="field-label">Role</label>
               <div className="flex flex-wrap gap-1.5" role="group" aria-label="Choose a role">
-                {(roles || [])
-                  .filter((role) => !BULK_EXCLUDED_ROLE_KEYS.has(getRoleKey(role)))
-                  .map((role) => {
+                {(roles || []).map((role) => {
                     const key = getRoleKey(role);
                     const isSelected = key === assignRole;
                     return (
@@ -1762,9 +1712,21 @@ export default function Permissions() {
   );
 }
 
+function SummaryTile({ label, value }) {
+  return (
+    <div className="relative overflow-hidden rounded-xl border border-line bg-surface px-3 py-2.5 shadow-sm">
+      <span className="absolute inset-y-0 left-0 w-0.5 bg-accent-500" aria-hidden="true" />
+      <div className="pl-1">
+        <div className="text-[9.5px] font-extrabold uppercase tracking-[0.1em] text-ink-muted">{label}</div>
+        <div className="mt-1 font-display text-[21px] font-extrabold leading-none tabular-nums text-ink">{value}</div>
+      </div>
+    </div>
+  );
+}
+
 // Organisation scope is now a property of the PERSON, entirely free of the
 // DRAFT role being assigned. Scope options stay the same regardless of
-// role; only the built-in Employee role requires a scope before saving.
+// role; all roles may have a scope or none.
 function ScopePicker({ user, org, scopeDraft, setScopeDraft, unitKindDraft, setUnitKindDraft, disabled = false }) {
   const current = scopeDraft[user.id] || { type: user.scope_type || '', id: user.scope_id || '' };
   const effectiveType = current.type;

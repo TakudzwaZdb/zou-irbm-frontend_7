@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { GLOBAL_REPORT_ROLES, MONTHS } from '../lib/scope.js';
 import { PERIOD_TYPES, PERIOD_TYPE_LABEL } from '../lib/period.js';
 import { configuredPaceForPeriod } from '../lib/configuredPace.js';
+import { pendingKpisInScope } from '../lib/performanceKpis.js';
 import RagBarChart from './RagBarChart.jsx';
 import RagPieChart from './RagPieChart.jsx';
 import VarianceChart from './VarianceChart.jsx';
@@ -182,8 +183,9 @@ function CoverageGauge({ value }) {
 }
 
 export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataLoaded, syncSelectedNode = false, onNavigate }) {
-  const { user, hasPerm, perfPeriod, perfValues, selNode, kpis: catalogKpis } = useApp();
-  const allowed = !GLOBAL_REPORT_ROLES.includes(user.role) || hasPerm('view_institutional_performance');
+  const { user, hasPerm, perfPeriod, perfValues, selNode, kpis: catalogKpis, reloadKpis } = useApp();
+  const hasScope = Boolean(user.scope_type && user.scope_id != null);
+  const allowed = !GLOBAL_REPORT_ROLES.includes(user.role) || hasPerm('view_institutional_performance') || hasScope;
   const [cycleYear, setCycleYear] = useState(null);
   const [reportType, setReportType] = useState(perfPeriod.type);
   const [reportIndex, setReportIndex] = useState(perfPeriod.idx);
@@ -201,6 +203,34 @@ export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataL
   useEffect(() => {
     if (syncSelectedNode) setOrgNodeFilter(selNode ? `${selNode.kind}:${selNode.id}` : 'all');
   }, [selNode, syncSelectedNode]);
+
+  useEffect(() => {
+    if (!allowed) return undefined;
+    let active = true;
+    let refreshing = false;
+    const refresh = () => {
+      if (document.visibilityState === 'hidden' || refreshing) return;
+      refreshing = true;
+      reloadKpis()
+        .catch((err) => {
+          if (active) setError(err.message || 'Could not refresh the KPI catalogue.');
+        })
+        .finally(() => { refreshing = false; });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 10_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'hidden') refresh();
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [allowed, reloadKpis]);
 
   const selectedYear = cycleYear ?? perfPeriod.year;
   useEffect(() => {
@@ -231,7 +261,7 @@ export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataL
       .catch((err) => { if (active) setError(err.message || 'Could not load performance against target.'); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [allowed, selectedYear, reportType, reportIndex, tierFilter, orgNodeFilter, perfValues, onDataLoaded]);
+  }, [allowed, selectedYear, reportType, reportIndex, tierFilter, orgNodeFilter, perfValues, catalogKpis, onDataLoaded]);
 
   const childrenByParent = useMemo(() => {
     const result = new Map();
@@ -250,6 +280,13 @@ export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataL
     reportType,
     reportIndex
   ), [data?.kpis, catalogKpis, reportType, reportIndex]);
+
+  const pendingConfigurations = useMemo(() => pendingKpisInScope(
+    catalogKpis,
+    data?.unitOptions,
+    data?.rootKey,
+    orgNodeFilter === 'all' ? data?.rootKey : orgNodeFilter
+  ), [catalogKpis, data?.unitOptions, data?.rootKey, orgNodeFilter]);
 
   if (!allowed) return null;
 
@@ -373,6 +410,27 @@ export default function PerformanceAgainstTarget({ eyebrow = 'OVERVIEW', onDataL
 
       {data && (
         <>
+          {pendingConfigurations.length > 0 && (
+            <section className="mb-4 rounded-lg border border-warning/30 bg-warning-soft/40 px-3 py-2.5" aria-labelledby="pending-kpi-configurations">
+              <h3 id="pending-kpi-configurations" className="font-display font-bold text-[13px] text-ink">
+                {pendingConfigurations.length} KPI configuration{pendingConfigurations.length === 1 ? '' : 's'} not active yet
+              </h3>
+              <p className="text-[11px] text-ink-secondary mt-0.5">
+                Performance scores include KPIs after configuration approval. These will be included automatically once active.
+              </p>
+              <ul className="mt-2 space-y-1">
+                {pendingConfigurations.map((kpi) => (
+                  <li key={kpi.id} className="flex flex-wrap justify-between gap-x-3 text-[11.5px]">
+                    <span className="font-semibold">{kpi.name} <span className="font-normal text-ink-muted">· {kpi.owner?.tier}: {kpi.owner?.name}</span></span>
+                    <span className="text-ink-secondary">
+                      {kpi.lifecycle_status === 'submitted' ? 'Awaiting approval'
+                        : kpi.lifecycle_status === 'rejected' ? 'Returned for revision' : 'Draft — submit for approval'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 mb-4 items-stretch">
             <div className="min-w-0 xl:col-span-2">
               <div className="flex justify-between flex-wrap gap-3 items-center rounded-xl border border-accent-500/20 border-l-4 border-l-accent-500 bg-gradient-to-r from-accent-50/80 to-surface px-4 py-3 mb-4">

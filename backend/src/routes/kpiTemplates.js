@@ -150,7 +150,7 @@ router.post('/:id/pick', requirePerm('data_entry'), async (req, res) => {
 
   const pickTxn = db.transaction(async () => {
     const { lastInsertRowid: id } = await db
-      .prepare('INSERT INTO kpis (owner_type, owner_id, name, type, measure, baseline, target, measurement_direction, weight, reporting_mode, period_aggregation, reporting_periods, achievement_rule, lifecycle_status, template_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'draft\', ?)')
+      .prepare('INSERT INTO kpis (owner_type, owner_id, name, type, measure, baseline, target, measurement_direction, weight, reporting_mode, period_aggregation, reporting_periods, achievement_rule, lifecycle_status, template_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'active\', ?)')
       .run('employee', employee.id, template.name, template.type, template.measure, template.baseline, template.target, template.measurement_direction, template.weight, template.reporting_mode, template.period_aggregation, template.reporting_periods, template.achievement_rule, template.id);
     const now = new Date();
     await db.prepare('INSERT INTO kpi_values (kpi_id, year, month, status) VALUES (?, ?, ?, \'draft\')').run(id, now.getFullYear(), now.getMonth() + 1);

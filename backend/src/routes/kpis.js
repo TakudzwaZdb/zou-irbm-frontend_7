@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, requirePerm, requireAnyPerm, requireRole } = require('../middleware/auth');
-const { canReadKpi, isGlobalReader, hasPermission } = require('../utils/scope');
+const { canReadKpi, isGlobalReader, hasPermission, performanceRootKey } = require('../utils/scope');
 const { isValidReportingPeriods } = require('../utils/reportingPeriods');
 const {
   calculatePerformanceAgainstTarget,
@@ -317,7 +317,8 @@ router.get('/performance-target', async (req, res) => {
   const fromMonth = periodType === 'annual' ? 1 : (periodIndex - 1) * monthsPerPeriod + 1;
   const toMonth = fromMonth + monthsPerPeriod - 1;
 
-  if (isGlobalReader(req.user) && !req.user.permissions.includes('view_institutional_performance')) {
+  if (isGlobalReader(req.user) && !req.user.permissions.includes('view_institutional_performance')
+      && !(req.user.scope_type && req.user.scope_id != null)) {
     return res.status(403).json({ error: 'Missing permission: view_institutional_performance' });
   }
 
@@ -430,19 +431,8 @@ router.get('/performance-target', async (req, res) => {
     for (const key of new Set(path)) nodeByKey.get(key).kpis.set(kpi.id, item);
   }
 
-  const global = isGlobalReader(req.user) || hasPermission(req.user, 'view_institutional_performance');
-  let rootKey = 'university:0';
-  if (!global) {
-    if (req.user.role === 'programme') rootKey = `programme:${req.user.scope_id}`;
-    else if (req.user.role === 'rep') rootKey = `sub:${req.user.scope_id}`;
-    else if (req.user.role === 'unithead') rootKey = `unit:${req.user.scope_id}`;
-    else if (req.user.role === 'employee') {
-      const scopeType = req.user.scope_type || 'employee';
-      rootKey = `${scopeType === 'sub' ? 'sub' : scopeType === 'unit' ? 'unit' : scopeType === 'programme' ? 'programme' : 'employee'}:${req.user.scope_id}`;
-    } else {
-      return res.status(403).json({ error: 'No organisational performance scope is assigned to this account.' });
-    }
-  }
+  const rootKey = performanceRootKey(req.user);
+  if (!rootKey) return res.status(403).json({ error: 'No organisational performance scope is assigned to this account.' });
   if (!nodeByKey.has(rootKey)) {
     return res.json({ summary: summarizeKpis([]), kpis: [], nodes: [], tiers: [], strategicYears: [], rootKey: null });
   }
@@ -1027,7 +1017,7 @@ router.post('/', requirePerm('create_kpi'), async (req, res) => {
         evidence_requirements, allowable_variance, reporting_frequency,
         reporting_periods, start_date, end_date, strategic_plan_version,
         performance_cycle, lifecycle_status, reporting_mode, period_aggregation, achievement_rule
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`)
       .run(
         ownerType, ownerId, name, type, measure, Number(baseline), Number(target),
         measurementDirection, weight,

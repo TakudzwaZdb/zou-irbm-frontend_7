@@ -11,8 +11,8 @@ before(async () => {
 after(async () => { await server.stop(); });
 
 test('target performance endpoint returns scoped hierarchy and validates its period', async () => {
-  const { token: ictadmin } = await api.login('l.chikomo@zou.ac.zw');
-  const { token: unitHead } = await api.login('s.chikonzo@zou.ac.zw');
+  const { token: ictadmin } = await api.login('gorerazas@zou.ac.zw');
+  const { token: unitHead } = await api.login('dzoboa@zou.ac.zw');
   const year = new Date().getFullYear();
 
   const [allKpis, institution, unitScope, invalidPeriod] = await Promise.all([
@@ -37,7 +37,7 @@ test('target performance endpoint returns scoped hierarchy and validates its per
 });
 
 test('KPI direction and positive weight can be configured at creation', async () => {
-  const { token } = await api.login('l.chikomo@zou.ac.zw');
+  const { token } = await api.login('gorerazas@zou.ac.zw');
   const created = await api.request('/api/kpis', {
     token,
     method: 'POST',
@@ -56,6 +56,18 @@ test('KPI direction and positive weight can be configured at creation', async ()
   assert.equal(created.status, 201);
   assert.equal(created.body.kpi.measurement_direction, 'lower');
   assert.equal(Number(created.body.kpi.weight), 2.5);
+  assert.equal(created.body.kpi.lifecycle_status, 'active');
+
+  const year = new Date().getFullYear();
+  const month = new Date().getMonth() + 1;
+  const performance = await api.request(
+    `/api/kpis/performance-target?cycleYear=${year}&periodType=monthly&periodIndex=${month}`,
+    { token },
+  );
+  assert.equal(performance.status, 200);
+  const createdKpi = performance.body.kpis.find((kpi) => kpi.id === created.body.kpi.id);
+  assert.ok(createdKpi, 'a newly created KPI appears in the performance rollup immediately');
+  assert.ok(createdKpi.performanceExpectedPacePct != null, 'the new KPI receives an expected pace from its baseline and target');
 
   const invalid = await api.request('/api/kpis', {
     token,

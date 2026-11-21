@@ -197,11 +197,13 @@ export function nodeAncestryChain(org, kind, id) {
 // their default is "All Programmes", driven entirely by selNode.
 export function defaultNodeForRole(user) {
   if (hasInstitutionalPerformanceAccess(user)) return null;
-  if (user.role === 'employee') return { kind: user.scope_type || 'employee', id: user.scope_id };
-  if (user.role === 'unithead') return { kind: 'unit', id: user.scope_id };
-  if (user.role === 'rep') return { kind: 'sub', id: user.scope_id };
-  if (user.role === 'programme') return { kind: 'programme', id: user.scope_id };
-  return null;
+  const kind = user?.scope_type || ({
+    programme: 'programme',
+    rep: 'sub',
+    unithead: 'unit',
+    employee: 'employee',
+  })[user?.role];
+  return kind && user.scope_id != null ? { kind, id: user.scope_id } : null;
 }
 
 // Roles whose real jurisdiction is the whole university, not one branch of

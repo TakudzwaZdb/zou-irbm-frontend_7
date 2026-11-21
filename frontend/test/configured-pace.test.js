@@ -108,3 +108,25 @@ test('pace is automated from baseline and target when no milestone is configured
   assert.equal(result.kpis[0].expectedPaceConfigured, true);
   assert.equal(result.summary.notConfiguredPaceCount, 0);
 });
+
+test('a newly added KPI catalogue entry updates its performance and pace details', () => {
+  const performanceDetail = detail(42, {
+    actual: 30,
+    performancePct: 30,
+    performanceExpectedPacePct: null,
+    weight: 2,
+  });
+  const newKpi = kpi(42, [
+    { periodType: 'quarterly', periodIndex: 1, expectedValue: 40 },
+  ], { weight: 2 });
+
+  const beforeCatalogueRefresh = configuredPaceForPeriod([performanceDetail], [], 'quarterly', 1);
+  assert.equal(beforeCatalogueRefresh.summary.notConfiguredPaceCount, 1);
+
+  const afterCatalogueRefresh = configuredPaceForPeriod([performanceDetail], [newKpi], 'quarterly', 1);
+  assert.equal(afterCatalogueRefresh.kpis[0].performanceExpectedPacePct, 40);
+  assert.equal(afterCatalogueRefresh.kpis[0].paceVariancePct, 10);
+  assert.equal(afterCatalogueRefresh.kpis[0].paceFlag, 'attention');
+  assert.equal(afterCatalogueRefresh.summary.paceKpiCount, 1);
+  assert.equal(afterCatalogueRefresh.summary.averagePaceVariancePct, 10);
+});

@@ -73,28 +73,14 @@ router.get('/', requireAnyPerm('manage_users', 'view_users'), async (req, res) =
 });
 
 // Bulk-assigns ONE role to several users at once — a convenience over the
-// single-user PATCH /:id/role below, restricted to roles that aren't the
-// built-in Employee role: an Employee account needs a specific personal
-// organisational scope (Programme/Sub-programme/Unit/individual employee
-// record) picked per person, which this bulk form has no field for — that
-// goes through this same page's per-row "Assign role & scope" popup instead
-// (frontend/src/pages/Permissions.jsx's openScopeManage/applyRoleAndScope,
-// which also calls PATCH /:id/role below), never the Users page — Users.jsx
-// shows role and scope read-only only and has no editing UI for either at
-// all. Every other role (built-in or custom) has no forced-scope concept at
-// all any more, and role and scope are independent (see PATCH /:id/role's
-// own header note) — this bulk form changes ONLY the role, leaving each
-// selected person's existing organisation scope exactly as it was.
-// Appointment uniqueness still applies
-// to other roles; ICT administrators are multi-seat and exempt.
+// single-user PATCH /:id/role below. It changes no organisation scopes.
+// Role appointment uniqueness still applies except to Employee and ICT
+// administrator, which are multi-seat roles.
 router.post('/assign-role', requireRole('ictadmin'), async (req, res) => {
   const { userIds, role } = req.body || {};
   if (!Array.isArray(userIds) || userIds.length === 0) return res.status(400).json({ error: 'Select at least one user.' });
   const roleDefinition = await db.prepare('SELECT key, label FROM role_definitions WHERE key = ?').get(role);
   if (!roleDefinition) return res.status(400).json({ error: 'Invalid role.' });
-  if (role === 'employee') {
-    return res.status(400).json({ error: `${roleDefinition.label} needs a specific organisational scope for each person — select just that person's row on this page and use "Assign role & scope" instead of bulk assignment.` });
-  }
   const ids = [...new Set(userIds.map(Number))].filter((id) => Number.isInteger(id));
   const results = [];
   const txn = db.transaction(async () => {
@@ -105,15 +91,23 @@ router.post('/assign-role', requireRole('ictadmin'), async (req, res) => {
       // Role assignment never changes the person's independent scope.
       const nextScopeType = target.scope_type;
       const nextScopeId = target.scope_id;
-      const occupied = role === 'ictadmin' ? null : nextScopeType
+      const occupied = ['employee', 'ictadmin'].includes(role) ? null : nextScopeType
         ? await db.prepare('SELECT name FROM users WHERE role = ? AND scope_type = ? AND scope_id = ? AND deleted_at IS NULL AND id != ?').get(role, nextScopeType, nextScopeId, id)
         : await db.prepare('SELECT name FROM users WHERE role = ? AND scope_type IS NULL AND scope_id IS NULL AND deleted_at IS NULL AND id != ?').get(role, id);
       if (occupied) { results.push({ id, ok: false, error: `Already occupied by ${occupied.name}.` }); continue; }
+      if (role === 'employee' && nextScopeType === 'employee') {
+        const linked = await db.prepare('SELECT user_id FROM employees WHERE id = ? AND deleted_at IS NULL').get(nextScopeId);
+        if (!linked || (linked.user_id != null && Number(linked.user_id) !== id)) {
+          results.push({ id, ok: false, error: linked ? 'That Employee record is already linked to another account.' : 'The selected Employee scope was not found.' });
+          continue;
+        }
+      }
       await db.prepare('UPDATE employees SET user_id = NULL WHERE user_id = ?').run(id);
       await db.prepare('UPDATE programmes SET head_user_id = NULL WHERE head_user_id = ?').run(id);
       await db.prepare('UPDATE subs SET rep_user_id = NULL WHERE rep_user_id = ?').run(id);
       await db.prepare('UPDATE units SET head_user_id = NULL WHERE head_user_id = ?').run(id);
-      await db.prepare('UPDATE users SET role = ?, title = ?, scope_type = ?, scope_id = ? WHERE id = ?').run(role, roleDefinition.label, nextScopeType, nextScopeId, id);
+      await db.prepare('UPDATE users SET role = ?, title = ? WHERE id = ?').run(role, roleDefinition.label, id);
+      if (role === 'employee' && nextScopeType === 'employee') await db.prepare('UPDATE employees SET user_id = ? WHERE id = ?').run(id, nextScopeId);
       if (role === 'programme' && nextScopeType === 'programme') await db.prepare('UPDATE programmes SET head_user_id = ? WHERE id = ?').run(id, nextScopeId);
       if (role === 'rep' && nextScopeType === 'sub') await db.prepare('UPDATE subs SET rep_user_id = ? WHERE id = ?').run(id, nextScopeId);
       if (role === 'unithead' && nextScopeType === 'unit') await db.prepare('UPDATE units SET head_user_id = ? WHERE id = ?').run(id, nextScopeId);
@@ -301,51 +295,31 @@ router.post('/:id/mfa/disable', requireRole('ictadmin'), async (req, res) => {
 });
 
 const OVERVIEW_LIMITS = ['programme', 'sub', 'unit'];
-// Scope is a property of the PERSON, never something a role declares or
-// requires (see db.js's CREATE TABLE comment for role_definitions and
-// routes/org.js's POST/PATCH /roles). The one exception, unchanged since
-// before any of this: the built-in Employee role always needs a specific
-// organisation scope for each person — Programme, Sub-programme, Unit, or
-// an individual employee record. Every other role, built-in or custom, may
-// optionally be given any of those scopes or none at all.
+// Scope belongs to the person, never to the role. Every role can be assigned
+// with or without a Programme, Sub-programme, Unit, or Employee scope.
 const GENERAL_SCOPE_TYPES = ['programme', 'sub', 'unit', 'employee'];
 
-// Change a user's role and/or scope — e.g. reassigning a Unit Head to a
-// different unit, promoting someone into a new role, or simply moving a
-// Sub-programme Rep's scope to a different sub without touching their role
-// at all. ICT admin only (this whole file is gated that way). Left
-// a role change reapplies that role's default grants; a scope-only change
-// preserves the user's current permissions.
-//
-// Role and scope are independent — one can change without the other. This
-// request body carries `role` always (the frontend always knows the
-// person's current role, so a scope-only change just resends it unchanged
-// — see Permissions.jsx's "Change scope" popup, opened by clicking a
-// user's row), but `scopeType`/`scopeId` are optional: a request that
-// leaves scopeType OUT of the body entirely changes only the role and
-// leaves the person's current scope exactly as it was (see Permissions.jsx's
-// "Assign role" modal, which sends role and the currently selected scope
-// together). Only when scopeType IS a key in the body does this route
-// touch scope at all, even to clear it (an explicit `scopeType: null` from
-// the "No scope" option means "clear it").
-router.patch('/:id/role', requireRole('ictadmin'), async (req, res) => {
+// Role and scope are separate changes. Role updates preserve scope and
+// reapply role grants; scope updates preserve role and all user-specific
+// permissions. The old combined /role payload remains accepted for clients
+// that still send both fields.
+async function updateUserRoleAndScope(req, res, { scopeOnly = false } = {}) {
   const { id } = req.params;
   const body = req.body || {};
-  const { role } = body;
-  if (Number(id) === req.user.id) return res.status(400).json({ error: 'You cannot change your own role.' });
+  if (!scopeOnly && Number(id) === req.user.id) return res.status(400).json({ error: 'You cannot change your own role.' });
+  const target = await db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
+  if (!target) return res.status(404).json({ error: 'User not found.' });
+  const role = scopeOnly ? target.role : body.role;
   const roleDefinition = await db.prepare('SELECT key, label FROM role_definitions WHERE key = ?').get(role);
   if (!roleDefinition) return res.status(400).json({ error: 'Invalid role.' });
-  const target = await db.prepare('SELECT * FROM users WHERE id = ?').get(id);
-  if (!target) return res.status(404).json({ error: 'User not found.' });
 
-  const scopeProvided = Object.prototype.hasOwnProperty.call(body, 'scopeType');
+  const scopeProvided = scopeOnly || Object.prototype.hasOwnProperty.call(body, 'scopeType');
+  if (scopeOnly && !Object.prototype.hasOwnProperty.call(body, 'scopeType')) {
+    return res.status(400).json({ error: 'scopeType is required.' });
+  }
   let scopeType = scopeProvided ? body.scopeType : target.scope_type;
   let scopeId = scopeProvided ? body.scopeId : target.scope_id;
-  if (role === 'employee') {
-    if (!['programme', 'sub', 'unit', 'employee'].includes(scopeType)) {
-      return res.status(400).json({ error: 'Employee accounts must be assigned to a Programme, Sub-programme, Unit / Department / Faculty / Region, or Employee scope.' });
-    }
-  } else if (scopeType != null && !GENERAL_SCOPE_TYPES.includes(scopeType)) {
+  if (scopeType != null && !GENERAL_SCOPE_TYPES.includes(scopeType)) {
     return res.status(400).json({ error: 'Invalid scope type.' });
   }
   if (scopeType && !scopeId) return res.status(400).json({ error: 'A scope selection is required.' });
@@ -367,6 +341,9 @@ router.patch('/:id/role', requireRole('ictadmin'), async (req, res) => {
     `).get(scopeId);
     if (!employee || employee.unit_deleted_at || employee.sub_deleted_at || employee.programme_deleted_at) {
       return res.status(400).json({ error: 'The selected Employee scope must belong to an active Programme, Sub-programme, and Unit / Department / Faculty / Region.' });
+    }
+    if (role === 'employee' && employee.user_id != null && Number(employee.user_id) !== Number(id)) {
+      return res.status(400).json({ error: 'That Employee record is already linked to another account.' });
     }
   }
 
@@ -413,8 +390,16 @@ router.patch('/:id/role', requireRole('ictadmin'), async (req, res) => {
     await db.prepare('UPDATE programmes SET head_user_id = NULL WHERE head_user_id = ?').run(id);
     await db.prepare('UPDATE subs SET rep_user_id = NULL WHERE rep_user_id = ?').run(id);
     await db.prepare('UPDATE units SET head_user_id = NULL WHERE head_user_id = ?').run(id);
-    await db.prepare('UPDATE users SET role = ?, title = ?, scope_type = ?, scope_id = ? WHERE id = ?')
-      .run(role, roleDefinition.label, scopeType || null, scopeId || null, id);
+    if (scopeOnly) {
+      await db.prepare('UPDATE users SET scope_type = ?, scope_id = ? WHERE id = ?')
+        .run(scopeType || null, scopeId || null, id);
+    } else if (scopeProvided) {
+      await db.prepare('UPDATE users SET role = ?, title = ?, scope_type = ?, scope_id = ? WHERE id = ?')
+        .run(role, roleDefinition.label, scopeType || null, scopeId || null, id);
+    } else {
+      await db.prepare('UPDATE users SET role = ?, title = ? WHERE id = ?')
+        .run(role, roleDefinition.label, id);
+    }
     if (role === 'employee' && scopeType === 'employee') await db.prepare('UPDATE employees SET user_id = ? WHERE id = ?').run(id, scopeId);
     // Same scope-type guard as the appointment check above — a role's own
     // org-tree appointment column is only ever written when the scope
@@ -439,11 +424,15 @@ router.patch('/:id/role', requireRole('ictadmin'), async (req, res) => {
   if (roleChanged) changeDescriptions.push(`role changed from "${target.role}" to "${role}"`);
   if (scopeChanged) changeDescriptions.push('organisation scope updated');
   await db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)').run(
-    req.user.id, 'change_role', 'user', id,
-    changeDescriptions.length ? `${target.name}: ${changeDescriptions.join('; ')}.` : `${target.name}: role/scope re-applied with no change.`
+    req.user.id, scopeOnly ? 'change_scope' : 'change_role', 'user', id,
+    changeDescriptions.length ? `${target.name}: ${changeDescriptions.join('; ')}.` : `${target.name}: ${scopeOnly ? 'scope' : 'role/scope'} re-applied with no change.`
   );
   res.json({ user: await db.prepare('SELECT id, name, title, email, role, scope_type, scope_id FROM users WHERE id = ?').get(id) });
-});
+}
+
+router.patch('/:id/role', requireRole('ictadmin'), updateUserRoleAndScope);
+
+router.patch('/:id/scope', requireRole('ictadmin'), (req, res) => updateUserRoleAndScope(req, res, { scopeOnly: true }));
 
 // Sets (or clears) how deep this account may drill into Overview's
 // Programme -> Sub-programme -> Unit -> Employee structure — a real

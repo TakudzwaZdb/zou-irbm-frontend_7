@@ -18,7 +18,7 @@ import { api } from '../lib/api.js';
 const KIND_LABEL = { programme: 'Programme', sub: 'Sub-programme', unit: 'Unit', employee: 'Employee' };
 
 export default function Overview() {
-  const { user, org, kpis, values, contributions, settings, period, assignments, selNode, selectNode, clearSelNode, hasPerm, reloadOverviewValues } = useApp();
+  const { user, org, kpis, values, contributions, settings, period, assignments, selNode, selectNode, clearSelNode, hasPerm, reloadOverviewValues, reloadKpis } = useApp();
   const [refreshError, setRefreshError] = useState(null);
   useEffect(() => {
     let active = true;
@@ -26,7 +26,7 @@ export default function Overview() {
     const refresh = () => {
       if (document.visibilityState !== 'visible' || refreshing) return;
       refreshing = true;
-      reloadOverviewValues()
+      Promise.all([reloadOverviewValues(), reloadKpis()])
         .then(() => { if (active) setRefreshError(null); })
         .catch((err) => { if (active) setRefreshError(err.message || 'Unknown error'); })
         .finally(() => { refreshing = false; });
@@ -41,7 +41,7 @@ export default function Overview() {
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', refresh);
     };
-  }, [reloadOverviewValues]);
+  }, [reloadOverviewValues, reloadKpis]);
   const canViewInstitutional = hasPerm('view_institutional_performance');
   const isGlobal = ['cpu', 'exec', 'vc', 'ictadmin', 'council'].includes(user.role) || canViewInstitutional;
   // The university-wide "All Programmes" rollup is no longer an automatic

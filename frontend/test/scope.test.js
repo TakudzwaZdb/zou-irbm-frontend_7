@@ -37,6 +37,21 @@ test('scope breadcrumb uses the assigned scope for custom and non-canonical role
 test('institutional-performance permission gives scoped roles an all-programmes read view', () => {
   const scopedUser = { role: 'unithead', scope_type: 'unit', scope_id: 30, overview_limit: null };
   assert.deepEqual(defaultNodeForRole(scopedUser), { kind: 'unit', id: 30 });
+  assert.deepEqual(
+    defaultNodeForRole({ role: 'manager', scope_type: 'unit', scope_id: 30 }),
+    { kind: 'unit', id: 30 },
+    'custom roles should land on their assigned scope',
+  );
+  assert.deepEqual(
+    defaultNodeForRole({ ...scopedUser, scope_type: 'programme', scope_id: 10 }),
+    { kind: 'programme', id: 10 },
+    'an explicit scope should take precedence over the role’s usual tier',
+  );
+  assert.deepEqual(
+    defaultNodeForRole({ role: 'ictadmin', scope_type: 'unit', scope_id: 30, permissions: [] }),
+    { kind: 'unit', id: 30 },
+    'a globally privileged role without institutional Overview permission should still use its assigned scope',
+  );
   assert.deepEqual(defaultNodeForRole({
     ...scopedUser,
     permissions: ['view_institutional_performance'],
@@ -157,6 +172,46 @@ test('tier rollups preserve precise progress and RAG classifications', () => {
   assert.equal(rollup.avgPct, 49.9);
   assert.equal(rollup.counts.red, 1);
   assert.equal(nodeRagCls(rollup, settings), 'chip-rag-red');
+});
+
+test('new unit and sub-programme KPIs appear in their hierarchy and contribute to institutional pace and progress', () => {
+  const org = {
+    programmes: [{ id: 10 }],
+    subs: [{ id: 20, programme_id: 10 }],
+    units: [{ id: 30, sub_id: 20 }],
+    employees: [{ id: 40, unit_id: 30 }],
+  };
+  const kpis = [
+    { ...kpi, id: 1, owner_type: 'unit', owner_id: 30 },
+    { ...kpi, id: 2, owner_type: 'sub', owner_id: 20 },
+    { ...kpi, id: 3, owner_type: 'employee', owner_id: 40 },
+  ];
+  const values = {
+    1: { value: 80, month: 6 },
+    2: { value: 50, month: 6 },
+    3: { value: 40, month: 6 },
+  };
+  const unitKpis = nodeOwnKpis(org, kpis, 'unit', 30);
+  const subKpis = nodeOwnKpis(org, kpis, 'sub', 20);
+  const programmeKpis = nodeOwnKpis(org, kpis, 'programme', 10);
+
+  assert.deepEqual(unitKpis.map((item) => item.id), [1, 3]);
+  assert.deepEqual(subKpis.map((item) => item.id), [2, 1, 3]);
+  assert.deepEqual(programmeKpis.map((item) => item.id), [2, 1, 3]);
+  assert.equal(performanceRollup(unitKpis, values, settings).avgPct, 60);
+  assert.equal(performanceRollup(subKpis, values, settings).avgPct, 56.7);
+  assert.equal(varianceRollup(unitKpis, values, settings).avgVariance, 10);
+  assert.equal(varianceRollup(subKpis, values, settings).avgVariance, 6.7);
+
+  const programmePerformance = performanceRollup(programmeKpis, values, settings);
+  const programmePace = varianceRollup(programmeKpis, values, settings);
+  const institutional = institutionalRollup(org, kpis, values, settings);
+  assert.equal(programmePerformance.avgPct, 56.7);
+  assert.equal(programmePace.avgVariance, 6.7);
+  assert.equal(institutional.performance.count, 3);
+  assert.equal(institutional.performance.avgPct, 56.7);
+  assert.equal(institutional.variance.avgVariance, 6.7);
+  assert.deepEqual(institutional.variance.items.map((item) => item.kpi.id).sort(), [1, 2, 3]);
 });
 
 test('institutional average gives each Programme equal weight', () => {

@@ -8,7 +8,7 @@ import PhotoLightbox from '../components/PhotoLightbox.jsx';
 import PaginatedRows from '../components/PaginatedRows.jsx';
 
 // Exported so every other page that needs to show or pick a role — right
-// now just Permissions.jsx's role/scope-assignment popup (see its own
+// now just Permissions.jsx's role and scope controls (see its own
 // import of these four) — uses the exact same role list/labels/scope rules
 // rather than a second, driftable copy. This file stays their one
 // canonical source even though Users.jsx itself no longer edits role or
@@ -247,9 +247,8 @@ export default function Users() {
               <>
                 Every account in the system, with its full profile. Only ICT System Administrators can update a
                 profile, reset a forgotten password, or remove an account. Role and organisation scope are both
-                shown here read-only — assign or change either one from the Roles and Permissions page's bulk
-                "Assign Roles to Users" (university-wide roles) or a row's own "Assign role &amp; scope" (Unit Head,
-                Sub-programme Rep, Programme Head, Employee).
+                shown here read-only. Assign roles on the Roles and Permissions page; click a person's row there
+                to change their organisation scope separately.
               </>
             ) : (
               <>
@@ -450,7 +449,7 @@ export default function Users() {
 // role's own label, set server-side whenever role/scope changes),
 // password/MFA reset, the Overview navigation ceiling, Executive Owner, and
 // account removal. This replaces what used to be two separate surfaces (a
-// "Select user" popup for role+scope, and a second inline "account
+// "Select user" popup for role/scope, and a second inline "account
 // controls" disclosure for everything else) with the one dialog opened by
 // clicking the row.
 function UserManagementDialog({
@@ -518,9 +517,8 @@ function UserManagementDialog({
             </div>
           </div>
           <p className="text-[11px] text-ink-muted">
-            Role and organisation scope are both assigned from the Roles and Permissions page — bulk "Assign
-            Roles to Users" for a university-wide role, or that row's own "Assign role &amp; scope" for Unit Head,
-            Sub-programme Rep, Programme Head, or Employee — never from here.
+            Role and organisation scope are assigned separately from the Roles and Permissions page — bulk
+            "Assign Roles to Users" or the per-person role control for roles, and the person's row for scope.
           </p>
         </div>
 

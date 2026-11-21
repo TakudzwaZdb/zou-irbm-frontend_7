@@ -43,6 +43,13 @@ function assignedScopeType(user) {
     employee: 'employee',
   })[user.role] || null;
 }
+function performanceRootKey(user) {
+  if (hasPermission(user, 'view_institutional_performance')
+      || (isGlobalReader(user) && !user.scope_type)) return 'university:0';
+  const scopeType = assignedScopeType(user);
+  if (!['programme', 'sub', 'unit', 'employee'].includes(scopeType) || user.scope_id == null) return null;
+  return `${scopeType}:${user.scope_id}`;
+}
 
 async function unitSubId(unitId) {
   return (await db.prepare('SELECT sub_id FROM units WHERE id = ?').get(unitId))?.sub_id ?? null;
@@ -81,7 +88,7 @@ async function isAssignedEmployee(user, kpi) {
 // Can this user see this KPI (and by extension its values/contributions)?
 async function canReadKpi(user, kpi) {
   if (isGlobalReader(user) || hasPermission(user, 'view_institutional_performance')) return true;
-  if (hasPermission(user, 'submit_data_entries')) {
+  if (user.scope_type || hasPermission(user, 'submit_data_entries')) {
     const scopeType = assignedScopeType(user);
     if (scopeType === 'programme') return (await kpiProgrammeId(kpi)) === user.scope_id;
     if (scopeType === 'sub') return (await kpiSubId(kpi)) === user.scope_id;
@@ -194,4 +201,5 @@ async function canReadProgramme(user, programmeId) {
 module.exports = {
   isGlobalReader, hasPermission, canReadKpi, canReadSub, canReadUnit, canReadProgramme,
   kpiSubId, kpiProgrammeId, unitSubId, employeeUnitId, subProgrammeId, isAssignedEmployee,
+  performanceRootKey,
 };

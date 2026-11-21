@@ -9,7 +9,8 @@ export default function OverviewPerformance({ setRoute }) {
   const handleDataLoaded = useCallback((data) => {
     if (data?.summaryName) setSummaryName(data.summaryName);
   }, []);
-  const allowed = !GLOBAL_REPORT_ROLES.includes(user.role) || hasPerm('view_institutional_performance');
+  const hasScope = Boolean(user.scope_type && user.scope_id != null);
+  const allowed = !GLOBAL_REPORT_ROLES.includes(user.role) || hasPerm('view_institutional_performance') || hasScope;
 
   return (
     <div className="overview-page">

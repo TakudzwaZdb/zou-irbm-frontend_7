@@ -11,21 +11,21 @@ before(async () => {
 after(async () => { await server.stop(); });
 
 // CPU is the final approver for KPI submissions at every owner tier.
-test('a Sub-owned KPI submission becomes official only after CPU approval', async () => {
-  const { token: cpu } = await api.login('t.moyo@zou.ac.zw');
-  const { token: rep } = await api.login('p.marecha@zou.ac.zw'); // Sub-programme Rep, Administration (sub id 1, under Governance & Administration)
-  const { token: programmeHead } = await api.login('s.chitiyo@zou.ac.zw'); // Programme Head, Governance & Administration
-  const { token: otherProgrammeHead } = await api.login('b.manyanga@zou.ac.zw'); // Programme Head of a DIFFERENT Programme (Human Capital Development)
+test('a Unit-owned KPI submission becomes official only after CPU approval', async () => {
+  const { token: cpu } = await api.login('mutanhop@zou.ac.zw');
+  const { token: unitHead } = await api.login('mvengem@zou.ac.zw');
+  const { token: programmeHead } = await api.login('murehwa@zou.ac.zw'); // Programme Head, Governance and Administration
+  const { token: otherProgrammeHead } = await api.login('kahwema@zou.ac.zw'); // Programme Head of a different Programme
 
-  // Create a fresh sub-owned KPI (owner_type: 'sub', owner_id: 1) so this
-  // test's period is never contaminated by another test's data on the same
-  // KPI.
+  // Create a fresh Unit-owned KPI so this test's period is never contaminated
+  // by another test's data on the same KPI.
   const created = await api.request('/api/kpis', {
     method: 'POST', token: cpu,
-    body: { ownerType: 'sub', ownerId: 1, name: 'Approval Cascade Regression KPI', type: 'Output', measure: 'units', baseline: 15, target: 25 },
+    body: { ownerType: 'unit', ownerId: 6, name: 'Approval Cascade Regression KPI', type: 'Output', measure: 'units', baseline: 15, target: 25 },
   });
   assert.equal(created.status, 201);
   const kpiId = created.body.kpi.id;
+  assert.equal(created.body.kpi.lifecycle_status, 'active', 'new KPIs become available to performance reporting immediately');
 
   const year = 2032, month = 3; // an isolated period this test file owns
   // The submission-window feature ties a real submit to real (or, in tests,
@@ -34,10 +34,10 @@ test('a Sub-owned KPI submission becomes official only after CPU approval', asyn
   // period needs an X-Test-Now that actually falls inside its own window.
   const withinWindow = { headers: { 'X-Test-Now': '2032-03-26T00:00:00Z' } };
 
-  // Rep enters and submits this period's figure.
-  let r = await api.request(`/api/kpis/${kpiId}/value`, { method: 'PUT', token: rep, body: { year, month, value: 19 } });
+  // Unit Head enters and submits this period's figure.
+  let r = await api.request(`/api/kpis/${kpiId}/value`, { method: 'PUT', token: unitHead, body: { year, month, value: 19 } });
   assert.equal(r.status, 200);
-  r = await api.request(`/api/kpis/${kpiId}/submit`, { method: 'POST', token: rep, body: { year, month }, ...withinWindow });
+  r = await api.request(`/api/kpis/${kpiId}/submit`, { method: 'POST', token: unitHead, body: { year, month }, ...withinWindow });
   assert.equal(r.status, 200);
 
   // Programme Heads cannot publish performance values; CPU alone is the
@@ -79,7 +79,7 @@ test('a Sub-owned KPI submission becomes official only after CPU approval', asyn
 
   // An amendment starts a fresh review cycle and must not show stale CPU feedback.
   const amended = await api.request(`/api/kpis/${kpiId}/value`, {
-    method: 'PUT', token: rep, body: { year, month, value: 20 },
+    method: 'PUT', token: unitHead, body: { year, month, value: 20 },
   });
   assert.equal(amended.status, 200);
   assert.equal(amended.body.value.status, 'submitted');
